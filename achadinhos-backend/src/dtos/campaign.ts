@@ -67,6 +67,11 @@ export const CreateCampaignSchema = z
     messageTemplate: z.string().max(4000).optional(),
     /** Send product image as media; false = text-only with link preview. */
     sendImages: z.boolean().default(true),
+    /**
+     * Explicit opt-in to resend pairs already SENT on this connection.
+     * Selection wins for SENT pairs; SENDING pairs stay blocked.
+     */
+    allowResend: z.boolean().default(false),
     /** ISO datetime; when present the campaign is scheduled instead of run now. */
     scheduledAt: z.string().datetime().optional(),
   })
@@ -89,6 +94,7 @@ export const UpdateCampaignSchema = z
     safety: SafetySchema.optional(),
     messageTemplate: z.string().max(4000).nullable().optional(),
     sendImages: z.boolean().optional(),
+    allowResend: z.boolean().optional(),
     scheduledAt: z.string().datetime().nullable().optional(),
   })
   .refine((d) => !d.safety || d.safety.maxDelaySeconds >= d.safety.minDelaySeconds, {

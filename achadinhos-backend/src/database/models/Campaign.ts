@@ -88,6 +88,11 @@ export class Campaign extends Model<InferAttributes<Campaign>, InferCreationAttr
   declare messageTemplate: CreationOptional<string | null>
   /** When false, offers are sent as text-only (link preview) even if they have an image. */
   declare sendImages: CreationOptional<boolean>
+  /**
+   * When true, pairs already SENT on this connection are sent again.
+   * SENDING/in-flight pairs stay blocked to avoid duplicate races.
+   */
+  declare allowResend: CreationOptional<boolean>
   declare status: CreationOptional<CAMPAIGN_STATUS_ENUM>
   declare scheduledAt: CreationOptional<Date | null>
   declare startedAt: CreationOptional<Date | null>
@@ -122,6 +127,12 @@ Campaign.init(
       allowNull: false,
       defaultValue: true,
       field: 'send_images',
+    },
+    allowResend: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: 'allow_resend',
     },
     status: {
       type: DataTypes.ENUM(...Object.values(CAMPAIGN_STATUS_ENUM)),

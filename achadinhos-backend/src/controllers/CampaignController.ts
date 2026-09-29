@@ -50,6 +50,7 @@ function serializeCampaign(c: Campaign) {
     safety: c.safety,
     messageTemplate: c.messageTemplate,
     sendImages: c.sendImages,
+    allowResend: c.allowResend ?? false,
     status: c.status,
     scheduledAt: c.scheduledAt,
     startedAt: c.startedAt,

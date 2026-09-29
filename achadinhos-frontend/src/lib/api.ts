@@ -240,6 +240,8 @@ export interface Campaign {
   safety: Safety
   messageTemplate: string | null
   sendImages: boolean
+  /** Explicit opt-in: resend pairs already SENT on this connection. */
+  allowResend: boolean
   status: CampaignStatus
   scheduledAt: string | null
   startedAt: string | null
@@ -612,6 +614,7 @@ export const campaignApi = {
     safety: Safety
     messageTemplate?: string
     sendImages?: boolean
+    allowResend?: boolean
     scheduledAt?: string
   }): Promise<Campaign> {
     return unwrap<Campaign>(await api.post('/campaigns', payload))
@@ -628,6 +631,7 @@ export const campaignApi = {
       safety: Safety
       messageTemplate: string | null
       sendImages: boolean
+      allowResend: boolean
       scheduledAt: string | null
     }>,
   ): Promise<Campaign> {

@@ -109,6 +109,7 @@ export default function CampaignDetailPage() {
   const [safety, setSafety] = useState<Safety | null>(null)
   const [template, setTemplate] = useState<string | null>(null)
   const [sendImages, setSendImages] = useState(true)
+  const [allowResend, setAllowResend] = useState(false)
   const [scheduledAt, setScheduledAt] = useState('')
   const [seededId, setSeededId] = useState<number | null>(null)
   const [previews, setPreviews] = useState<{ title: string; message: string }[]>([])
@@ -126,6 +127,7 @@ export default function CampaignDetailPage() {
     setSafety(c.safety)
     setTemplate(c.messageTemplate)
     setSendImages(c.sendImages)
+    setAllowResend(c.allowResend ?? false)
     setScheduledAt(toLocalInput(c.scheduledAt))
     setSeededId(c.id)
   }
@@ -159,6 +161,7 @@ export default function CampaignDetailPage() {
         safety: safety ?? undefined,
         messageTemplate: effectiveTemplate,
         sendImages,
+        allowResend,
         scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : null,
       }),
     onSuccess: (updated) => {
@@ -232,10 +235,11 @@ export default function CampaignDetailPage() {
   }
 
   const editable = c.editable
+  const effectiveEligible = deliverySummary.eligible + (allowResend ? deliverySummary.sent : 0)
   const canRun = !runM.isPending
     && !deliveryQuery.isPending
     && !deliveryQuery.isError
-    && deliverySummary.eligible > 0
+    && effectiveEligible > 0
 
   const toggleGroupSel = (g: { id: string; name: string }) =>
     setGroups((prev) =>
@@ -330,20 +334,41 @@ export default function CampaignDetailPage() {
             </div>
             {deliveryQuery.isPending ? <Spinner /> : (
               <div className="flex flex-wrap gap-3 text-sm">
-                <span className="font-medium text-green-700">{deliverySummary.eligible} a enviar</span>
-                <span className="font-medium text-amber-700">{deliverySummary.sent} já enviada(s)</span>
+                <span className="font-medium text-green-700">{effectiveEligible} a enviar</span>
+                <span className="font-medium text-amber-700">{deliverySummary.sent} já enviada(s){allowResend && deliverySummary.sent > 0 ? ' (reenviam)' : ''}</span>
                 <span className="font-medium text-blue-700">{deliverySummary.sending} em campanha</span>
                 <span className="font-medium text-red-700">{deliverySummary.ambiguous} sem confirmação</span>
               </div>
             )}
           </div>
+          {editable && (
+            <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 p-3 text-sm">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={allowResend}
+                onChange={(e) => setAllowResend(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium">Reenviar pares já enviados nesta conexão</span>
+                <span className="block text-xs text-zinc-500">
+                  Clique em Salvar para gravar. Pares em campanha ou sem confirmação continuam bloqueados.
+                </span>
+              </span>
+            </label>
+          )}
+          {!editable && allowResend && (
+            <p className="mt-3 text-sm text-amber-800">
+              Reenvio ativado: pares já enviados serão enviados de novo ao iniciar.
+            </p>
+          )}
           {deliveryQuery.isError && (
             <p role="alert" className="mt-3 text-sm text-red-700">
               Não foi possível verificar o histórico. O início da campanha fica bloqueado até a
               verificação funcionar. <button type="button" className="underline" onClick={() => void deliveryQuery.refetch()}>Tentar novamente</button>
             </p>
           )}
-          {!deliveryQuery.isPending && !deliveryQuery.isError && deliverySummary.eligible === 0 && c.status === 'DRAFT' && (
+          {!deliveryQuery.isPending && !deliveryQuery.isError && effectiveEligible === 0 && c.status === 'DRAFT' && (
             <p role="status" className="mt-3 text-sm text-amber-800">
               {deliverySummary.ambiguous > 0
                 ? `Há ${deliverySummary.ambiguous} envio(s) sem confirmação. Confira o WhatsApp e resolva cada item abaixo antes de iniciar.`

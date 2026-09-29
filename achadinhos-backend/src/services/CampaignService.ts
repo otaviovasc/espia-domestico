@@ -27,6 +27,7 @@ import {
   normalizedOfferSource,
 } from '@/utils/offerIdentity'
 import { sequelize } from '@/database'
+import { env } from '@/config/env'
 
 export const DELIVERY_CLAIM_RECOVERY_MS = 5 * 60 * 1000
 const configuredHeartbeatMs = Number(process.env.DELIVERY_CLAIM_HEARTBEAT_MS)
@@ -132,6 +133,7 @@ export class CampaignService {
       safety: input.safety,
       messageTemplate: input.messageTemplate?.trim() || null,
       sendImages: input.sendImages ?? true,
+      allowResend: input.allowResend ?? false,
       status: scheduledAt ? CAMPAIGN_STATUS_ENUM.SCHEDULED : CAMPAIGN_STATUS_ENUM.DRAFT,
       scheduledAt,
     })
@@ -616,6 +618,7 @@ export class CampaignService {
       campaign.messageTemplate = input.messageTemplate?.trim() || null
     }
     if (input.sendImages !== undefined) campaign.sendImages = input.sendImages
+    if (input.allowResend !== undefined) campaign.allowResend = input.allowResend
 
     if (input.scheduledAt !== undefined) {
       if (input.scheduledAt === null) {
@@ -717,8 +720,19 @@ export class CampaignService {
   }
 
   /**
-   * Run a campaign now (fire-and-forget). Returns immediately after flipping
-   * status to RUNNING; the actual paced send proceeds in the background.
+   * Run a campaign now. Returns immediately after flipping status to RUNNING.
+   *
+   * Single-writer rule: only the process that owns the scheduler
+   * (RUN_SCHEDULER=true — the dedicated worker in production, the API itself
+   * in single-process local dev) runs the paced send loop. Any other process
+   * (the API in production) only marks the campaign RUNNING with a null
+   * heartbeat and returns; the worker's scheduler claims it on its next tick
+   * (<=30s) via resumeStalledRun and sends from there.
+   *
+   * Without this, the loop would live in the API process that handled the
+   * HTTP request, so every API redeploy would kill the campaign mid-sleep and
+   * it would sit silent until the (long, pacing-derived) stall threshold
+   * elapsed.
    */
   async runNow(userId: number, campaignId: number): Promise<Campaign> {
     const campaign = await this.getForUser(userId, campaignId)
@@ -750,11 +764,14 @@ export class CampaignService {
       name: currentGroups.get(group.id)?.name ?? group.name,
     }))
 
+    const ownsSending = env.RUN_SCHEDULER
     const [started] = await Campaign.update(
       {
         status: CAMPAIGN_STATUS_ENUM.RUNNING,
         startedAt: new Date(),
-        heartbeatAt: new Date(),
+        // A null heartbeat means "no live loop owns this yet" — the worker
+        // treats it as immediately claimable (see isStalledRunning).
+        heartbeatAt: ownsSending ? new Date() : null,
         completedAt: null,
         totalSkipped: 0,
         groups,
@@ -763,6 +780,14 @@ export class CampaignService {
     )
     if (started !== 1) throw BadRequestError('A campanha já foi iniciada por outro processo')
     const running = await this.getForUser(userId, campaignId)
+
+    if (!ownsSending) {
+      logger.info(
+        { campaignId: running.id },
+        'Campaign marked RUNNING for worker pickup (this process does not send)',
+      )
+      return running
+    }
 
     // Fire and forget — do not await.
     void this.execute(userId, running, context).catch(async (error) => {
@@ -854,6 +879,7 @@ export class CampaignService {
     context: ConnectedContext,
   ): Promise<void> {
     const allTasks = buildTasks(campaign.offers, campaign.groups, campaign.safety)
+    const allowResend = campaign.allowResend ?? false
     await this.reconcileSuccessfulHistory(userId, context.scope, allTasks)
     const existingDeliveries = await ProductGroupDelivery.findAll({
       where: {
@@ -864,15 +890,24 @@ export class CampaignService {
         },
         groupId: { [Op.in]: [...new Set(allTasks.map((task) => task.group.id))] },
       },
-      attributes: ['offerIdentity', 'groupId'],
+      attributes: ['offerIdentity', 'groupId', 'status'],
     })
-    const existingPairs = new Set(
-      existingDeliveries.map((delivery) => `${delivery.offerIdentity}\u0000${delivery.groupId}`),
+    // Selection wins for SENT pairs when the campaign explicitly opts into
+    // resend. SENDING rows always stay blocked: they are an in-flight claim
+    // owned by another (possibly live) run, and stealing them could duplicate.
+    const blockingPairs = new Set(
+      existingDeliveries
+        .filter(
+          (delivery) =>
+            delivery.status === PRODUCT_GROUP_DELIVERY_STATUS.SENDING ||
+            !allowResend,
+        )
+        .map((delivery) => `${delivery.offerIdentity}\u0000${delivery.groupId}`),
     )
     const tasks = allTasks.filter(
       (task) =>
         !offerIdentityAliases(task.offer).some((identity) =>
-          existingPairs.has(`${identity}\u0000${task.group.id}`),
+          blockingPairs.has(`${identity}\u0000${task.group.id}`),
         ),
     )
     let skipped = allTasks.length - tasks.length
@@ -978,6 +1013,7 @@ export class CampaignService {
             campaign.id,
             task.offer,
             task.group,
+            allowResend,
           )
           if (!claim) {
             skipped++
@@ -1031,12 +1067,14 @@ export class CampaignService {
     campaignId: number,
     offer: CampaignOffer,
     group: CampaignGroup,
+    allowResend = false,
   ): Promise<ProductGroupDelivery | null> {
+    const identity = offerIdentity(offer)
     try {
       return await ProductGroupDelivery.create({
         userId,
         connectionScope,
-        offerIdentity: offerIdentity(offer),
+        offerIdentity: identity,
         offerSource: offer.source?.trim().toLowerCase() || null,
         offerProductId: offer.productId?.trim() || null,
         offerUrl: offer.affiliateUrl.trim(),
@@ -1049,8 +1087,39 @@ export class CampaignService {
         heartbeatAt: new Date(),
       })
     } catch (error) {
-      if (error instanceof UniqueConstraintError) return null
-      throw error
+      if (!(error instanceof UniqueConstraintError)) throw error
+      // Resend mode: take over a SENT row for this pair (last delivery wins;
+      // the audit trail stays in campaign_logs). A SENDING row is never
+      // stolen — it belongs to a possibly live run.
+      if (!allowResend) return null
+      const identities = offerIdentityAliases(offer)
+      const [stolen] = await ProductGroupDelivery.update(
+        {
+          campaignId,
+          groupName: group.name,
+          offerUrl: offer.affiliateUrl.trim(),
+          offerTitle: offer.title,
+          status: PRODUCT_GROUP_DELIVERY_STATUS.SENDING,
+          claimToken: randomUUID(),
+          heartbeatAt: new Date(),
+          messageId: null,
+          sentAt: null,
+        },
+        {
+          where: {
+            userId,
+            connectionScope,
+            offerIdentity: { [Op.in]: identities },
+            groupId: group.id,
+            status: PRODUCT_GROUP_DELIVERY_STATUS.SENT,
+          },
+        },
+      )
+      if (stolen !== 1) return null
+      const claim = await ProductGroupDelivery.findOne({
+        where: { userId, connectionScope, offerIdentity: { [Op.in]: identities }, groupId: group.id },
+      })
+      return claim
     }
   }
 

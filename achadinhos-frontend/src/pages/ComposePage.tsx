@@ -106,6 +106,7 @@ export default function ComposePage() {
   const [productPage, setProductPage] = useState(1)
   const [template, setTemplate] = useState<string | null>(null)
   const [sendImages, setSendImages] = useState(true)
+  const [allowResend, setAllowResend] = useState(false)
   const [previews, setPreviews] = useState<{ title: string; message: string }[]>([])
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
@@ -282,6 +283,7 @@ export default function ComposePage() {
         safety,
         messageTemplate: effectiveTemplate,
         sendImages,
+        allowResend,
         scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : undefined,
       })
       if (run && !scheduledAt) await campaignApi.run(campaign.id)
@@ -396,11 +398,14 @@ export default function ComposePage() {
   const hasSelection = includedOffers.length > 0
     && selectedGroupIds.size > 0
     && Boolean(activeProfileId)
+  // Selection is the source of truth for SENT pairs when resend is on;
+  // SENDING / unconfirmed pairs stay blocked regardless (race protection).
+  const effectiveEligible = deliverySummary.eligible + (allowResend ? deliverySummary.sent : 0)
   const canSaveDraft = hasSelection && !createMutation.isPending
   const canDispatch = canSaveDraft
     && !offerFlagsQuery.isPending
     && !offerFlagsQuery.isError
-    && deliverySummary.eligible > 0
+    && effectiveEligible > 0
 
   const keepOnlyEligibleProducts = () => {
     setSelectedProductIds(new Set(catalogItems
@@ -810,9 +815,28 @@ export default function ComposePage() {
       <Card>
         <h2 className="mb-3 font-semibold">5 · Enviar</h2>
         <div className="mb-4 rounded-lg bg-violet-50 p-3 text-sm text-violet-800">
-          Envios novos: <strong>{offerFlagsQuery.isPending && hasSelection ? 'verificando…' : deliverySummary.eligible}</strong>
+          Envios novos: <strong>{offerFlagsQuery.isPending && hasSelection ? 'verificando…' : effectiveEligible}</strong>
           {' '}de {totalPairs} combinação(ões) de produto e grupo.
+          {allowResend && deliverySummary.sent > 0 && (
+            <> (inclui {deliverySummary.sent} já enviada(s) que serão reenviadas)</>
+          )}
         </div>
+
+        <label className="mb-4 flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 p-3 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={allowResend}
+            onChange={(e) => setAllowResend(e.target.checked)}
+          />
+          <span>
+            <span className="font-medium">Reenviar pares já enviados nesta conexão</span>
+            <span className="block text-xs text-zinc-500">
+              A seleção passa a valer para o que já foi entregue: cada par já enviado será enviado de novo.
+              Pares em outra campanha ou sem confirmação continuam bloqueados por segurança.
+            </span>
+          </span>
+        </label>
 
         {offerFlagsQuery.isError && hasSelection && (
           <div role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-800">
@@ -824,16 +848,18 @@ export default function ComposePage() {
         {(deliverySummary.sent > 0 || deliverySummary.sending > 0 || deliverySummary.ambiguous > 0) && (
           <div className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
             <History size={14} className="mr-1 inline" />
-            {deliverySummary.sent} combinação(ões) já enviada(s), {deliverySummary.sending} em outra
-            campanha e {deliverySummary.ambiguous} com envio sem confirmação nesta conexão serão
-            ignoradas automaticamente. Abra o status do grupo para resolver envios sem confirmação.
-            <button type="button" className="ml-2 underline" onClick={keepOnlyEligibleProducts}>
-              Manter só produtos com envios novos
-            </button>
+            {allowResend
+              ? `${deliverySummary.sent} combinação(ões) já enviada(s) serão reenviadas. ${deliverySummary.sending} em outra campanha e ${deliverySummary.ambiguous} com envio sem confirmação nesta conexão continuam bloqueadas. Abra o status do grupo para resolver envios sem confirmação.`
+              : `${deliverySummary.sent} combinação(ões) já enviada(s), ${deliverySummary.sending} em outra campanha e ${deliverySummary.ambiguous} com envio sem confirmação nesta conexão serão ignoradas automaticamente. Abra o status do grupo para resolver envios sem confirmação. Ative o reenvio acima se quiser mandar de novo o que já foi entregue.`}
+            {!allowResend && (
+              <button type="button" className="ml-2 underline" onClick={keepOnlyEligibleProducts}>
+                Manter só produtos com envios novos
+              </button>
+            )}
           </div>
         )}
 
-        {hasSelection && !offerFlagsQuery.isPending && !offerFlagsQuery.isError && deliverySummary.eligible === 0 && (
+        {hasSelection && !offerFlagsQuery.isPending && !offerFlagsQuery.isError && effectiveEligible === 0 && (
           <div role="status" className="mb-4 rounded-lg bg-zinc-100 p-3 text-sm text-zinc-700">
             {deliverySummary.ambiguous > 0
               ? `Nenhum envio novo. Há ${deliverySummary.ambiguous} envio(s) sem confirmação: confira o WhatsApp e use as ações no status de cada grupo para confirmar ou liberar uma nova tentativa.`
