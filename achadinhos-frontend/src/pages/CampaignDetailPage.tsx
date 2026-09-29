@@ -281,19 +281,19 @@ export default function CampaignDetailPage() {
               <Play size={16} /> Enviar agora
             </Button>
           )}
-          {c.status === 'SCHEDULED' && (
+          {(c.status === 'SCHEDULED' || c.status === 'RUNNING') && (
             <Button variant="secondary" onClick={() => pauseM.mutate()} disabled={pauseM.isPending}>
               <Pause size={16} /> Pausar
             </Button>
           )}
-          {c.status === 'RUNNING' && c.stalled && (
-            <Button variant="secondary" onClick={() => resumeM.mutate()} disabled={resumeM.isPending}>
-              <RotateCw size={16} /> Retomar envio
-            </Button>
-          )}
-          {c.status === 'RUNNING' && !c.stalled && (
-            <Button variant="secondary" onClick={() => pauseM.mutate()} disabled={pauseM.isPending}>
-              <Pause size={16} /> Pausar
+          {c.status === 'RUNNING' && (
+            <Button
+              variant="secondary"
+              onClick={() => resumeM.mutate()}
+              disabled={resumeM.isPending}
+              title="Reinicia o envio de onde parou (não reenvia o que já foi enviado)"
+            >
+              <RotateCw size={16} /> {c.stalled ? 'Retomar envio' : 'Reiniciar envio'}
             </Button>
           )}
           {c.status === 'PAUSED' && (
@@ -645,6 +645,7 @@ function useMutationAction(
     onSuccess: (updated) => {
       qc.setQueryData(['campaign', campaignId], updated)
       qc.invalidateQueries({ queryKey: ['campaign-logs', campaignId] })
+      qc.invalidateQueries({ queryKey: ['campaign-progress', campaignId] })
       setError(null)
     },
     onError: (e) => setError(apiErrorMessage(e)),

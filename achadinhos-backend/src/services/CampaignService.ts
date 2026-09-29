@@ -680,31 +680,39 @@ export class CampaignService {
   }
 
   /**
-   * Resume a paused campaign. If it still has a future scheduledAt it goes back
-   * to SCHEDULED (fires at that time); otherwise it starts running now.
+   * Resume/relaunch a campaign.
+   *
+   * - PAUSED with a future schedule → back to SCHEDULED.
+   * - PAUSED/otherwise → run now.
+   * - RUNNING → deterministically relaunch: mark PAUSED first (so any loop that
+   *   is somehow still alive aborts at its next checkpoint), then start a fresh
+   *   run. The delivery ledger skips every already-sent pair and the atomic
+   *   claim prevents two processes from sending the same pair, so this never
+   *   duplicates. This is what recovers a campaign stuck RUNNING with a flapping
+   *   heartbeat after repeated deploys.
    */
   async resume(userId: number, campaignId: number): Promise<Campaign> {
     const campaign = await this.getForUser(userId, campaignId)
 
-    // A RUNNING campaign whose process died (deploy/crash) can be relaunched.
     if (campaign.status === CAMPAIGN_STATUS_ENUM.RUNNING) {
-      if (this.isStalledRunning(campaign)) {
-        await this.resumeStalledRun(userId, campaignId)
-        return this.getForUser(userId, campaignId)
-      }
-      // Still actively sending in a live process — nothing to do.
-      return campaign
+      // Signal any live loop to stop, then relaunch cleanly.
+      await Campaign.update(
+        { status: CAMPAIGN_STATUS_ENUM.PAUSED },
+        { where: { id: campaignId, userId, status: CAMPAIGN_STATUS_ENUM.RUNNING } },
+      )
+      // Give a live loop a moment to observe the pause and release claims.
+      await new Promise((resolve) => setTimeout(resolve, 1_500))
+      return this.runNow(userId, campaignId)
     }
 
     if (campaign.status !== CAMPAIGN_STATUS_ENUM.PAUSED) {
-      throw BadRequestError('Somente campanhas pausadas ou travadas podem ser retomadas')
+      throw BadRequestError('Somente campanhas pausadas ou em execução podem ser retomadas')
     }
     if (campaign.scheduledAt && campaign.scheduledAt.getTime() > Date.now()) {
       campaign.status = CAMPAIGN_STATUS_ENUM.SCHEDULED
       await campaign.save()
       return campaign
     }
-    // No future schedule — run now.
     return this.runNow(userId, campaignId)
   }
 

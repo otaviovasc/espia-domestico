@@ -38,7 +38,14 @@ async function main(): Promise<void> {
   await ensureAdMediaDirectories()
   await startAdRenderQueue()
 
-  startScheduler()
+  // The dedicated worker service runs the campaign scheduler in production.
+  // The API only runs it when RUN_SCHEDULER=true (default for single-process
+  // local dev), so deploying the API/frontend never kills an in-flight campaign.
+  if (env.RUN_SCHEDULER) {
+    startScheduler()
+  } else {
+    logger.info('Campaign scheduler disabled in API process (handled by worker service)')
+  }
 
   const app = createApp()
   const server = app.listen(env.PORT, () => {

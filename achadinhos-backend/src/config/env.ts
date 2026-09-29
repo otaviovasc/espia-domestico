@@ -37,6 +37,14 @@ const envSchema = z
 
     // Public URL for webhook registration (optional in local dev)
     API_BASE_URL: z.string().optional(),
+    // Run the campaign scheduler/sender inside THIS process. In production the
+    // dedicated worker service sets this true; the API service leaves it false
+    // so campaign sending survives API/frontend deploys. Defaults true so local
+    // `npm run dev` (single process) still sends.
+    RUN_SCHEDULER: z
+      .string()
+      .default('true')
+      .transform((v) => v.toLowerCase() === 'true'),
     OPENROUTER_KEY: z.string().min(1).optional().or(z.literal('')),
 
     // Ad library media. Local storage is intended for development; Railway
