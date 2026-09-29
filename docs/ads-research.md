@@ -171,6 +171,72 @@ analisador de áudio.
   registrar apenas metadados necessários e bloquear uploads não suportados antes
   de iniciar um render pago ou longo.
 
+## Railway Storage Buckets para mídia do backend
+
+Os [Storage Buckets do Railway](https://docs.railway.com/storage-buckets) são
+privados e compatíveis com S3. O bucket não tem URL pública; para downloads,
+usar uma URL pré-assinada (válida por até 90 dias) ou um proxy autenticado no
+backend. A URL pré-assinada entrega o arquivo diretamente do bucket; o proxy
+permite controlar headers e transformações, mas o tráfego servido pelo serviço
+conta como egress do serviço. Para vídeo com seek, encaminhar `Range`,
+`Content-Range`, `Accept-Ranges`, `Content-Length` e o status `206` no endpoint
+do backend. A documentação confirma o controle dos headers no proxy, mas não
+promete comportamento automático de byte range; essa parte é um requisito da
+implementação de streaming desta aplicação. Fonte: [Uploading & Serving
+Files](https://docs.railway.com/storage-buckets/uploading-serving).
+
+### Variáveis e referência no Railway
+
+O Railway expõe no bucket `BUCKET` (nome S3 global), `ENDPOINT`, `REGION`,
+`ACCESS_KEY_ID` e `SECRET_ACCESS_KEY`. `RAILWAY_BUCKET_NAME` é apenas o nome
+do recurso no Railway e não deve ser usado como `Bucket` na API S3. A opção de
+injeção automática escolhe aliases conforme o cliente; a alternativa explícita
+é criar referências no serviço pelo formato documentado
+`${{SERVICE_NAME.VAR}}`. Para este backend, o mapeamento direto recomendado é:
+
+```dotenv
+AD_STORAGE_DRIVER=s3
+AD_S3_BUCKET=${{ad-library-media.BUCKET}}
+AD_S3_ENDPOINT=${{ad-library-media.ENDPOINT}}
+AD_S3_REGION=${{ad-library-media.REGION}}
+AD_S3_ACCESS_KEY_ID=${{ad-library-media.ACCESS_KEY_ID}}
+AD_S3_SECRET_ACCESS_KEY=${{ad-library-media.SECRET_ACCESS_KEY}}
+AD_S3_FORCE_PATH_STYLE=false
+```
+
+`ad-library-media` é o nome do recurso criado neste projeto. O schema do
+backend aceita os nomes Railway sem prefixo (`BUCKET`,
+`ENDPOINT`, `REGION`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`) e também os
+`AD_S3_*`; os últimos têm precedência. Se forem usadas as variáveis exibidas
+por `railway bucket credentials` (`AWS_ENDPOINT_URL`, `AWS_S3_BUCKET_NAME`,
+`AWS_DEFAULT_REGION`), é preciso traduzi-las para os nomes acima, pois esses
+três aliases não são lidos pelo schema atual. Fontes: [Storage
+Buckets](https://docs.railway.com/storage-buckets#railway-provided-variables),
+[Using Variables](https://docs.railway.com/variables#referencing-another-services-variable)
+e [schema de ambiente do backend](../achadinhos-backend/src/config/env.ts).
+
+Railway usa URLs virtual-hosted por padrão: informe o endpoint base, como
+`https://t3.storageapi.dev`, e deixe o cliente montar a URL com o bucket. Um
+bucket antigo pode exigir path-style; conferir o estilo mostrado na aba
+Credentials antes de definir `AD_S3_FORCE_PATH_STYLE=true`. As operações
+confirmadas são Put, Get, Head, Delete, List/List V2, Copy, URLs pré-assinadas,
+tags e multipart upload. Server-side encryption, versionamento, object lock e
+lifecycle de bucket ainda não são suportados. Fonte: [S3
+compatibility](https://docs.railway.com/storage-buckets#s3-compatibility).
+
+### Provisionamento e isolamento
+
+No canvas do projeto, criar **Bucket**, escolher região e nome, e fazer deploy;
+a região não pode ser alterada depois. Em seguida, abrir a aba Credentials e
+criar as referências acima (ou usar o preset do cliente S3). Pela CLI, o fluxo
+equivalente é `railway bucket create ad-media --region sjc` e depois
+`railway bucket credentials`; as regiões disponíveis e o formato JSON estão em
+[railway bucket](https://docs.railway.com/cli/bucket). Cada ambiente recebe uma
+instância e credenciais próprias, inclusive ambientes duplicados e PR
+environments; configurar staging e produção separadamente e não compartilhar
+objetos entre eles. Fonte: [Buckets in
+environments](https://docs.railway.com/storage-buckets#buckets-in-environments).
+
 ## Limites e validação
 
 Os documentos das ferramentas confirmam as capacidades de filtro, análise e
