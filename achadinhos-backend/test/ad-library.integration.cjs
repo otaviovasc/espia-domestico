@@ -185,6 +185,17 @@ test('ad library stores media, renders a beat-synced variation and serves ranges
     )
     assert.equal(isolatedAsset.status, 404)
 
+    const unapprovedMusicUrl = await jsonRequest(`${base}/${projectId}/music/import`, {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://cdn.example.com/music.mp3', confirmRights: false }),
+    })
+    assert.equal(unapprovedMusicUrl.response.status, 400)
+    const invalidMusicHost = await jsonRequest(`${base}/${projectId}/music/import`, {
+      method: 'POST',
+      body: JSON.stringify({ url: 'https://127.0.0.1/music.mp3', confirmRights: true }),
+    })
+    assert.equal(invalidMusicHost.response.status, 400)
+
     config.selectedClipIds = clips.body.data.map((item) => item.id)
     config.musicAssetId = uploadedMusic.body.data[0].id
     config.musicTracks = [

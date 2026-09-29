@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 import {
   AudioLines,
   ChevronDown,
@@ -31,6 +31,23 @@ import {
   type VisualPresetDefinition,
 } from '@/lib/adCreativeConfig'
 import { useAuth } from '@/context/AuthContext'
+import EmojiPicker from '@/components/EmojiPicker'
+
+const UUID_TOKEN = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi
+const LONG_ID_TOKEN = /(?:^|\s)(?:[0-9a-f]{16,}|\d{10,})(?=\s|$)/gi
+const OPAQUE_NAME = /^(?=[a-z0-9]{24,}$)(?=.*\d)[a-z0-9]+$/i
+
+function assetDisplayLabel(asset: AdAsset, index: number, noun = 'Clipe'): string {
+  const withoutExtension = asset.originalName.replace(/\.[a-z0-9]{1,8}$/i, '')
+  const readableName = withoutExtension
+    .replace(UUID_TOKEN, ' ')
+    .replace(/[_-]+/g, ' ')
+    .replace(LONG_ID_TOKEN, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const hasReadableWord = /[a-z\u00c0-\u024f]{2,}/i.test(readableName) && !OPAQUE_NAME.test(readableName)
+  return hasReadableWord ? `${noun} ${index + 1} · ${readableName}` : `${noun} ${index + 1}`
+}
 
 const EFFECT_CONTROLS: Array<{
   key: Exclude<keyof AdVisualEffectsConfig, 'preset'>
@@ -114,6 +131,7 @@ const CREATIVE_RECIPES: CreativeRecipe[] = [
 ]
 
 const SAVED_PRESETS_KEY = 'ad-creative-presets-v1'
+const MAX_HOOK_TEXT_LENGTH = 120
 
 type SavedCreativePreset = {
   id: string
@@ -191,10 +209,19 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
   const [presetName, setPresetName] = useState('')
   const [savingPreset, setSavingPreset] = useState(false)
   const [savedPresets, setSavedPresets] = useState<SavedCreativePreset[]>(() => readSavedPresets(savedPresetsKey))
+  const hookTextRef = useRef<HTMLTextAreaElement>(null)
   const normalized = normaliseCreativeConfig(config)
   const clips = useMemo(() => assets.filter((asset) => asset.kind === 'clip'), [assets])
   const music = useMemo(() => assets.filter((asset) => asset.kind === 'music'), [assets])
   const musicById = useMemo(() => new Map(music.map((asset) => [asset.id, asset])), [music])
+  const clipLabelById = useMemo(
+    () => new Map(clips.map((asset, index) => [asset.id, assetDisplayLabel(asset, index)])),
+    [clips],
+  )
+  const musicLabelById = useMemo(
+    () => new Map(music.map((asset, index) => [asset.id, assetDisplayLabel(asset, index, 'Música')])),
+    [music],
+  )
   const tracks = normalized.musicTracks
 
   function setEffects(next: AdVisualEffectsConfig) {
@@ -207,6 +234,20 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
 
   function patchHook(patch: Partial<AdHookConfig>) {
     onChange({ ...normalized, hook: { ...normalized.hook, ...patch } })
+  }
+
+  function insertHookEmoji(emoji: string) {
+    const textarea = hookTextRef.current
+    const start = textarea?.selectionStart ?? normalized.hook.text.length
+    const end = textarea?.selectionEnd ?? start
+    const nextText = `${normalized.hook.text.slice(0, start)}${emoji}${normalized.hook.text.slice(end)}`
+    if (nextText.length > MAX_HOOK_TEXT_LENGTH) return
+
+    patchHook({ text: nextText })
+    window.requestAnimationFrame(() => {
+      textarea?.focus()
+      textarea?.setSelectionRange(start + emoji.length, start + emoji.length)
+    })
   }
 
   function applyRecipe(recipe: CreativeRecipe) {
@@ -422,17 +463,25 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
               <label className="text-[11px] font-medium text-zinc-600">Clipe do gancho
                 <select value={normalized.hook.clipAssetId ?? ''} onChange={(event) => patchHook({ clipAssetId: event.target.value ? Number(event.target.value) : null })} className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 text-xs outline-none focus:border-violet-500">
                   <option value="">Escolher clipe</option>
-                  {clips.map((clip) => <option key={clip.id} value={clip.id}>{clip.originalName}</option>)}
+                  {clips.map((clip) => (
+                    <option key={clip.id} value={clip.id}>
+                      {clipLabelById.get(clip.id) ?? 'Clipe'} · {seconds(clip.durationSeconds)}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="text-[11px] font-medium text-zinc-600">Duração
                 <span className="relative mt-1 block"><input type="number" min={0.5} max={5} step={0.1} value={normalized.hook.durationSeconds} onChange={(event) => patchHook({ durationSeconds: clamp(Number(event.target.value), 0.5, 5) })} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 pr-7 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-2 text-xs text-zinc-400">s</span></span>
               </label>
             </div>
-            <label className="block text-[11px] font-medium text-zinc-600">Texto do gancho
-              <textarea maxLength={120} rows={2} value={normalized.hook.text} onChange={(event) => patchHook({ text: event.target.value })} placeholder="Ex.: Espera: olha o preço disso" className="mt-1 w-full resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100" />
-              <span className="mt-1 block text-right text-[11px] text-zinc-500">{normalized.hook.text.length}/120</span>
-            </label>
+            <div className="text-[11px] font-medium text-zinc-600">
+              <label htmlFor="ad-hook-text">Texto do gancho</label>
+              <textarea id="ad-hook-text" ref={hookTextRef} maxLength={MAX_HOOK_TEXT_LENGTH} rows={2} value={normalized.hook.text} onChange={(event) => patchHook({ text: event.target.value })} placeholder="Ex.: Espera: olha o preço disso" className="mt-1 w-full resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100" />
+              <span className="mt-1 flex items-start justify-between gap-2">
+                <EmojiPicker onSelect={insertHookEmoji} ariaLabel="Adicionar emoji ao texto do gancho" />
+                <span className="pt-1 text-[11px] text-zinc-500">{normalized.hook.text.length}/{MAX_HOOK_TEXT_LENGTH}</span>
+              </span>
+            </div>
             <div>
               <p className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold text-zinc-600"><Lightbulb size={11} /> Modelos de abertura</p>
               <div className="flex gap-1.5 overflow-x-auto pb-1">
@@ -461,7 +510,7 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
               {tracks.map((track, index) => {
                 const start = (track.startSeconds / normalized.output.durationSeconds) * 100
                 const end = ((track.endSeconds ?? normalized.output.durationSeconds) / normalized.output.durationSeconds) * 100
-                return <span key={`timeline-${index}`} className={`absolute h-2 rounded-full ${['bg-fuchsia-500', 'bg-violet-500', 'bg-sky-500', 'bg-emerald-500'][index % 4]}`} style={{ left: `${start}%`, top: `${5 + (index % 3) * 7}px`, width: `${Math.max(1, end - start)}%` }} title={`${musicById.get(track.assetId)?.originalName ?? 'Faixa'}: ${seconds(track.startSeconds)} até ${track.endSeconds === null ? 'o fim' : seconds(track.endSeconds)}`} />
+                return <span key={`timeline-${index}`} className={`absolute h-2 rounded-full ${['bg-fuchsia-500', 'bg-violet-500', 'bg-sky-500', 'bg-emerald-500'][index % 4]}`} style={{ left: `${start}%`, top: `${5 + (index % 3) * 7}px`, width: `${Math.max(1, end - start)}%` }} title={`${musicLabelById.get(track.assetId) ?? 'Faixa'}: ${seconds(track.startSeconds)} até ${track.endSeconds === null ? 'o fim' : seconds(track.endSeconds)}`} />
               })}
             </div>
             {tracks.map((track, index) => {
@@ -471,7 +520,7 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
                   <div className="mb-3 flex items-center gap-2">
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fuchsia-100 text-xs font-bold text-fuchsia-700">{index + 1}</span>
                     <select value={track.assetId} onChange={(event) => patchTrack(index, { assetId: Number(event.target.value), sourceStartSeconds: 0 })} className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-violet-500">
-                      {music.map((item) => <option key={item.id} value={item.id}>{item.originalName}</option>)}
+                      {music.map((item) => <option key={item.id} value={item.id}>{musicLabelById.get(item.id) ?? 'Música'}</option>)}
                     </select>
                     <button type="button" onClick={() => removeTrack(index)} className="rounded-lg p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600" aria-label={`Remover faixa ${index + 1}`}><Trash2 size={14} /></button>
                   </div>

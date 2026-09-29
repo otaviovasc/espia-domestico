@@ -28,6 +28,319 @@ body {
   background: linear-gradient(135deg, #7c3aed 0%, #db2777 100%);
 }
 
+.emoji-picker-root {
+  position: relative;
+  display: inline-flex;
+}
+
+.emoji-picker-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #ddd6fe;
+  border-radius: 0.55rem;
+  background: #f5f3ff;
+  padding: 0.35rem 0.55rem;
+  color: #6d28d9;
+  font-size: 0.7rem;
+  font-weight: 650;
+  line-height: 1;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.emoji-picker-trigger:hover,
+.emoji-picker-trigger[aria-expanded='true'] {
+  border-color: #a78bfa;
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.emoji-picker-trigger:focus-visible,
+.emoji-picker-close:focus-visible,
+.emoji-picker-categories button:focus-visible,
+.emoji-picker-grid button:focus-visible {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 2px;
+}
+
+.emoji-picker-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.emoji-picker-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 60;
+  width: min(20rem, calc(100vw - 2rem));
+  overflow: hidden;
+  border: 1px solid #e4e4e7;
+  border-radius: 0.9rem;
+  background: #fff;
+  box-shadow: 0 18px 45px rgba(39, 39, 54, 0.2);
+  animation: emoji-picker-in 130ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.emoji-picker-panel-right {
+  right: 0;
+  left: auto;
+}
+
+@keyframes emoji-picker-in {
+  from { opacity: 0; transform: translateY(-0.25rem) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.emoji-picker-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.65rem 0.65rem 0.5rem;
+}
+
+.emoji-picker-search {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid #d4d4d8;
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.55rem;
+  color: #71717a;
+}
+
+.emoji-picker-search:focus-within {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 2px #ede9fe;
+}
+
+.emoji-picker-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #27272a;
+  font-size: 0.75rem;
+}
+
+.emoji-picker-search input::placeholder {
+  color: #a1a1aa;
+}
+
+.emoji-picker-close {
+  display: inline-flex;
+  height: 1.9rem;
+  width: 1.9rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  color: #71717a;
+}
+
+.emoji-picker-close:hover {
+  background: #f4f4f5;
+  color: #27272a;
+}
+
+.emoji-picker-categories {
+  display: flex;
+  gap: 0.3rem;
+  overflow-x: auto;
+  padding: 0 0.65rem 0.55rem;
+  scrollbar-width: thin;
+}
+
+.emoji-picker-categories button {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 0.3rem 0.5rem;
+  color: #71717a;
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.emoji-picker-categories button:hover {
+  background: #f4f4f5;
+  color: #3f3f46;
+}
+
+.emoji-picker-categories button[aria-pressed='true'] {
+  background: #ede9fe;
+  color: #6d28d9;
+}
+
+.emoji-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  max-height: 11rem;
+  overflow-y: auto;
+  padding: 0.25rem 0.65rem 0.5rem;
+}
+
+.emoji-picker-grid button {
+  display: flex;
+  aspect-ratio: 1;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.55rem;
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-size: 1.25rem;
+  line-height: 1;
+  transition: background-color 100ms ease, transform 100ms ease;
+}
+
+.emoji-picker-grid button:hover {
+  background: #f5f3ff;
+  transform: scale(1.12);
+}
+
+.emoji-picker-grid button:active {
+  transform: scale(0.96);
+}
+
+.emoji-picker-empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: #71717a;
+  font-size: 0.75rem;
+}
+
+.emoji-picker-tip {
+  border-top: 1px solid #f4f4f5;
+  padding: 0.45rem 0.75rem;
+  color: #a1a1aa;
+  font-size: 0.62rem;
+  line-height: 1.25;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .emoji-picker-panel,
+  .emoji-picker-trigger,
+  .emoji-picker-grid button {
+    animation: none;
+    transition: none;
+  }
+}
+
+.clip-sequence-card {
+  position: relative;
+  transform: translate3d(0, var(--clip-shift-y, 0), 0);
+  transition:
+    transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    opacity 160ms ease;
+  will-change: transform;
+}
+
+.clip-sequence-card-dragging {
+  z-index: 2;
+  opacity: 0.72;
+  transform: translate3d(0, var(--clip-drag-y, 0), 0) scale(0.985);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    opacity 120ms ease;
+  box-shadow: 0 10px 24px rgba(124, 58, 237, 0.16);
+}
+
+.clip-sequence-card-settled {
+  animation: clip-sequence-card-settle 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes clip-sequence-card-settle {
+  0% { transform: scale(0.985); box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.32); }
+  55% { transform: scale(1.008); box-shadow: 0 8px 20px rgba(124, 58, 237, 0.14); }
+  100% { transform: scale(1); box-shadow: none; }
+}
+
+.clip-sequence-drop-before,
+.clip-sequence-drop-after {
+  z-index: 1;
+  border-color: #8b5cf6;
+  box-shadow: 0 8px 22px rgba(124, 58, 237, 0.13);
+}
+
+.clip-sequence-drop-before::after,
+.clip-sequence-drop-after::after {
+  position: absolute;
+  right: 0.55rem;
+  left: 0.55rem;
+  z-index: 5;
+  height: 0.2rem;
+  border-radius: 999px;
+  background: #7c3aed;
+  box-shadow: 0 0 0 3px rgba(237, 233, 254, 0.92);
+  content: '';
+  pointer-events: none;
+}
+
+.clip-sequence-drop-before::after {
+  top: 0;
+}
+
+.clip-sequence-drop-after::after {
+  bottom: 0;
+}
+
+.clip-sequence-drag-handle {
+  touch-action: none;
+  transition: color 120ms ease, background-color 120ms ease, transform 120ms ease;
+}
+
+.clip-sequence-drag-handle:hover,
+.clip-sequence-drag-handle:focus-visible {
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+
+.clip-sequence-drag-handle:focus-visible {
+  outline: 2px solid #8b5cf6;
+  outline-offset: 2px;
+}
+
+.clip-sequence-drag-handle:active {
+  transform: scale(0.92);
+}
+
+.clip-sequence-drag-status {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid #ddd6fe;
+  border-radius: 0.65rem;
+  background: #f5f3ff;
+  padding: 0.45rem 0.65rem;
+  color: #6d28d9;
+  font-size: 0.7rem;
+  font-weight: 600;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-0.2rem);
+  transition: opacity 140ms ease, transform 140ms ease, visibility 140ms ease;
+}
+
+.clip-sequence-drag-status[data-active='true'] {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .clip-sequence-card,
+  .clip-sequence-card-settled,
+  .clip-sequence-drag-handle,
+  .clip-sequence-drag-status {
+    transition: none;
+    animation: none;
+  }
+}
+
 .ad-library {
   background:
     radial-gradient(circle at 94% 2%, rgba(124, 58, 237, 0.09), transparent 24rem),
@@ -37,25 +350,102 @@ body {
 .ad-stage-panel {
   position: sticky;
   top: 0;
+  min-width: 0;
   overflow: hidden;
-  border-radius: 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 1rem;
   background: #171725;
-  padding: 1.25rem;
-  box-shadow: 0 22px 50px rgba(23, 23, 42, 0.18);
+  padding: 1rem;
+  box-shadow: 0 14px 34px rgba(23, 23, 42, 0.16);
+}
+
+.ad-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+}
+
+.ad-preview-toolbar-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.ad-preview-tool-button {
+  display: inline-flex;
+  min-width: 2rem;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border-radius: 0.55rem;
+  padding: 0.4rem;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ad-preview-tool-button:hover:not(:disabled),
+.ad-preview-tool-button:focus-visible,
+.ad-preview-tool-button-active {
+  background: rgba(255, 255, 255, 0.11);
+  color: #fff;
+}
+
+.ad-preview-tool-button:focus-visible {
+  outline: 2px solid rgba(255, 115, 94, 0.85);
+  outline-offset: 2px;
+}
+
+.ad-preview-tool-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.ad-preview-sound-button {
+  padding-inline: 0.55rem;
+}
+
+.ad-preview-audio-status {
+  margin: -0.35rem 0 0.75rem;
+  border-radius: 0.55rem;
+  background: rgba(251, 191, 36, 0.12);
+  padding: 0.45rem 0.6rem;
+  color: #fde68a;
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.ad-preview-audio-status button {
+  margin-left: 0.2rem;
+  color: #fff7cc;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ad-preview-audio-status button:focus-visible {
+  outline: 2px solid #fde68a;
+  outline-offset: 2px;
 }
 
 .ad-phone-stage {
   position: relative;
   container-type: inline-size;
   margin-inline: auto;
-  width: min(100%, 21.5rem);
+  width: min(100%, 20.5rem);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 1.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 1rem;
   background: #0d0d15;
-  box-shadow:
-    0 0 0 7px rgba(255, 255, 255, 0.05),
-    0 24px 60px rgba(0, 0, 0, 0.38);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.32);
 }
 
 .ad-preview-transition {
@@ -113,6 +503,33 @@ body {
   height: 0.25rem;
   cursor: pointer;
   accent-color: #ff735e;
+}
+
+.ad-preview-timeline {
+  margin-top: 0.9rem;
+}
+
+.ad-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0;
+  margin-top: 0.65rem;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 0.64rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.ad-preview-meta span {
+  padding-inline: 0.5rem;
+}
+
+.ad-preview-meta span:first-child {
+  padding-left: 0;
+}
+
+.ad-preview-meta span + span {
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
 }
 
 .ad-preview-vignette,
@@ -200,6 +617,29 @@ body {
 @media (max-width: 1279px) {
   .ad-stage-panel {
     position: relative;
+  }
+}
+
+@media (max-width: 479px) {
+  .ad-stage-panel {
+    padding: 0.75rem;
+  }
+
+  .ad-preview-toolbar {
+    align-items: flex-start;
+  }
+
+  .ad-preview-toolbar-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .ad-preview-sound-button span {
+    display: none;
+  }
+
+  .ad-preview-sound-button {
+    padding-inline: 0.4rem;
   }
 }
 

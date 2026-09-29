@@ -1,16 +1,19 @@
 import { Op } from 'sequelize'
 import { inject, injectable } from 'tsyringe'
 import { env } from '@/config/env'
+import { sequelize } from '@/database'
 import { AdAsset } from '@/database/models/AdAsset'
 import { AdProject } from '@/database/models/AdProject'
 import { AdRenderJob, type AdRenderOutput } from '@/database/models/AdRenderJob'
 import {
   AdProjectConfigSchema,
   type CreateAdProjectInput,
+  type ImportAdMusicInput,
   type UpdateAdProjectInput,
 } from '@/dtos/adProject'
 import { ConflictError, NotFoundError, UnprocessableError } from '@/middleware/Error/AppError'
 import { AdMediaService, serializeAdAsset } from '@/services/AdMediaService'
+import { cleanupImportedMusic, downloadDirectMusic } from '@/services/AdMusicImport'
 import { cancelAdRender, enqueueAdRender } from '@/services/AdRenderQueue'
 
 function serializeOutput(projectId: number, jobId: number, output: AdRenderOutput) {
@@ -209,6 +212,64 @@ export class AdProjectService {
     }
   }
 
+  async importMusic(userId: number, projectId: number, input: ImportAdMusicInput) {
+    const existing = await this.project(userId, projectId)
+    if ((existing.config.musicTracks ?? []).length >= 8) {
+      throw UnprocessableError('O projeto já atingiu o limite de 8 faixas de música')
+    }
+    const downloaded = await downloadDirectMusic(input.url, userId)
+    let stored: AdAsset | null = null
+    let committed = false
+    try {
+      const asset = await sequelize.transaction(async (transaction) => {
+        const project = await AdProject.findOne({
+          where: { id: projectId, userId },
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        })
+        if (!project) throw NotFoundError('Projeto de anúncio não encontrado')
+        const musicTracks = project.config.musicTracks ?? []
+        if (musicTracks.length >= 8) {
+          throw UnprocessableError('O projeto já atingiu o limite de 8 faixas de música')
+        }
+        const created = await this.media.store(projectId, 'music', downloaded, { transaction })
+        stored = created
+        await project.update(
+          {
+            config: {
+              ...project.config,
+              musicAssetId: project.config.musicAssetId ?? created.id,
+              musicTracks: [
+                ...musicTracks,
+                {
+                  assetId: created.id,
+                  volume: 0.8,
+                  startSeconds: 0,
+                  endSeconds: null,
+                  sourceStartSeconds: 0,
+                  fadeInSeconds: 0,
+                  fadeOutSeconds: 0.8,
+                },
+              ],
+            },
+          },
+          { transaction },
+        )
+        return created
+      })
+      committed = true
+      return {
+        asset: serializeAdAsset(asset),
+        project: await this.get(userId, projectId),
+      }
+    } catch (error) {
+      if (stored && !committed) await this.media.remove(stored).catch(() => undefined)
+      throw error
+    } finally {
+      await cleanupImportedMusic(downloaded)
+    }
+  }
+
   async removeAsset(userId: number, projectId: number, assetId: number): Promise<void> {
     const project = await this.project(userId, projectId)
     const asset = await AdAsset.findOne({ where: { id: assetId, projectId } })
@@ -283,7 +344,7 @@ export class AdProjectService {
       if (track.sourceStartSeconds >= music.durationSeconds - 0.05)
         throw UnprocessableError('O início da faixa está fora da duração da música')
     }
-    for (const clip of assets.filter((item) => item.kind === 'clip')) {
+    for (const [clipIndex, clip] of assets.filter((item) => item.kind === 'clip').entries()) {
       const edit = clipEdits[String(clip.id)]
       if (!edit) continue
       const clipEnd = edit.trimEnd ?? clip.durationSeconds
@@ -293,7 +354,7 @@ export class AdProjectService {
         clipEnd - edit.trimStart < 0.25
       ) {
         throw UnprocessableError(
-          `O recorte do clipe ${clip.originalName} deve ter ao menos 0,25 s e caber na duração original`,
+          `O recorte do clipe ${clipIndex + 1} deve ter ao menos 0,25 s e caber na duração original`,
         )
       }
     }

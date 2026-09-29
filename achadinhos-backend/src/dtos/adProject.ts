@@ -132,7 +132,13 @@ export const UpdateAdProjectSchema = z.object({
 
 export const AdAssetKindSchema = z.enum(['clip', 'music'])
 
+export const ImportAdMusicSchema = z.object({
+  url: z.string().trim().url().max(2048),
+  confirmRights: z.literal(true),
+})
+
 export type AdProjectConfig = z.infer<typeof AdProjectConfigSchema>
 export type CreateAdProjectInput = z.infer<typeof CreateAdProjectSchema>
 export type UpdateAdProjectInput = z.infer<typeof UpdateAdProjectSchema>
+export type ImportAdMusicInput = z.infer<typeof ImportAdMusicSchema>
 export type AdAssetKind = z.infer<typeof AdAssetKindSchema>

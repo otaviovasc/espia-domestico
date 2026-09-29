@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { Router } from 'express'
+import rateLimit from 'express-rate-limit'
 import multer from 'multer'
 import { container } from 'tsyringe'
 import { env } from '@/config/env'
@@ -28,6 +29,12 @@ const upload = multer({
 
 const adProjectRoutes = Router()
 const controller = container.resolve(AdProjectController)
+const musicImportLimit = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 12,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+})
 
 adProjectRoutes.use(authenticate)
 adProjectRoutes.get('/', (req, res) => controller.list(req, res))
@@ -37,6 +44,7 @@ adProjectRoutes.patch('/:id', (req, res) => controller.update(req, res))
 adProjectRoutes.post('/:id/duplicate', (req, res) => controller.duplicate(req, res))
 adProjectRoutes.delete('/:id', (req, res) => controller.remove(req, res))
 adProjectRoutes.post('/:id/assets', upload.array('files', 50), (req, res) => controller.addAssets(req, res))
+adProjectRoutes.post('/:id/music/import', musicImportLimit, (req, res) => controller.importMusic(req, res))
 adProjectRoutes.delete('/:id/assets/:assetId', (req, res) => controller.removeAsset(req, res))
 adProjectRoutes.get('/:id/assets/:assetId/content', (req, res) => controller.assetContent(req, res))
 adProjectRoutes.get('/:id/render-jobs', (req, res) => controller.listJobs(req, res))

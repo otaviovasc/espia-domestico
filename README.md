@@ -99,8 +99,13 @@ antes de iniciar o render. Os vídeos prontos podem ser vistos e baixados na
 biblioteca; projetos podem ser salvos, duplicados e editados.
 
 Instale `ffmpeg` e `ffprobe` no host do backend. No deploy Railway via Nixpacks,
-`achadinhos-backend/nixpacks.toml` inclui FFmpeg e fontes DejaVu. Os metadados
-dos projetos ficam no PostgreSQL. O backend usa `AD_STORAGE_DRIVER=local` e
+`achadinhos-backend/nixpacks.toml` inclui FFmpeg e fontes DejaVu. A biblioteca
+de anúncios aceita arquivo de música ou link HTTPS direto para um arquivo de áudio
+com até 10 minutos; o usuário confirma que pode usar o áudio em anúncios. A
+importação valida tipo, tamanho e endereço público e aplica os mesmos limites dos
+arquivos enviados. Links de páginas do YouTube e Spotify não são arquivos de áudio
+diretos; use um arquivo de áudio licenciado. Os metadados dos projetos ficam no
+PostgreSQL. O backend usa `AD_STORAGE_DRIVER=local` e
 `AD_MEDIA_DIR` (padrão: `./data/ad-media`) no desenvolvimento. Em produção,
 configure `AD_STORAGE_DRIVER=s3` e um Railway Storage Bucket privado com estas
 referências de variáveis no serviço backend:

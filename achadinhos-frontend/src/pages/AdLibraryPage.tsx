@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent, type SyntheticEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AudioLines,
@@ -43,6 +43,7 @@ import {
 import { Button, Input, Spinner } from '@/components/ui'
 import ClipSequenceEditor from '@/components/ClipSequenceEditor'
 import CreativeControls from '@/components/CreativeControls'
+import EmojiPicker from '@/components/EmojiPicker'
 import { DEFAULT_HOOK, DEFAULT_VISUAL_EFFECTS, normaliseCreativeConfig } from '@/lib/adCreativeConfig'
 import { DEFAULT_TRANSITION, clipSequenceValidation, getAdClipEdit } from '@/lib/adClipConfig'
 
@@ -210,6 +211,8 @@ const MEDIA_BLOB_CACHE_LIMIT = 12
 const MEDIA_BLOB_CACHE_BYTES = 384 * 1024 * 1024
 const mediaBlobCache = new Map<string, MediaBlobCacheEntry>()
 const mediaBlobSubscribers = new Map<string, Set<() => void>>()
+const mediaBlobRetryTokens = new Map<string, number>()
+let mediaBlobRetrySequence = 0
 
 function notifyMediaBlobSubscribers(requestKey: string) {
   mediaBlobSubscribers.get(requestKey)?.forEach((notify) => notify())
@@ -268,6 +271,7 @@ function useMediaBlobUrl(
   directUrl: string,
   fetchBlob: () => Promise<Blob>,
   enabled = true,
+  retryToken = 0,
 ): { url: string | null; error: boolean } {
   const bearerAuth = Boolean(getAuthToken())
   const fetchBlobRef = useRef(fetchBlob)
@@ -278,6 +282,14 @@ function useMediaBlobUrl(
 
   useEffect(() => {
     if (!bearerAuth || !enabled) return
+    if (retryToken > 0 && mediaBlobRetryTokens.get(requestKey) !== retryToken) {
+      mediaBlobRetryTokens.set(requestKey, retryToken)
+      const cached = mediaBlobCache.get(requestKey)
+      if (cached && !cached.pending) {
+        if (cached.url) URL.revokeObjectURL(cached.url)
+        mediaBlobCache.delete(requestKey)
+      }
+    }
     const notify = () => rerender((version) => version + 1)
     const subscribers = mediaBlobSubscribers.get(requestKey) ?? new Set<() => void>()
     subscribers.add(notify)
@@ -288,7 +300,7 @@ function useMediaBlobUrl(
       if (subscribers.size === 0) mediaBlobSubscribers.delete(requestKey)
       pruneMediaBlobCache('')
     }
-  }, [bearerAuth, enabled, requestKey])
+  }, [bearerAuth, enabled, requestKey, retryToken])
 
   const activeResult = bearerAuth && enabled ? mediaBlobCache.get(requestKey) : null
   return {
@@ -299,25 +311,35 @@ function useMediaBlobUrl(
 
 function AssetRow({
   asset,
+  ordinal,
   selected,
   onToggle,
   onRemove,
   removing,
 }: {
   asset: AdAsset
+  ordinal: number
   selected: boolean
   onToggle: () => void
   onRemove: () => void
   removing: boolean
 }) {
+  const prefix = asset.kind === 'clip' ? 'Clipe' : 'Música'
+  const originalBase = asset.originalName.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim()
+  const readableBase = originalBase
+    .replace(/\b(?:[0-9a-f]{16,}|\d{10,})\b/gi, ' ')
+    .replace(/\s+/g, ' ').trim()
+  const opaque = !readableBase || /^(?:img|vid|mov|dsc|pxl|wa|clip|audio|music)\s*\d+$/i.test(readableBase)
+    || (readableBase.length >= 24 && !/\s/.test(readableBase) && /\d/.test(readableBase))
+  const label = `${prefix} ${ordinal}${opaque ? '' : ` · ${readableBase}`}`
   return (
     <div className="group flex items-center gap-3 rounded-xl border border-zinc-200 bg-white p-2.5">
       <div className="relative flex h-12 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-zinc-950 text-white">
         {asset.kind === 'clip' ? <Film size={18} /> : <Music2 size={18} />}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium text-zinc-800" title={asset.originalName}>
-          {asset.originalName}
+          <div className="truncate text-sm font-medium text-zinc-800" title={label}>
+            {label}
         </div>
           <div className="mt-0.5 text-xs text-zinc-500">
             {duration(asset.durationSeconds)} · {bytes(asset.sizeBytes)}
@@ -336,7 +358,7 @@ function AssetRow({
         type="button"
         onClick={onRemove}
         disabled={removing}
-        aria-label={`Remover ${asset.originalName}`}
+          aria-label={`Remover ${label}`}
         className="rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
       >
         {removing ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}
@@ -413,26 +435,38 @@ function PreviewAudioTrack({
   projectId,
   asset,
   track,
+  trackKey,
+  active,
   elapsedSeconds,
   previewDuration,
   playing,
   muted,
   seekVersion,
+  retryToken,
+  onReady,
+  onError,
 }: {
   projectId: number
   asset: AdAsset
   track: AdMusicTrack
+  trackKey: string
+  active: boolean
   elapsedSeconds: number
   previewDuration: number
   playing: boolean
   muted: boolean
   seekVersion: number
+  retryToken: number
+  onReady: (trackKey: string) => void
+  onError: (trackKey: string) => void
 }) {
   const audio = useRef<HTMLAudioElement>(null)
   const media = useMediaBlobUrl(
     `asset:${projectId}:${asset.id}`,
     adProjectApi.assetContentUrl(projectId, asset.id),
     () => adProjectApi.assetContent(projectId, asset.id),
+    true,
+    retryToken,
   )
   const timelineEnd = track.endSeconds ?? previewDuration
   const fadeIn = track.fadeInSeconds > 0
@@ -441,7 +475,7 @@ function PreviewAudioTrack({
   const fadeOut = track.fadeOutSeconds > 0
     ? Math.min(1, Math.max(0, (timelineEnd - elapsedSeconds) / track.fadeOutSeconds))
     : 1
-  const volume = Math.max(0, Math.min(1, track.volume * fadeIn * fadeOut))
+  const volume = active ? Math.max(0, Math.min(1, track.volume * fadeIn * fadeOut)) : 0
   const sourceTime = track.sourceStartSeconds + Math.max(0, elapsedSeconds - track.startSeconds)
   const sourceTimeRef = useRef(sourceTime)
 
@@ -462,16 +496,24 @@ function PreviewAudioTrack({
     const element = audio.current
     if (!element || !Number.isFinite(element.duration) || element.duration <= 0) return
     element.currentTime = sourceTimeRef.current % element.duration
-  }, [media.url, seekVersion, track.assetId])
+  }, [active, media.url, seekVersion, track.assetId])
+
+  useEffect(() => {
+    if (media.error) onError(trackKey)
+  }, [media.error, onError, trackKey])
 
   if (!media.url) return null
   return (
     <audio
+      key={retryToken}
       ref={audio}
       src={media.url}
       loop
       preload="auto"
       className="ad-preview-audio sr-only"
+      data-preview-audio-active={active ? 'true' : 'false'}
+      onCanPlay={() => onReady(trackKey)}
+      onError={() => onError(trackKey)}
       onLoadedMetadata={(event) => {
         if (event.currentTarget.duration > 0) event.currentTarget.currentTime = sourceTime % event.currentTarget.duration
       }}
@@ -490,10 +532,48 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const [showSafeZone, setShowSafeZone] = useState(true)
   const [showPlacementChrome, setShowPlacementChrome] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [readyAudioKeys, setReadyAudioKeys] = useState<Set<string>>(() => new Set())
+  const [failedAudioKeys, setFailedAudioKeys] = useState<Set<string>>(() => new Set())
+  const [audioRetryToken, setAudioRetryToken] = useState(0)
+  const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false)
+  const [activeLayerReadyKey, setActiveLayerReadyKey] = useState<string | null>(null)
+  const [outgoingLayerReadyKey, setOutgoingLayerReadyKey] = useState<string | null>(null)
+  const [skippedTransitionKey, setSkippedTransitionKey] = useState<string | null>(null)
   const foregroundVideo = useRef<HTMLVideoElement>(null)
   const backgroundVideo = useRef<HTMLVideoElement>(null)
-  const transitionLayer = useRef<HTMLDivElement>(null)
+  const outgoingForegroundVideo = useRef<HTMLVideoElement>(null)
+  const outgoingBackgroundVideo = useRef<HTMLVideoElement>(null)
   const previewPanel = useRef<HTMLElement>(null)
+  const audioActionVersion = useRef(0)
+  const elapsedSecondsRef = useRef(0)
+  const markAudioReady = useCallback((trackKey: string) => {
+    setReadyAudioKeys((current) => {
+      if (current.has(trackKey)) return current
+      const next = new Set(current)
+      next.add(trackKey)
+      return next
+    })
+    setFailedAudioKeys((current) => {
+      if (!current.has(trackKey)) return current
+      const next = new Set(current)
+      next.delete(trackKey)
+      return next
+    })
+  }, [])
+  const markAudioFailed = useCallback((trackKey: string) => {
+    setFailedAudioKeys((current) => {
+      if (current.has(trackKey)) return current
+      const next = new Set(current)
+      next.add(trackKey)
+      return next
+    })
+    setReadyAudioKeys((current) => {
+      if (!current.has(trackKey)) return current
+      const next = new Set(current)
+      next.delete(trackKey)
+      return next
+    })
+  }, [])
   const previewSeconds = Math.max(0.5, config.timing.mode === 'fixed' ? config.timing.seconds : 2.5)
   const previewDuration = Math.max(1, config.output.durationSeconds)
   const previewElapsed = Math.min(elapsedSeconds, Math.max(0, previewDuration - 0.01))
@@ -534,11 +614,44 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const trimStart = activeEdit?.trimStart ?? 0
   const trimEnd = activeEdit?.trimEnd ?? activeClip?.durationSeconds ?? null
   const transition = { ...DEFAULT_TRANSITION, ...(config.transition ?? {}) }
+  const shortestPreviewSegment = Math.min(
+    ...previewCuts.slice(1).map((cut, index) => cut - previewCuts[index]),
+  )
+  // Keep the browser preview on the same overlap window used by the FFmpeg renderer.
+  const transitionDuration = transition.preset === 'cut'
+    ? 0
+    : Math.min(transition.durationSeconds, Math.max(0.1, shortestPreviewSegment - 0.05))
+  const segmentStart = previewCuts[segmentIndex] ?? 0
+  const transitionElapsed = Math.max(0, previewElapsed - segmentStart)
+  const transitionActive = segmentIndex > 0 && transitionDuration > 0 && transitionElapsed < transitionDuration
+  const previousClip = segmentIndex > 0 && clipOrder.length > 0
+    ? clipOrder[(segmentIndex - 1) % clipOrder.length]
+    : null
+  const previousEdit = previousClip ? getAdClipEdit(config, previousClip.id) : undefined
+  const previousFocusX = previousEdit?.framingOverride ? previousEdit.focusX : config.framing?.focusX ?? DEFAULT_FRAMING.focusX
+  const previousFocusY = previousEdit?.framingOverride ? previousEdit.focusY : config.framing?.focusY ?? DEFAULT_FRAMING.focusY
+  const previousZoom = previousEdit?.framingOverride ? previousEdit.zoom : 1
+  const previousSpeed = previousEdit?.speed ?? 1
+  const previousTrimStart = previousEdit?.trimStart ?? 0
+  const previousTrimEnd = previousEdit?.trimEnd ?? previousClip?.durationSeconds ?? null
+  const previousSegmentDuration = segmentIndex > 0
+    ? previewCuts[segmentIndex] - previewCuts[segmentIndex - 1]
+    : 0
+  const previousSourceDuration = previousTrimEnd === null
+    ? Math.max(0.01, previousClip?.durationSeconds ?? 0.01)
+    : Math.max(0.01, previousTrimEnd - previousTrimStart)
+  const previousSourceTime = previousTrimStart + ((previousSegmentDuration * previousSpeed) % previousSourceDuration)
   const media = useMediaBlobUrl(
     `asset:${project.id}:${activeClip?.id ?? 'none'}`,
     activeClip ? adProjectApi.assetContentUrl(project.id, activeClip.id) : '',
     () => adProjectApi.assetContent(project.id, activeClip!.id),
     Boolean(activeClip),
+  )
+  const previousMedia = useMediaBlobUrl(
+    `asset:${project.id}:${previousClip?.id ?? 'none'}`,
+    previousClip ? adProjectApi.assetContentUrl(project.id, previousClip.id) : '',
+    () => adProjectApi.assetContent(project.id, previousClip!.id),
+    Boolean(previousClip),
   )
   const nextClip = clipOrder.length > 1 ? clipOrder[(clipIndex + 1) % clipOrder.length] : null
   const nextMedia = useMediaBlobUrl(
@@ -554,6 +667,22 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
     () => adProjectApi.assetContent(project.id, followingClip!.id),
     Boolean(followingClip),
   )
+  const activeLayerKey = activeClip && media.url ? media.url : null
+  const transitionLayerKey = previousClip ? `${seekVersion}:${segmentIndex}:${previousClip.id}` : null
+  const preparedOutgoingClip = transitionActive ? previousClip : activeClip
+  const preparedOutgoingUrl = transitionActive ? previousMedia.url : media.url
+  const preparedOutgoingFocusX = transitionActive ? previousFocusX : clipFocusX
+  const preparedOutgoingFocusY = transitionActive ? previousFocusY : clipFocusY
+  const preparedOutgoingZoom = transitionActive ? previousZoom : clipZoom
+  const preparedOutgoingSpeed = transitionActive ? previousSpeed : clipSpeed
+  const preparedOutgoingTrimStart = transitionActive ? previousTrimStart : trimStart
+  const preparedOutgoingTrimEnd = transitionActive ? previousTrimEnd : trimEnd
+  const preparedOutgoingSourceTime = transitionActive ? previousSourceTime : trimStart
+  const activeClipReady = Boolean(activeLayerKey && activeLayerReadyKey === activeLayerKey)
+  const outgoingLayerReady = Boolean(previousMedia.url && outgoingLayerReadyKey === previousMedia.url)
+  const transitionSkipped = Boolean(transitionLayerKey && skippedTransitionKey === transitionLayerKey)
+  const transitionLayersReady = !transitionActive || outgoingLayerReady || transitionSkipped
+  const renderedTransitionActive = transitionActive && activeClipReady && outgoingLayerReady && !transitionSkipped
   const configuredMusicTracks = config.musicTracks ?? []
   const timelineMusicTracks: AdMusicTrack[] = configuredMusicTracks.length > 0
     ? configuredMusicTracks
@@ -575,15 +704,24 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const musicAssetsById = new Map(
     (project.assets ?? []).filter((asset) => asset.kind === 'music').map((asset) => [asset.id, asset]),
   )
-  const hasMusic = timelineMusicTracks.length > 0
+  const requiredAudioTrackKeys = timelineMusicTracks.flatMap((track, index) => (
+    musicAssetsById.has(track.assetId) ? [`${track.assetId}:${index}`] : []
+  ))
+  const hasMusic = requiredAudioTrackKeys.length > 0
+  const audioReady = hasMusic && requiredAudioTrackKeys.every((key) => readyAudioKeys.has(key))
+  const audioFailed = requiredAudioTrackKeys.some((key) => failedAudioKeys.has(key))
 
   useEffect(() => {
-    if (!playing || clipOrder.length === 0) return undefined
+    if (!playing || !activeClipReady || !transitionLayersReady) return undefined
     const interval = window.setInterval(() => {
-      setElapsedSeconds((current) => (Math.min(current, previewDuration - 0.01) + 0.25) % previewDuration)
+      const current = elapsedSecondsRef.current
+      const next = (Math.min(current, previewDuration - 0.01) + 0.25) % previewDuration
+      elapsedSecondsRef.current = next
+      setElapsedSeconds(next)
+      if (next < current) setSeekVersion((version) => version + 1)
     }, 250)
     return () => window.clearInterval(interval)
-  }, [playing, clipOrder.length, previewDuration])
+  }, [activeClipReady, playing, previewDuration, transitionLayersReady])
 
   useEffect(() => {
     const videos = [foregroundVideo.current, backgroundVideo.current].filter((video): video is HTMLVideoElement => Boolean(video))
@@ -596,21 +734,16 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   }, [clipSpeed, hookActive, media.url, playing, segmentIndex, trimStart])
 
   useEffect(() => {
-    const element = transitionLayer.current
-    if (!element || transition.preset === 'cut' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const frames: Keyframe[] = transition.preset === 'slide-left'
-      ? [{ opacity: 0.35, transform: 'translateX(12%)' }, { opacity: 1, transform: 'translateX(0)' }]
-      : transition.preset === 'slide-up'
-        ? [{ opacity: 0.35, transform: 'translateY(10%)' }, { opacity: 1, transform: 'translateY(0)' }]
-        : transition.preset === 'zoom'
-          ? [{ opacity: 0.45, transform: 'scale(1.08)' }, { opacity: 1, transform: 'scale(1)' }]
-          : [{ opacity: 0.15, filter: 'brightness(1.25)' }, { opacity: 1, filter: 'brightness(1)' }]
-    const animation = element.animate(frames, {
-      duration: transition.durationSeconds * 1000,
-      easing: 'cubic-bezier(0.2, 0.75, 0.2, 1)',
-    })
-    return () => animation.cancel()
-  }, [hookActive, segmentIndex, transition.durationSeconds, transition.preset])
+    if (!preparedOutgoingClip || !preparedOutgoingUrl) return
+    const videos = [outgoingForegroundVideo.current, outgoingBackgroundVideo.current]
+      .filter((video): video is HTMLVideoElement => Boolean(video))
+    for (const video of videos) {
+      video.playbackRate = preparedOutgoingSpeed
+      if (Math.abs(video.currentTime - preparedOutgoingSourceTime) > 0.15) video.currentTime = preparedOutgoingSourceTime
+      if (playing) void video.play().catch(() => undefined)
+      else video.pause()
+    }
+  }, [playing, preparedOutgoingClip, preparedOutgoingSourceTime, preparedOutgoingSpeed, preparedOutgoingUrl])
 
   function keepWithinTrim(event: SyntheticEvent<HTMLVideoElement>) {
     if (trimEnd !== null && event.currentTarget.currentTime >= trimEnd) {
@@ -618,10 +751,27 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
     }
   }
 
+  function keepOutgoingWithinTrim(event: SyntheticEvent<HTMLVideoElement>) {
+    if (preparedOutgoingTrimEnd !== null && event.currentTarget.currentTime >= preparedOutgoingTrimEnd) {
+      event.currentTarget.currentTime = preparedOutgoingTrimStart
+    }
+  }
+
   function seekPreview(nextSeconds: number) {
     const next = Math.max(0, Math.min(previewDuration - 0.01, nextSeconds))
+    const nextFoundSegmentIndex = previewCuts.findIndex((cut, index) => (
+      index < previewCuts.length - 1 && next >= cut && next < previewCuts[index + 1]
+    ))
+    const nextSegmentIndex = Math.max(0, nextFoundSegmentIndex)
+    const nextPreviousClip = nextSegmentIndex > 0 && clipOrder.length > 0
+      ? clipOrder[(nextSegmentIndex - 1) % clipOrder.length]
+      : null
+    const nextSeekVersion = seekVersion + 1
+    elapsedSecondsRef.current = next
+    setOutgoingLayerReadyKey(null)
     setElapsedSeconds(next)
-    setSeekVersion((version) => version + 1)
+    setSkippedTransitionKey(nextPreviousClip ? `${nextSeekVersion}:${nextSegmentIndex}:${nextPreviousClip.id}` : null)
+    setSeekVersion(nextSeekVersion)
   }
 
   function seekToClip(assetId: number) {
@@ -629,6 +779,59 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
       clipOrder[index % Math.max(1, clipOrder.length)]?.id === assetId && !(hookClip && index === 0)
     ))
     seekPreview(targetSegment >= 0 ? previewCuts[targetSegment] : 0)
+  }
+
+  function playPreviewAudioFromGesture() {
+    const actionVersion = ++audioActionVersion.current
+    const audioElements = Array.from(previewPanel.current?.querySelectorAll<HTMLAudioElement>('.ad-preview-audio') ?? [])
+    setAudioPlaybackBlocked(false)
+    const attempts = audioElements.map((audio) => {
+      audio.muted = false
+      return audio.play()
+    })
+    if (attempts.length === 0) return
+    void Promise.allSettled(attempts).then((results) => {
+      if (audioActionVersion.current !== actionVersion) return
+      if (results.every((result) => result.status === 'rejected')) {
+        setAudioPlaybackBlocked(true)
+        setMuted(true)
+        audioElements.forEach((audio) => { audio.muted = true })
+      }
+    })
+  }
+
+  function togglePreviewSound() {
+    if (!hasMusic || !audioReady) return
+    if (!muted) {
+      audioActionVersion.current += 1
+      setMuted(true)
+      setAudioPlaybackBlocked(false)
+      previewPanel.current?.querySelectorAll<HTMLAudioElement>('.ad-preview-audio').forEach((audio) => { audio.muted = true })
+      return
+    }
+    setMuted(false)
+    setPlaying(true)
+    playPreviewAudioFromGesture()
+  }
+
+  function retryPreviewAudio() {
+    audioActionVersion.current += 1
+    setMuted(true)
+    setAudioPlaybackBlocked(false)
+    setFailedAudioKeys(new Set())
+    setReadyAudioKeys(new Set())
+    mediaBlobRetrySequence += 1
+    setAudioRetryToken(mediaBlobRetrySequence)
+  }
+
+  function togglePreviewPlayback() {
+    if (playing) {
+      setPlaying(false)
+      previewPanel.current?.querySelectorAll<HTMLAudioElement>('.ad-preview-audio').forEach((audio) => audio.pause())
+      return
+    }
+    setPlaying(true)
+    if (!muted && audioReady) playPreviewAudioFromGesture()
   }
 
   const legacyFilter = {
@@ -647,6 +850,20 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
     effects.temperature === 0 ? '' : `sepia(${Math.abs(effects.temperature) * 0.16}) hue-rotate(${effects.temperature * -8}deg)`,
   ].filter(Boolean).join(' ')
   const preset = outputPresetFor(config.output)
+  const transitionLabel = {
+    cut: 'Corte seco',
+    fade: 'Suave',
+    dissolve: 'Dissolver',
+    'slide-left': 'Deslizar para o lado',
+    'slide-up': 'Deslizar para cima',
+    zoom: 'Aproximação',
+  }[transition.preset]
+  const transitionSfxLabel = {
+    none: '',
+    click: 'Estalo',
+    pop: 'Impacto leve',
+    whoosh: 'Passagem',
+  }[transition.sfx]
   const framing = config.framing ?? DEFAULT_FRAMING
   const objectPosition = `${clipFocusX}% ${clipFocusY}%`
   const isReelsFormat = config.output.width * 16 === config.output.height * 9
@@ -658,16 +875,16 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
 
   return (
     <section ref={previewPanel} className="ad-stage-panel">
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <div>
+      <div className="ad-preview-toolbar">
+        <div className="min-w-0">
           <h2 className="text-base font-semibold text-white">Prévia da composição</h2>
-          <p className="mt-1 text-xs text-white/55">Composição ao vivo com enquadramento, cortes, texto e transições.</p>
+          <p className="mt-0.5 truncate text-[11px] text-white/50">{preset?.label ?? `${config.output.width} × ${config.output.height}`} · {previewDuration}s</p>
         </div>
-          <div className="flex gap-1 rounded-lg bg-white/10 p-1">
+          <div className="ad-preview-toolbar-actions">
             <button
               type="button"
               onClick={() => setShowSafeZone((current) => !current)}
-              className={`rounded-md p-1.5 ${showSafeZone ? 'bg-white/15 text-white' : 'text-white/55 hover:bg-white/10 hover:text-white'}`}
+              className={`ad-preview-tool-button ${showSafeZone ? 'ad-preview-tool-button-active' : ''}`}
               aria-label={showSafeZone ? 'Ocultar área segura' : 'Mostrar área segura'}
               aria-pressed={showSafeZone}
               title="Alternar área segura"
@@ -677,40 +894,44 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
             <button
               type="button"
               onClick={() => setShowPlacementChrome((current) => !current)}
-              className={`rounded-md p-1.5 ${showPlacementChrome ? 'bg-white/15 text-white' : 'text-white/55 hover:bg-white/10 hover:text-white'}`}
+              className={`ad-preview-tool-button ${showPlacementChrome ? 'ad-preview-tool-button-active' : ''}`}
               aria-label={showPlacementChrome ? 'Ocultar simulação da interface da Meta' : 'Mostrar simulação da interface da Meta'}
               aria-pressed={showPlacementChrome}
               title="Simular interface da Meta"
             >
               <Clapperboard size={15} />
             </button>
-            {hasMusic ? (
-              <button
-                type="button"
-                onClick={() => {
-                  const nextMuted = !muted
-                  setMuted(nextMuted)
-                  if (!nextMuted) {
-                    previewPanel.current?.querySelectorAll<HTMLAudioElement>('.ad-preview-audio').forEach((audio) => void audio.play().catch(() => undefined))
-                  }
-                }}
-                className="rounded-md p-1.5 text-white/80 hover:bg-white/10 hover:text-white"
-                aria-label={muted ? 'Ouvir trilha da prévia' : 'Silenciar trilha da prévia'}
-                title={muted ? 'Ouvir trilha' : 'Silenciar trilha'}
-              >
-                {muted ? <VolumeX size={15} /> : <Volume2 size={15} />}
-              </button>
-            ) : null}
             <button
-            type="button"
-            onClick={() => setPlaying((current) => !current)}
-            className="rounded-md p-1.5 text-white/80 hover:bg-white/10 hover:text-white"
-            aria-label={playing ? 'Pausar prévia' : 'Reproduzir prévia'}
-          >
-            {playing ? <Pause size={15} /> : <Play size={15} />}
-          </button>
+              type="button"
+              onClick={togglePreviewSound}
+              disabled={!hasMusic || !audioReady}
+              className={`ad-preview-tool-button ad-preview-sound-button ${hasMusic && !muted ? 'ad-preview-tool-button-active' : ''}`}
+              aria-label={!hasMusic ? 'Nenhuma trilha adicionada' : audioFailed ? 'Trilha indisponível' : !audioReady ? 'Preparando trilha da prévia' : muted ? 'Ligar trilha da prévia' : 'Desligar trilha da prévia'}
+              aria-pressed={hasMusic ? !muted : false}
+              title={!hasMusic ? 'Adicione uma trilha para ouvir' : audioFailed ? 'Não foi possível carregar a trilha' : !audioReady ? 'Preparando trilha' : muted ? 'Ligar trilha' : 'Desligar trilha'}
+            >
+              {muted || !hasMusic ? <VolumeX size={15} /> : <Volume2 size={15} />}
+              <span>{!hasMusic ? 'Sem trilha' : audioFailed ? 'Som indisponível' : !audioReady ? 'Preparando' : muted ? 'Som desligado' : 'Som ligado'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={togglePreviewPlayback}
+              className="ad-preview-tool-button"
+              aria-label={playing ? 'Pausar prévia' : 'Reproduzir prévia'}
+              title={playing ? 'Pausar prévia' : 'Reproduzir prévia'}
+            >
+              {playing ? <Pause size={15} /> : <Play size={15} />}
+            </button>
+          </div>
         </div>
-      </div>
+
+      {audioFailed ? (
+        <p role="status" className="ad-preview-audio-status">
+          Não foi possível carregar a trilha. <button type="button" onClick={retryPreviewAudio}>Tentar novamente</button>
+        </p>
+      ) : audioPlaybackBlocked ? (
+        <p role="status" className="ad-preview-audio-status">O navegador bloqueou o áudio. Toque em “Som desligado” para tentar novamente.</p>
+      ) : null}
 
         <div
           className="ad-phone-stage"
@@ -720,7 +941,50 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
           }}
         >
           {activeClip && media.url ? (
-            <div ref={transitionLayer} className="ad-preview-transition">
+            <>
+              {preparedOutgoingClip && preparedOutgoingUrl ? (
+                <div className={`pointer-events-none absolute inset-0 z-0 ${transitionActive && outgoingLayerReady && !transitionSkipped ? 'opacity-100' : 'opacity-0'}`} aria-hidden="true">
+                  {framing.mode === 'contain-blur' ? (
+                    <video
+                      ref={outgoingBackgroundVideo}
+                      src={preparedOutgoingUrl}
+                      muted
+                      playsInline
+                      preload="auto"
+                      onLoadedMetadata={(event) => { event.currentTarget.currentTime = preparedOutgoingSourceTime; event.currentTarget.playbackRate = preparedOutgoingSpeed }}
+                      onTimeUpdate={keepOutgoingWithinTrim}
+                      className="absolute -inset-[7%] h-[114%] w-[114%] object-cover opacity-75 blur-xl"
+                      style={{
+                        filter: `${filter === 'none' ? '' : filter} blur(20px)`,
+                        objectPosition: `${preparedOutgoingFocusX}% ${preparedOutgoingFocusY}%`,
+                        transform: `scale(${Math.max(1, preparedOutgoingZoom)})`,
+                      }}
+                    />
+                  ) : null}
+                  <video
+                    ref={outgoingForegroundVideo}
+                    src={preparedOutgoingUrl}
+                    muted
+                    playsInline
+                    preload="auto"
+                    onLoadedMetadata={(event) => { event.currentTarget.currentTime = preparedOutgoingSourceTime; event.currentTarget.playbackRate = preparedOutgoingSpeed }}
+                    onCanPlay={() => {
+                      if (preparedOutgoingUrl) setOutgoingLayerReadyKey(preparedOutgoingUrl)
+                    }}
+                    onTimeUpdate={keepOutgoingWithinTrim}
+                    className={`absolute inset-0 h-full w-full ${framing.mode === 'cover' ? 'object-cover' : 'object-contain'}`}
+                    style={{
+                      filter,
+                      objectPosition: `${preparedOutgoingFocusX}% ${preparedOutgoingFocusY}%`,
+                      transform: `scale(${preparedOutgoingZoom})`,
+                    }}
+                  />
+                </div>
+              ) : null}
+              <div
+                className={`ad-preview-transition z-[1] ${renderedTransitionActive ? `ad-preview-transition-${transition.preset}` : ''}`}
+                style={{ '--ad-transition-duration': `${transitionDuration}s` } as CSSProperties}
+              >
               {framing.mode === 'contain-blur' ? (
                 <video
                   ref={backgroundVideo}
@@ -742,11 +1006,15 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
                 playsInline
                 preload="auto"
                 onLoadedMetadata={(event) => { event.currentTarget.currentTime = trimStart; event.currentTarget.playbackRate = clipSpeed }}
+                onCanPlay={() => {
+                  if (activeLayerKey) setActiveLayerReadyKey(activeLayerKey)
+                }}
                 onTimeUpdate={keepWithinTrim}
                 className={`absolute inset-0 h-full w-full ${framing.mode === 'cover' ? 'object-cover' : 'object-contain'}`}
                 style={{ filter, objectPosition, transform: `scale(${clipZoom})` }}
               />
-            </div>
+              </div>
+            </>
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-[radial-gradient(circle_at_70%_15%,#3d3764,#171725_58%)] px-8 text-center text-white/60">
             {activeClip ? <LoaderCircle size={30} className={media.error ? 'text-red-300' : 'animate-spin'} /> : <Film size={34} strokeWidth={1.5} />}
@@ -814,26 +1082,34 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
         </div>
       </div>
 
-      {activeMusicTracks.map((track, index) => {
+      {timelineMusicTracks.map((track, index) => {
         const asset = musicAssetsById.get(track.assetId)
+        const trackKey = `${track.assetId}:${index}`
+        const active = previewElapsed >= track.startSeconds && previewElapsed < (track.endSeconds ?? previewDuration)
         return asset ? (
           <PreviewAudioTrack
-            key={`${track.assetId}:${index}`}
+            key={trackKey}
             projectId={project.id}
             asset={asset}
             track={track}
+            trackKey={trackKey}
+            active={active}
             elapsedSeconds={previewElapsed}
             previewDuration={previewDuration}
             playing={playing}
             muted={muted}
             seekVersion={seekVersion}
+            retryToken={audioRetryToken}
+            onReady={markAudioReady}
+            onError={markAudioFailed}
           />
         ) : null
       })}
-      {nextMedia.url ? <video src={nextMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
-      {followingMedia.url ? <video src={followingMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
+      {previousClip && previousMedia.url ? <video src={previousMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
+      {nextClip && nextMedia.url ? <video src={nextMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
+      {followingClip && followingMedia.url ? <video src={followingMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
 
-      <div className="mt-4">
+      <div className="ad-preview-timeline">
         <input
           type="range"
           min={0}
@@ -862,14 +1138,14 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
           />
         ))}
       </div>
-      <div className="mt-3 flex flex-wrap gap-1.5 text-[10px] font-medium text-white/60">
-        <span className="rounded-md bg-[#ff735e]/20 px-2 py-1 text-orange-100">Prévia da variação 1</span>
-        <span className="rounded-md bg-white/10 px-2 py-1">{transition.preset === 'cut' ? 'Corte seco' : transition.preset}</span>
-        {transition.sfx !== 'none' ? <span className="rounded-md bg-white/10 px-2 py-1">SFX {transition.sfx} · {Math.round(transition.sfxVolume * 100)}% no render</span> : null}
-        {hasMusic ? <span className="rounded-md bg-white/10 px-2 py-1">{activeMusicTracks.length > 1 ? `${activeMusicTracks.length} trilhas mixadas` : 'Trilha ativa'}</span> : null}
-        {hookActive ? <span className="rounded-md bg-orange-400/20 px-2 py-1 text-orange-100">Gancho</span> : null}
-        {(effects.sharpness > 0 || effects.vignette > 0 || effects.grain > 0 || effects.glow > 0) ? <span className="rounded-md bg-white/10 px-2 py-1">FX aproximados · render final no servidor</span> : null}
-        {config.timing.mode === 'beat' ? <span className="rounded-md bg-violet-500/20 px-2 py-1 text-violet-100">Batidas estimadas</span> : null}
+      <div className="ad-preview-meta">
+        <span className="text-orange-100">Variação 1</span>
+        <span>{transitionLabel}</span>
+        {transitionSfxLabel ? <span title={`${Math.round(transition.sfxVolume * 100)}% no vídeo final`}>Som de transição: {transitionSfxLabel}</span> : null}
+        {hasMusic ? <span>{activeMusicTracks.length > 1 ? `${activeMusicTracks.length} trilhas tocando` : 'Trilha pronta'}</span> : null}
+        {hookActive ? <span className="text-orange-100">Gancho</span> : null}
+        {(effects.sharpness > 0 || effects.vignette > 0 || effects.grain > 0 || effects.glow > 0) ? <span>Visual aproximado</span> : null}
+        {config.timing.mode === 'beat' ? <span className="text-violet-100">Cortes por batida estimados</span> : null}
       </div>
     </section>
   )
@@ -1042,10 +1318,13 @@ export default function AdLibraryPage() {
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [musicUrl, setMusicUrl] = useState('')
+  const [musicRightsConfirmed, setMusicRightsConfirmed] = useState(false)
   const [hydratedProjectId, setHydratedProjectId] = useState<number | null>(null)
   const loadedProjectId = useRef<number | null>(null)
   const latestDraft = useRef(draft)
   const latestDraftName = useRef(draftName)
+  const textAreaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({})
 
   useEffect(() => {
     latestDraft.current = draft
@@ -1225,6 +1504,34 @@ export default function AdLibraryPage() {
       await queryClient.invalidateQueries({ queryKey: ['ad-projects', activeId] })
     },
   })
+  const importMusic = useMutation({
+    mutationFn: (variables: { url: string; projectId: number }) => adProjectApi.importMusic(variables.projectId, variables.url),
+    onSuccess: async ({ asset, project: updatedProject }) => {
+      const projectId = updatedProject.id
+      const track = updatedProject.config.musicTracks.find((item) => item.assetId === asset.id)
+      queryClient.setQueryData(['ad-projects', projectId], updatedProject)
+      if (activeId === projectId) {
+        setDraft((value) => {
+          const normalized = normaliseCreativeConfig(value)
+          return {
+            ...normalized,
+            musicAssetId: normalized.musicAssetId ?? asset.id,
+            musicTracks: track && !normalized.musicTracks.some((item) => item.assetId === asset.id)
+              ? [...normalized.musicTracks, track]
+              : normalized.musicTracks,
+          }
+        })
+      }
+      setMusicUrl('')
+      setMusicRightsConfirmed(false)
+      setError(null)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['ad-projects'] }),
+        queryClient.invalidateQueries({ queryKey: ['ad-projects', projectId] }),
+      ])
+    },
+    onError: (cause) => setError(apiErrorMessage(cause)),
+  })
   const removeAsset = useMutation({
     mutationFn: async (asset: AdAsset) => {
       const persisted = normaliseCreativeConfig(draft)
@@ -1336,6 +1643,20 @@ export default function AdLibraryPage() {
     }))
   }
 
+  function insertTextEmoji(index: number, emoji: string) {
+    const textarea = textAreaRefs.current[index]
+    const currentText = draft.texts[index] ?? ''
+    const start = textarea?.selectionStart ?? currentText.length
+    const end = textarea?.selectionEnd ?? start
+    const nextText = `${currentText.slice(0, start)}${emoji}${currentText.slice(end)}`
+    if (nextText.length > 280) return
+    updateText(index, nextText)
+    requestAnimationFrame(() => {
+      textarea?.focus()
+      textarea?.setSelectionRange(start + emoji.length, start + emoji.length)
+    })
+  }
+
   function toggleAsset(asset: AdAsset) {
     const normalized = normaliseCreativeConfig(draft)
     const selected = normalized.musicTracks.some((track) => track.assetId === asset.id)
@@ -1367,6 +1688,33 @@ export default function AdLibraryPage() {
       return
     }
     upload.mutate({ kind: 'music', files })
+  }
+
+  function submitMusicUrl() {
+    const availableSlots = 8 - normaliseCreativeConfig(draft).musicTracks.length
+    if (availableSlots <= 0) {
+      setError('A trilha aceita até 8 faixas. Remova uma faixa antes de importar outra.')
+      return
+    }
+    if (!musicRightsConfirmed) {
+      setError('Confirme que você pode usar este áudio no anúncio.')
+      return
+    }
+    try {
+      const url = new URL(musicUrl.trim())
+      if (url.protocol !== 'https:') {
+        setError('Use um link HTTPS direto para um arquivo de áudio.')
+        return
+      }
+      if (/(^|\.)(youtube\.com|youtu\.be|spotify\.com)$/.test(url.hostname.toLowerCase())) {
+        setError('Links do YouTube e Spotify não fornecem um arquivo de áudio para importar aqui. Envie um arquivo licenciado ou cole um link HTTPS direto para ele.')
+        return
+      }
+    } catch {
+      setError('Cole um link HTTPS direto para um arquivo de áudio.')
+      return
+    }
+    importMusic.mutate({ url: musicUrl.trim(), projectId: activeId! })
   }
 
   function selectProject(projectId: number) {
@@ -1429,8 +1777,8 @@ export default function AdLibraryPage() {
         </div>
       ) : (
         <>
-          <div className="grid items-start gap-5 xl:grid-cols-[240px_minmax(310px,420px)_minmax(360px,1fr)]">
-            <aside className="rounded-2xl border border-zinc-200 bg-white p-3 xl:sticky xl:top-0">
+          <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-5 xl:grid-cols-[240px_minmax(310px,420px)_minmax(360px,1fr)]">
+            <aside className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-3 xl:sticky xl:top-0">
               <div className="flex items-center justify-between px-2 pb-3 pt-1">
                 <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800"><FolderOpen size={16} /> Projetos</div>
                 <span className="text-xs text-zinc-400">{projects.data.length}</span>
@@ -1463,7 +1811,7 @@ export default function AdLibraryPage() {
               <>
                 <PhonePreview project={current} config={draft} />
 
-                <div className="space-y-5">
+                <div className="min-w-0 space-y-5">
                   <section className="rounded-2xl border border-zinc-200 bg-white p-5">
                     <div className="flex flex-wrap items-center gap-2">
                       <Input
@@ -1506,12 +1854,13 @@ export default function AdLibraryPage() {
 
                   <section className="rounded-2xl border border-zinc-200 bg-white p-5">
                     <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Music2 size={18} className="text-violet-600" /> Música de fundo</h2>
-                    <p className="mt-1 text-xs leading-5 text-zinc-500">Use sua própria faixa. O volume e os fades são aplicados no render.</p>
+                    <p className="mt-1 text-xs leading-5 text-zinc-500">Envie um arquivo de áudio ou cole o link HTTPS direto de um arquivo que você pode usar no anúncio.</p>
                     <div className="mt-4 space-y-2">
-                      {music.map((asset) => (
+                      {music.map((asset, index) => (
                         <AssetRow
                           key={asset.id}
                           asset={asset}
+                          ordinal={index + 1}
                           selected={(draft.musicTracks ?? []).some((track) => track.assetId === asset.id) || draft.musicAssetId === asset.id}
                           onToggle={() => toggleAsset(asset)}
                           removing={removeAsset.isPending && removeAsset.variables?.id === asset.id}
@@ -1522,6 +1871,30 @@ export default function AdLibraryPage() {
                         <UploadZone kind="music" multiple busy={upload.isPending && upload.variables?.kind === 'music'} onFiles={uploadMusic} />
                       </div>
                     </div>
+                    <form className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3" onSubmit={(event) => { event.preventDefault(); submitMusicUrl() }}>
+                      <label htmlFor="ad-music-url" className="text-xs font-semibold text-zinc-800">Importar áudio por link direto</label>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+                        <input
+                          id="ad-music-url"
+                          type="url"
+                          required
+                          maxLength={2048}
+                          placeholder="https://meus-arquivos.exemplo.com/musica.mp3"
+                          value={musicUrl}
+                          onChange={(event) => setMusicUrl(event.target.value)}
+                          className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500"
+                        />
+                        <Button type="submit" variant="secondary" disabled={importMusic.isPending || upload.isPending || !musicRightsConfirmed}>
+                          {importMusic.isPending ? <LoaderCircle size={16} className="animate-spin" /> : <Download size={16} />}
+                          {importMusic.isPending ? 'Importando…' : 'Importar áudio'}
+                        </Button>
+                      </div>
+                      <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs leading-5 text-zinc-700">
+                        <input type="checkbox" checked={musicRightsConfirmed} onChange={(event) => setMusicRightsConfirmed(event.target.checked)} className="mt-1 accent-violet-600" />
+                        Confirmo que tenho os direitos para usar este áudio em anúncios.
+                      </label>
+                      <p className="mt-2 text-[11px] leading-4 text-zinc-600">Use um arquivo de áudio público com até 10 minutos. YouTube e Spotify não oferecem download de faixas para sincronizar com anúncios; nesses casos, envie o arquivo licenciado.</p>
+                    </form>
                   </section>
 
                   <section className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -1542,6 +1915,7 @@ export default function AdLibraryPage() {
                         <div key={index} className="flex items-start gap-2">
                           <span className="mt-2.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-50 text-[11px] font-bold text-violet-700">{index + 1}</span>
                           <textarea
+                            ref={(node) => { textAreaRefs.current[index] = node }}
                             value={text}
                             onChange={(event) => updateText(index, event.target.value)}
                             rows={2}
@@ -1549,13 +1923,16 @@ export default function AdLibraryPage() {
                             aria-label={`Texto ${index + 1}`}
                             className="min-h-16 flex-1 resize-y rounded-xl border border-zinc-300 px-3 py-2 text-sm leading-5 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
                           />
-                          <button
-                            type="button"
-                            onClick={() => setDraft((value) => ({ ...value, texts: value.texts.filter((_, textIndex) => textIndex !== index) }))}
-                            disabled={draft.texts.length === 1}
-                            className="mt-2 rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30"
-                            aria-label={`Remover texto ${index + 1}`}
-                          ><Trash2 size={15} /></button>
+                          <div className="mt-1 flex shrink-0 flex-col gap-1">
+                            <EmojiPicker onSelect={(emoji) => insertTextEmoji(index, emoji)} ariaLabel={`Adicionar emoji ao texto ${index + 1}`} align="right" />
+                            <button
+                              type="button"
+                              onClick={() => setDraft((value) => ({ ...value, texts: value.texts.filter((_, textIndex) => textIndex !== index) }))}
+                              disabled={draft.texts.length === 1}
+                              className="rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30"
+                              aria-label={`Remover texto ${index + 1}`}
+                            ><Trash2 size={15} /></button>
+                          </div>
                         </div>
                       ))}
                     </div>

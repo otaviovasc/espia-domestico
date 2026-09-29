@@ -7,6 +7,7 @@ import {
   AdAssetKindSchema,
   AdProjectConfigSchema,
   CreateAdProjectSchema,
+  ImportAdMusicSchema,
   UpdateAdProjectSchema,
 } from '@/dtos/adProject'
 import { BadRequestError, UnauthorizedError } from '@/middleware/Error/AppError'
@@ -106,6 +107,14 @@ export class AdProjectController {
     } finally {
       await Promise.all(files.map((file) => rm(file.path, { force: true }).catch(() => undefined)))
     }
+  }
+
+  async importMusic(req: Request, res: Response): Promise<void> {
+    const input = ImportAdMusicSchema.parse(req.body)
+    res.status(201).json({
+      success: true,
+      data: await this.service.importMusic(this.userId(req), this.id(req.params.id), input),
+    })
   }
 
   async removeAsset(req: Request, res: Response): Promise<void> {

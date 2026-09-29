@@ -4,6 +4,7 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { injectable } from 'tsyringe'
 import type { Express } from 'express'
+import type { Transaction } from 'sequelize'
 import { env } from '@/config/env'
 import { AdAsset } from '@/database/models/AdAsset'
 import type { AdRenderOutput } from '@/database/models/AdRenderJob'
@@ -134,7 +135,12 @@ export function serializeAdAsset(asset: AdAsset) {
 
 @injectable()
 export class AdMediaService {
-  async store(projectId: number, kind: AdAssetKind, file: Express.Multer.File): Promise<AdAsset> {
+  async store(
+    projectId: number,
+    kind: AdAssetKind,
+    file: Pick<Express.Multer.File, 'path' | 'originalname' | 'mimetype' | 'size'>,
+    options: { transaction?: Transaction } = {},
+  ): Promise<AdAsset> {
     const mimeAllowed =
       kind === 'clip'
         ? file.mimetype.startsWith('video/')
@@ -180,17 +186,20 @@ export class AdMediaService {
         { removeSource: true },
       )
       try {
-        return await AdAsset.create({
-          projectId,
-          kind,
-          originalName: path.basename(file.originalname).slice(0, 255),
-          mimeType: file.mimetype,
-          sizeBytes: file.size,
-          storagePath,
-          durationSeconds,
-          width: stream.width ?? null,
-          height: stream.height ?? null,
-        })
+        return await AdAsset.create(
+          {
+            projectId,
+            kind,
+            originalName: path.basename(file.originalname).slice(0, 255),
+            mimeType: file.mimetype,
+            sizeBytes: file.size,
+            storagePath,
+            durationSeconds,
+            width: stream.width ?? null,
+            height: stream.height ?? null,
+          },
+          options,
+        )
       } catch (error) {
         await adObjectStorage.remove(storagePath).catch(() => undefined)
         throw error

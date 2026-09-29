@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, type DragEvent } from 'react'
+import { memo, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
 import {
   ArrowDown,
   ArrowUp,
@@ -26,6 +26,7 @@ import type {
 import {
   clipSequenceValidation,
   DEFAULT_TRANSITION,
+  getAdAssetDisplayLabel,
   getAdClipEdit,
   MIN_TRIMMED_DURATION,
 } from '@/lib/adClipConfig'
@@ -104,6 +105,15 @@ interface ClipSequenceEditorProps {
   removingAssetId?: number | null
 }
 
+interface PointerDragState {
+  assetId: number
+  pointerId: number
+  startY: number
+  currentY: number
+  sourceHeight: number
+  target: { id: number; position: 'before' | 'after' } | null
+}
+
 function ClipSequenceEditor({
   assets,
   config,
@@ -112,9 +122,19 @@ function ClipSequenceEditor({
   removingAssetId = null,
 }: ClipSequenceEditorProps) {
   const [expandedId, setExpandedId] = useState<number | null>(null)
-  const [draggingId, setDraggingId] = useState<number | null>(null)
+  const [pointerDrag, setPointerDrag] = useState<PointerDragState | null>(null)
+  const [settledId, setSettledId] = useState<number | null>(null)
+  const [reorderMessage, setReorderMessage] = useState('')
+  const listRef = useRef<HTMLDivElement>(null)
+  const pointerDragRef = useRef<PointerDragState | null>(null)
+  const draggingId = pointerDrag?.assetId ?? null
+  const dropTarget = pointerDrag?.target ?? null
   const selectedSet = useMemo(() => new Set(config.selectedClipIds), [config.selectedClipIds])
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
+  const assetLabelById = useMemo(
+    () => new Map(assets.map((asset, index) => [asset.id, getAdAssetDisplayLabel(asset, index)])),
+    [assets],
+  )
   const selectableIds = useMemo(
     () => assets.filter((asset) => asset.durationSeconds >= MIN_TRIMMED_DURATION).map((asset) => asset.id),
     [assets],
@@ -157,14 +177,14 @@ function ClipSequenceEditor({
       const isHook = Boolean(hookAsset && index === 0)
       return [{
         key: `scene:${index}`,
-        label: `${isHook ? 'Gancho' : `Cena ${index + 1}`} · ${asset.originalName} · ${seconds(segmentSeconds)}`,
+        label: `${isHook ? 'Gancho' : `Cena ${index + 1}`} · ${assetLabelById.get(asset.id) ?? 'Clipe'} · ${seconds(segmentSeconds)}`,
         seconds: segmentSeconds,
         className: isHook ? 'bg-fuchsia-500' : TIMELINE_COLORS[index % TIMELINE_COLORS.length],
       }]
     })
     const shortestScene = cuts.slice(1).reduce((shortest, end, index) => Math.min(shortest, end - cuts[index]), total)
     return { total, segments, estimated: config.timing.mode === 'beat', shortestScene }
-  }, [assetById, config])
+  }, [assetById, assetLabelById, config])
 
   function replaceOrder(ids: number[]) {
     onChange({ ...config, selectedClipIds: ids })
@@ -185,17 +205,97 @@ function ClipSequenceEditor({
     next[to] = next[from]
     next[from] = target
     replaceOrder(next)
+    setSettledId(assetId)
+    setReorderMessage(`${assetLabelById.get(assetId) ?? 'Clipe'} movido para a posição ${to + 1}.`)
   }
 
-  function dropOn(targetId: number, event: DragEvent<HTMLDivElement>) {
+  function setActivePointerDrag(next: PointerDragState | null) {
+    pointerDragRef.current = next
+    setPointerDrag(next)
+  }
+
+  function pointerTargetAt(clientY: number, sourceId: number) {
+    const rows = Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-clip-selected="true"]') ?? [])
+      .filter((row) => Number(row.dataset.clipAssetId) !== sourceId)
+    if (rows.length === 0) return null
+    const baseBounds = (row: HTMLElement) => {
+      const bounds = row.getBoundingClientRect()
+      const liveShift = Number.parseFloat(row.style.getPropertyValue('--clip-shift-y')) || 0
+      return { top: bounds.top - liveShift, height: bounds.height }
+    }
+    const target = rows.reduce((nearest, row) => {
+      const rowBounds = baseBounds(row)
+      const nearestBounds = baseBounds(nearest)
+      const rowDistance = Math.abs(clientY - (rowBounds.top + rowBounds.height / 2))
+      const nearestDistance = Math.abs(clientY - (nearestBounds.top + nearestBounds.height / 2))
+      return rowDistance < nearestDistance ? row : nearest
+    })
+    const targetId = Number(target.dataset.clipAssetId)
+    if (!Number.isFinite(targetId)) return null
+    const bounds = baseBounds(target)
+    return {
+      id: targetId,
+      position: clientY < bounds.top + bounds.height / 2 ? 'before' as const : 'after' as const,
+    }
+  }
+
+  function startPointerDrag(assetId: number, event: PointerEvent<HTMLButtonElement>) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return
+    const card = event.currentTarget.closest<HTMLElement>('[data-clip-card="true"]')
+    if (!card) return
     event.preventDefault()
-    if (draggingId === null || draggingId === targetId) return
-    const next = config.selectedClipIds.filter((id) => id !== draggingId)
-    const targetIndex = next.indexOf(targetId)
-    if (targetIndex < 0) return
-    next.splice(targetIndex, 0, draggingId)
-    replaceOrder(next)
-    setDraggingId(null)
+    event.currentTarget.focus()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const next: PointerDragState = {
+      assetId,
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      currentY: event.clientY,
+      sourceHeight: card.getBoundingClientRect().height,
+      target: null,
+    }
+    setActivePointerDrag(next)
+    setReorderMessage(`${assetLabelById.get(assetId) ?? 'Clipe'} em movimento. Escolha onde soltar.`)
+  }
+
+  function movePointerDrag(event: PointerEvent<HTMLButtonElement>) {
+    const current = pointerDragRef.current
+    if (!current || current.pointerId !== event.pointerId) return
+    event.preventDefault()
+    const target = Math.abs(event.clientY - current.startY) < 5
+      ? null
+      : pointerTargetAt(event.clientY, current.assetId)
+    setActivePointerDrag({ ...current, currentY: event.clientY, target })
+  }
+
+  function finishPointerDrag(event: PointerEvent<HTMLButtonElement>, cancelled = false) {
+    const current = pointerDragRef.current
+    if (!current || current.pointerId !== event.pointerId) return
+    event.preventDefault()
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+    if (!cancelled && current.target) {
+      const next = config.selectedClipIds.filter((id) => id !== current.assetId)
+      const targetIndex = next.indexOf(current.target.id)
+      if (targetIndex >= 0) {
+        const insertAt = targetIndex + (current.target.position === 'after' ? 1 : 0)
+        next.splice(insertAt, 0, current.assetId)
+        const changed = next.some((id, index) => id !== config.selectedClipIds[index])
+        if (changed) {
+          replaceOrder(next)
+          setSettledId(current.assetId)
+          setReorderMessage(`${assetLabelById.get(current.assetId) ?? 'Clipe'} movido para a posição ${insertAt + 1}.`)
+        }
+      }
+    }
+    setActivePointerDrag(null)
+  }
+
+  function reorderWithKeyboard(assetId: number, event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+    event.preventDefault()
+    move(assetId, event.key === 'ArrowUp' ? -1 : 1)
   }
 
   function resetEdit(assetId: number) {
@@ -206,6 +306,14 @@ function ClipSequenceEditor({
 
   const transition = { ...DEFAULT_TRANSITION, ...(config.transition ?? {}) }
   const effectiveTransitionSeconds = Math.min(transition.durationSeconds, Math.max(0.1, timeline.shortestScene - 0.05))
+  const dragSourceIndex = pointerDrag ? config.selectedClipIds.indexOf(pointerDrag.assetId) : -1
+  const dragInsertAt = pointerDrag?.target
+    ? (() => {
+        const remaining = config.selectedClipIds.filter((id) => id !== pointerDrag.assetId)
+        const targetIndex = remaining.indexOf(pointerDrag.target.id)
+        return targetIndex < 0 ? -1 : targetIndex + (pointerDrag.target.position === 'after' ? 1 : 0)
+      })()
+    : -1
 
   return (
     <div>
@@ -268,7 +376,17 @@ function ClipSequenceEditor({
           <p className="mt-1 text-xs text-zinc-400">Adicione vídeos para montar a sequência.</p>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div ref={listRef} className="space-y-2">
+          <p id="clip-reorder-help" className="px-1 text-[11px] text-zinc-500">
+            Arraste pela alça ou use as setas para mudar a ordem.
+          </p>
+          <p className="sr-only" aria-live="polite">{reorderMessage}</p>
+          <div className="clip-sequence-drag-status" data-active={draggingId !== null ? 'true' : 'false'} aria-hidden="true">
+            <GripVertical size={13} />
+            {dropTarget
+              ? `Solte ${dropTarget.position === 'before' ? 'antes' : 'depois'} de ${assetLabelById.get(dropTarget.id) ?? 'outro clipe'}`
+              : `Movendo ${draggingId === null ? 'clipe' : assetLabelById.get(draggingId) ?? 'clipe'}`}
+          </div>
           {ordered.map((asset) => {
             const selected = selectedSet.has(asset.id)
             const position = config.selectedClipIds.indexOf(asset.id)
@@ -280,18 +398,35 @@ function ClipSequenceEditor({
             const displayedFocusX = edit.framingOverride ? edit.focusX : config.framing.focusX
             const displayedFocusY = edit.framingOverride ? edit.focusY : config.framing.focusY
             const displayedZoom = edit.framingOverride ? edit.zoom : 1
+            const displayLabel = assetLabelById.get(asset.id) ?? 'Clipe'
+            const isDropTarget = dropTarget?.id === asset.id && draggingId !== asset.id
+            let liveShift = 0
+            if (pointerDrag && selected && asset.id !== pointerDrag.assetId && dragInsertAt >= 0) {
+              if (dragSourceIndex < dragInsertAt && position > dragSourceIndex && position <= dragInsertAt) {
+                liveShift = -(pointerDrag.sourceHeight + 8)
+              } else if (dragSourceIndex > dragInsertAt && position >= dragInsertAt && position < dragSourceIndex) {
+                liveShift = pointerDrag.sourceHeight + 8
+              }
+            }
+            const cardStyle = {
+              '--clip-shift-y': `${liveShift}px`,
+              '--clip-drag-y': `${pointerDrag?.assetId === asset.id ? pointerDrag.currentY - pointerDrag.startY : 0}px`,
+            } as CSSProperties
             return (
               <div
                 key={asset.id}
-                onDragOver={(event) => selected && event.preventDefault()}
-                onDrop={(event) => selected && dropOn(asset.id, event)}
-                className={`overflow-hidden rounded-xl border transition ${
+                data-clip-card="true"
+                data-clip-selected={selected ? 'true' : 'false'}
+                data-clip-asset-id={asset.id}
+                style={cardStyle}
+                onAnimationEnd={() => settledId === asset.id && setSettledId(null)}
+                className={`clip-sequence-card overflow-hidden rounded-xl border ${
                   draggingId === asset.id
-                    ? 'border-violet-400 bg-violet-50 opacity-60'
+                    ? 'clip-sequence-card-dragging border-violet-400 bg-violet-50'
                     : selected
                       ? 'border-violet-200 bg-white'
                       : 'border-zinc-200 bg-white opacity-75'
-                }`}
+                } ${isDropTarget ? `clip-sequence-drop-${dropTarget.position}` : ''} ${settledId === asset.id ? 'clip-sequence-card-settled' : ''}`}
               >
                 <div className="flex items-center gap-2.5 p-2.5">
                   <button
@@ -299,26 +434,32 @@ function ClipSequenceEditor({
                     onClick={() => toggle(asset.id)}
                     disabled={!selected && tooShort}
                     aria-pressed={selected}
-                    aria-label={selected ? `Retirar ${asset.originalName} da sequência` : `Adicionar ${asset.originalName} à sequência`}
+                    aria-label={selected ? `Retirar ${displayLabel} da sequência` : `Adicionar ${displayLabel} à sequência`}
                     className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-zinc-100 ${selected ? 'border-violet-600 bg-violet-600 text-white' : 'border-zinc-300 text-transparent hover:border-violet-400'}`}
                   >
                     <Check size={15} />
                   </button>
                   {selected ? (
-                    <span
-                      draggable
-                      onDragStart={() => setDraggingId(asset.id)}
-                      onDragEnd={() => setDraggingId(null)}
-                      className="hidden shrink-0 cursor-grab rounded p-0.5 text-zinc-300 active:cursor-grabbing sm:block"
+                    <button
+                      type="button"
+                      onPointerDown={(event) => startPointerDrag(asset.id, event)}
+                      onPointerMove={movePointerDrag}
+                      onPointerUp={(event) => finishPointerDrag(event)}
+                      onPointerCancel={(event) => finishPointerDrag(event, true)}
+                      onKeyDown={(event) => reorderWithKeyboard(asset.id, event)}
+                      aria-pressed={draggingId === asset.id}
+                      aria-describedby="clip-reorder-help"
+                      aria-label={`Reordenar ${displayLabel}. Posição ${position + 1} de ${config.selectedClipIds.length}.`}
+                      className="clip-sequence-drag-handle block shrink-0 cursor-grab rounded-md p-1 text-zinc-400 active:cursor-grabbing"
                       title="Arraste para reordenar"
-                    ><GripVertical size={16} aria-hidden="true" /></span>
+                    ><GripVertical size={16} aria-hidden="true" /></button>
                   ) : null}
                   <div className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-900 text-white">
                     {selected ? <span className="text-xs font-bold">{position + 1}</span> : <Film size={16} />}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="truncate text-sm font-medium text-zinc-800" title={asset.originalName}>{asset.originalName}</span>
+                      <span className="truncate text-sm font-medium text-zinc-800" title={displayLabel}>{displayLabel}</span>
                       {customized ? <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-700">Editado</span> : null}
                     </div>
                     <div className="mt-0.5 truncate text-[11px] text-zinc-500">
@@ -328,19 +469,19 @@ function ClipSequenceEditor({
                   </div>
                   {selected ? (
                     <div className="flex shrink-0 items-center gap-0.5">
-                      <button type="button" onClick={() => move(asset.id, -1)} disabled={position === 0} className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-violet-700 disabled:opacity-25" aria-label={`Mover ${asset.originalName} para cima`}><ArrowUp size={14} /></button>
-                      <button type="button" onClick={() => move(asset.id, 1)} disabled={position === config.selectedClipIds.length - 1} className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-violet-700 disabled:opacity-25" aria-label={`Mover ${asset.originalName} para baixo`}><ArrowDown size={14} /></button>
+                      <button type="button" onClick={() => move(asset.id, -1)} disabled={position === 0} className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-violet-700 disabled:opacity-25" aria-label={`Mover ${displayLabel} para cima`}><ArrowUp size={14} /></button>
+                      <button type="button" onClick={() => move(asset.id, 1)} disabled={position === config.selectedClipIds.length - 1} className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-violet-700 disabled:opacity-25" aria-label={`Mover ${displayLabel} para baixo`}><ArrowDown size={14} /></button>
                       <button
                         type="button"
                         onClick={() => setExpandedId(expanded ? null : asset.id)}
                         aria-expanded={expanded}
                         className={`rounded-lg p-1.5 ${expanded ? 'bg-violet-50 text-violet-700' : 'text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700'}`}
-                        aria-label={`Editar ${asset.originalName}`}
+                        aria-label={`Editar ${displayLabel}`}
                       ><ChevronsUpDown size={15} /></button>
                     </div>
                   ) : null}
                   {onRemove ? (
-                    <button type="button" disabled={removingAssetId === asset.id} onClick={() => onRemove(asset)} className="shrink-0 rounded-lg p-1.5 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30" aria-label={`Excluir ${asset.originalName}`}><Trash2 size={15} /></button>
+                    <button type="button" disabled={removingAssetId === asset.id} onClick={() => onRemove(asset)} className="shrink-0 rounded-lg p-1.5 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30" aria-label={`Excluir ${displayLabel}`}><Trash2 size={15} /></button>
                   ) : null}
                 </div>
 

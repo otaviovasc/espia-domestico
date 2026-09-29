@@ -731,6 +731,12 @@ export const adProjectApi = {
     for (const file of files) body.append('files', file)
     return unwrap<AdAsset[]>(await api.post(`/ad-projects/${encodeURIComponent(id)}/assets`, body))
   },
+  async importMusic(id: number, url: string): Promise<{ asset: AdAsset; project: AdProject }> {
+    return unwrap<{ asset: AdAsset; project: AdProject }>(await api.post(`/ad-projects/${encodeURIComponent(id)}/music/import`, {
+      url,
+      confirmRights: true,
+    }))
+  },
   async removeAsset(projectId: number, assetId: number): Promise<void> {
     await api.delete(`/ad-projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}`)
   },
