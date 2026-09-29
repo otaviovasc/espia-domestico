@@ -809,9 +809,16 @@ export class CampaignService {
     return running
   }
 
-  /** A RUNNING campaign is stalled when its heartbeat is stale (no live loop). */
+  /**
+   * A RUNNING campaign is stalled when no live loop owns it. A null heartbeat
+   * means exactly that — the API marked it RUNNING for worker pickup but no
+   * process has claimed it yet — so it is immediately claimable. Only a
+   * non-null (previously owned) heartbeat waits out the pacing-derived stall
+   * window before another process may resume it.
+   */
   private isStalledRunning(campaign: Campaign): boolean {
     if (campaign.status !== CAMPAIGN_STATUS_ENUM.RUNNING) return false
+    if (!campaign.heartbeatAt) return true
     const last = campaign.heartbeatAt ?? campaign.startedAt
     if (!last) return true
     return last.getTime() <= Date.now() - computeStallMs(campaign.safety)
@@ -1020,7 +1027,7 @@ export class CampaignService {
             await Campaign.update({ totalSkipped: skipped }, { where: { id: campaign.id } })
             return false
           }
-          const claimKey = `${claim.offerIdentity}\u0000${claim.groupId}`
+          const claimKey = `${offerIdentity(task.offer)}\u0000${task.group.id}`
           claims.set(claimKey, claim)
           stopHeartbeats.set(claimKey, this.startDeliveryClaimHeartbeat(claim))
           return true
