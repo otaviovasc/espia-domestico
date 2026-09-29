@@ -1,4 +1,4 @@
-import { Request, Response } from 'express'
+import { Request, Response, CookieOptions } from 'express'
 import { injectable, inject } from 'tsyringe'
 import { AuthService } from '@/services/AuthService'
 import { RegisterRequestSchema, LoginRequestSchema } from '@/dtos/auth'
@@ -14,16 +14,21 @@ export class AuthController {
   constructor(@inject(AuthService) private authService: AuthService) {}
 
   private setAuthCookie(res: Response, token: string): void {
-    res.cookie(AUTH_COOKIE_NAME, token, {
+    const options: CookieOptions & { partitioned?: boolean } = {
       httpOnly: true,
       secure: env.COOKIE_SECURE,
-      // Cross-service frontend (frontend.railway.app → backend.railway.app)
-      // needs SameSite=None + Secure, otherwise the browser drops the
-      // session cookie on cross-site fetch. Local dev keeps Lax.
+      // Cross-service frontend (espiadomestico.com.br → backend.up.railway.app)
+      // needs SameSite=None + Secure, otherwise the browser drops the session
+      // cookie on cross-site fetch. Local dev keeps Lax.
       sameSite: env.COOKIE_SECURE ? 'none' : 'lax',
       maxAge: SEVEN_DAYS_MS,
       path: '/',
-    })
+    }
+    // CHIPS: partition the cross-site cookie per top-level site so modern
+    // browsers store/send it even with third-party cookies blocked — while
+    // keeping it httpOnly (invisible to JS/XSS). Only meaningful with Secure.
+    if (env.COOKIE_SECURE) options.partitioned = true
+    res.cookie(AUTH_COOKIE_NAME, token, options)
   }
 
   /**
@@ -61,11 +66,21 @@ export class AuthController {
     const user = await this.authService.login(parsed.data)
     const token = generateToken({ id: user.id, uuid: user.uuid, role: user.role })
     this.setAuthCookie(res, token)
-    res.json({ success: true, data: user })
+    // Also return the token in the body. The SPA stores it and sends it as a
+    // Bearer header, so auth works even when the browser blocks the cross-site
+    // (third-party) session cookie.
+    res.json({ success: true, data: user, token })
   }
 
   async logout(_req: Request, res: Response): Promise<void> {
-    res.clearCookie(AUTH_COOKIE_NAME, { path: '/' })
+    const options: CookieOptions & { partitioned?: boolean } = {
+      path: '/',
+      httpOnly: true,
+      secure: env.COOKIE_SECURE,
+      sameSite: env.COOKIE_SECURE ? 'none' : 'lax',
+    }
+    if (env.COOKIE_SECURE) options.partitioned = true
+    res.clearCookie(AUTH_COOKIE_NAME, options)
     res.json({ success: true })
   }
 

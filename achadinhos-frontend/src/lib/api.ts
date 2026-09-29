@@ -3,9 +3,46 @@ import axios from 'axios'
 /** Same-origin in dev via Vite proxy; set VITE_API_BASE for a separate host. */
 const baseURL = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api/v1'
 
+const TOKEN_KEY = 'achadinhos_token'
+
+/**
+ * Bearer-token fallback for browsers that block the cross-site cookie even with
+ * CHIPS/Partitioned. Stored in sessionStorage (per-tab, cleared on tab close)
+ * rather than localStorage to shrink the XSS exposure window. The httpOnly,
+ * Partitioned session cookie remains the primary, JS-invisible mechanism.
+ */
+export function setAuthToken(token: string | null): void {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token)
+    else sessionStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // sessionStorage unavailable — cookie auth still applies.
+  }
+}
+
+export function getAuthToken(): string | null {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY)
+  } catch {
+    return null
+  }
+}
+
 export const api = axios.create({
   baseURL,
   withCredentials: true,
+})
+
+// Attach the stored token as a Bearer header on every request. The backend
+// accepts either the httpOnly cookie or this header, so auth survives even when
+// third-party cookies are blocked.
+api.interceptors.request.use((config) => {
+  const token = getAuthToken()
+  if (token) {
+    config.headers = config.headers ?? {}
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
 })
 
 // ── Types ───────────────────────────────────────────
@@ -175,10 +212,17 @@ export function apiErrorMessage(error: unknown): string {
 // ── Auth ────────────────────────────────────────────
 export const authApi = {
   async login(email: string, password: string): Promise<AuthUser> {
-    return unwrap<AuthUser>(await api.post('/auth/login', { email, password }))
+    const res = await api.post('/auth/login', { email, password })
+    const token = (res.data as { token?: string }).token
+    if (token) setAuthToken(token)
+    return (res.data as { data: AuthUser }).data
   },
   async logout(): Promise<void> {
-    await api.post('/auth/logout')
+    try {
+      await api.post('/auth/logout')
+    } finally {
+      setAuthToken(null)
+    }
   },
   async me(): Promise<AuthUser> {
     return unwrap<AuthUser>(await api.get('/auth/me'))
