@@ -65,7 +65,7 @@ test('categorization preserves input order under concurrent Jev responses', asyn
   assert.deepEqual(result.counts, { A: 0, B: 1, C: 1, D: 1 })
 })
 
-test('a failed Jev response stops scheduling further paid evaluations', async () => {
+test('a failed Jev response is reported after the parallel batch starts', async () => {
   const seen = []
   const input = Array.from({ length: 8 }, (_, index) => offer(`item ${index}`))
   await assert.rejects(
@@ -77,7 +77,23 @@ test('a failed Jev response stops scheduling further paid evaluations', async ()
     }),
     /provider unavailable/,
   )
-  assert.equal(seen.length, 4)
+  assert.equal(seen.length, input.length)
+})
+
+test('the full 100-product import can evaluate concurrently', async () => {
+  const input = Array.from({ length: MAX_IMPORT_ITEMS }, (_, index) => offer(`item ${index}`))
+  let started = 0
+  let release
+  const gate = new Promise((resolve) => { release = resolve })
+  const running = categorizeOffers(input, async () => {
+    started++
+    await gate
+    return 80
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(started, MAX_IMPORT_ITEMS)
+  release()
+  assert.equal((await running).offers.length, MAX_IMPORT_ITEMS)
 })
 
 test('Mercado Livre complete payload signals survive normalization', () => {

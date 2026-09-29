@@ -1,6 +1,7 @@
 import type { OfferInput } from '@/dtos/campaign'
 import { env } from '@/config/env'
 import { AppError } from '@/middleware/Error/AppError'
+import { MAX_IMPORT_ITEMS } from '@/services/OfferImportService'
 
 export type OfferCategory = 'A' | 'B' | 'C' | 'D'
 export type RelevanceEvaluator = (offer: OfferInput) => Promise<number>
@@ -104,7 +105,8 @@ export async function categorizeOffers(
   let hasError = false
   let firstError: unknown
 
-  // Bound paid calls and preserve input order for the review UI.
+    // Start every allowed product immediately, while retaining the import cap
+    // as the upper bound for callers outside the import route.
   async function worker(): Promise<void> {
     while (next < offers.length && !hasError) {
       const index = next++
@@ -127,7 +129,7 @@ export async function categorizeOffers(
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(4, offers.length) }, () => worker()))
+  await Promise.all(Array.from({ length: Math.min(MAX_IMPORT_ITEMS, offers.length) }, () => worker()))
   if (hasError) throw firstError
   return { offers: categorized, counts }
 }

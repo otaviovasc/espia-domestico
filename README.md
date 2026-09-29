@@ -108,7 +108,8 @@ nenhuma categoria é inventada. As categorias seguem com as ofertas salvas
 no catálogo e na campanha.
 
 Cada importação aceita até 100 produtos para limitar o tempo e o custo das
-avaliações pagas.
+avaliações pagas. As avaliações Jev são iniciadas em paralelo, até o limite
+de 100 produtos por importação.
 
 Na página de produtos, escolha quais resultados quer salvar. O catálogo pertence
 ao usuário logado; salvar novamente o mesmo produto atualiza seus dados e sua
