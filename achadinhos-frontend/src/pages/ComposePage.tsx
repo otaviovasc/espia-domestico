@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   Search,
-  Upload,
   Send,
   Clock,
-  CheckCircle2,
   AlertTriangle,
   Package,
   RotateCcw,
@@ -18,6 +16,7 @@ import {
 import {
   groupApi,
   campaignApi,
+  savedProductApi,
   apiErrorMessage,
   type Offer,
   type Group,
@@ -51,9 +50,13 @@ const CATEGORIES = ['A', 'B', 'C', 'D'] as const
 type CategoryFilter = 'all' | (typeof CATEGORIES)[number] | 'uncategorized'
 const CATEGORY_TONES = { A: 'green', B: 'blue', C: 'amber', D: 'red' } as const
 
-/** Stable identity for an offer — productId first, then affiliate URL. */
+/** Matches the keys returned by /campaigns/check-offers. */
 function offerIdentity(o: Offer): string {
-  return o.productId?.trim() || o.affiliateUrl.trim()
+  return o.productId?.trim()
+    ? o.source?.trim()
+      ? JSON.stringify([o.source.trim(), o.productId.trim()])
+      : o.productId.trim()
+    : o.affiliateUrl.trim()
 }
 
 /** Human "há X dias/horas" from an ISO date. */
@@ -71,13 +74,8 @@ function timeAgo(iso: string | null): string {
 export default function ComposePage() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
-  const [source, setSource] = useState('mercadolivre')
-  const [jsonText, setJsonText] = useState('')
-  const [offers, setOffers] = useState<Offer[]>([])
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all')
-  const [excluded, setExcluded] = useState<Set<number>>(new Set())
-  const [importInfo, setImportInfo] = useState<{ source: string; totalSeen: number } | null>(null)
-  const [importErrors, setImportErrors] = useState<{ index: number; message: string }[]>([])
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(new Set())
   const [template, setTemplate] = useState<string | null>(null)
   const [sendImages, setSendImages] = useState(true)
   const [offerFlags, setOfferFlags] = useState<Record<string, OfferFlag>>({})
@@ -91,13 +89,28 @@ export default function ComposePage() {
 
   const metaQuery = useQuery({ queryKey: ['campaign-meta'], queryFn: campaignApi.meta })
   const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupApi.list() })
+  const catalogQuery = useQuery({
+    queryKey: ['saved-products', 'all'],
+    queryFn: async () => {
+      const first = await savedProductApi.list(100, 0)
+      const items = [...first.items]
+      while (items.length < first.total) {
+        const page = await savedProductApi.list(100, items.length)
+        if (page.items.length === 0) break
+        items.push(...page.items)
+      }
+      return items
+    },
+  })
+
+  const offers = useMemo(() => catalogQuery.data?.map((item) => item.offer) ?? [], [catalogQuery.data])
 
   // The editor shows the user's edits, or the server default until they type.
   const effectiveTemplate = template ?? metaQuery.data?.defaultTemplate ?? ''
 
   const includedOffers = useMemo(
-    () => offers.filter((_, i) => !excluded.has(i)),
-    [offers, excluded],
+    () => catalogQuery.data?.filter((item) => selectedProductIds.has(item.id)).map((item) => item.offer) ?? [],
+    [catalogQuery.data, selectedProductIds],
   )
   const categoryCounts = useMemo(() => {
     const counts = { A: 0, B: 0, C: 0, D: 0, uncategorized: 0 }
@@ -108,42 +121,39 @@ export default function ComposePage() {
     return counts
   }, [offers])
   const visibleOffers = useMemo(
-    () => offers
-      .map((offer, index) => ({ offer, index }))
+    () => (catalogQuery.data ?? [])
+      .map((item) => ({ offer: item.offer, id: item.id }))
       .filter(({ offer }) => categoryFilter === 'all'
         || (categoryFilter === 'uncategorized' ? !offer.category : offer.category === categoryFilter)),
-    [offers, categoryFilter],
+    [catalogQuery.data, categoryFilter],
   )
 
-  const importMutation = useMutation({
-    mutationFn: () => campaignApi.importOffers(jsonText, { source, template: effectiveTemplate }),
-    onSuccess: async (res) => {
-      setOffers(res.offers)
-      setCategoryFilter('all')
-      setExcluded(new Set())
-      setImportInfo({ source: res.source, totalSeen: res.totalSeen })
-      setImportErrors(res.errors)
-      setPreviews(res.previews)
-      setError(null)
-      // Flag products already sent or present in active campaigns.
-      try {
-        const flags = await campaignApi.checkOffers(
-          res.offers.map((o) => ({ productId: o.productId, affiliateUrl: o.affiliateUrl })),
-        )
-        setOfferFlags(flags)
-        // Auto-exclude anything already sent, so the safe default is "don't resend".
-        const autoEx = new Set<number>()
-        res.offers.forEach((o, i) => {
-          const f = flags[offerIdentity(o)]
-          if (f?.alreadySent) autoEx.add(i)
-        })
-        if (autoEx.size > 0) setExcluded(autoEx)
-      } catch {
-        setOfferFlags({})
+  useEffect(() => {
+    if (!catalogQuery.data) return
+    let active = true
+    const savedOffers = catalogQuery.data.map((item) => item.offer)
+    if (savedOffers.length > 0) {
+      // Keep each request bounded even when the personal catalog grows large.
+      const checkBatches = async () => {
+        const flags: Record<string, OfferFlag> = {}
+        for (let offset = 0; offset < savedOffers.length; offset += 100) {
+          const batch = savedOffers.slice(offset, offset + 100).map((offer) => ({
+            source: offer.source,
+            productId: offer.productId,
+            affiliateUrl: offer.affiliateUrl,
+          }))
+          Object.assign(flags, await campaignApi.checkOffers(batch))
+          if (!active) return
+        }
+        return flags
       }
-    },
-    onError: (e) => setError(apiErrorMessage(e)),
-  })
+      void checkBatches().then((flags) => {
+        if (!active) return
+        setOfferFlags(flags ?? {})
+      }).catch(() => { if (active) setOfferFlags({}) })
+    }
+    return () => { active = false }
+  }, [catalogQuery.data])
 
   // Re-render previews when the template or included offers change (debounced).
   const previewMutation = useMutation({
@@ -155,7 +165,7 @@ export default function ComposePage() {
     const t = setTimeout(() => previewMutation.mutate(), 400)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveTemplate, offers, excluded])
+  }, [effectiveTemplate, offers, selectedProductIds])
 
   const shownPreviews = includedOffers.length === 0 ? [] : previews
 
@@ -195,13 +205,14 @@ export default function ComposePage() {
       return next
     })
 
-  const toggleOffer = (i: number) =>
-    setExcluded((prev) => {
+  const toggleOffer = (id: number) => {
+    setSelectedProductIds((prev) => {
       const next = new Set(prev)
-      if (next.has(i)) next.delete(i)
-      else next.add(i)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
+  }
 
   const insertPlaceholder = (key: string) => {
     const ta = templateRef.current
@@ -233,7 +244,7 @@ export default function ComposePage() {
       <div>
         <h1 className="text-2xl font-bold">Nova campanha</h1>
         <p className="text-sm text-zinc-500">
-          Importe produtos do marketplace, personalize a mensagem, escolha grupos e dispare com
+          Escolha produtos salvos, personalize a mensagem, escolha grupos e dispare com
           segurança.
         </p>
       </div>
@@ -243,78 +254,21 @@ export default function ComposePage() {
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Achados da manhã" />
       </Card>
 
-      {/* ── 1. Import from marketplace ───────────────── */}
       <Card>
-        <div className="mb-3 flex items-center gap-2">
-          <Package size={18} className="text-violet-600" />
-          <h2 className="font-semibold">1 · Importar produtos</h2>
-        </div>
-
-        <div className="mb-3">
-          <Label>Origem</Label>
-          <div className="flex flex-wrap gap-2">
-            {metaQuery.data?.ingestors.map((ing) => (
-              <button
-                key={ing.id}
-                onClick={() => setSource(ing.id)}
-                className={`rounded-lg border px-3 py-1.5 text-sm transition ${
-                  source === ing.id
-                    ? 'border-violet-500 bg-violet-50 text-violet-700'
-                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
-                }`}
-              >
-                {ing.label}
-              </button>
-            ))}
-            <span
-              className="cursor-not-allowed rounded-lg border border-dashed border-zinc-200 px-3 py-1.5 text-sm text-zinc-400"
-              title="Em breve"
-            >
-              Amazon · em breve
-            </span>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Package size={18} className="text-violet-600" />
+            <h2 className="font-semibold">1 · Produtos salvos</h2>
           </div>
+          <Link to="/products" className="text-sm font-medium text-violet-700 underline">Classificar mais produtos</Link>
         </div>
-
-        <Label>Cole o JSON exportado ({source === 'mercadolivre' ? 'Mercado Livre' : source})</Label>
-        <textarea
-          value={jsonText}
-          onChange={(e) => setJsonText(e.target.value)}
-          placeholder='Cole aqui o conteúdo do arquivo .json exportado do hub de afiliados…'
-          className="h-36 w-full rounded-lg border border-zinc-300 p-3 font-mono text-xs outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
-        />
-        <div className="mt-3 flex flex-wrap items-center gap-3">
-          <Button
-            variant="secondary"
-            onClick={() => importMutation.mutate()}
-            disabled={!jsonText.trim() || importMutation.isPending}
-          >
-            <Upload size={16} />
-            {importMutation.isPending ? 'Processando…' : 'Importar'}
-          </Button>
-          {importInfo && (
-            <Badge tone="green">
-              <CheckCircle2 size={12} className="mr-1 inline" />
-              {includedOffers.length}/{offers.length} incluídos · {importInfo.totalSeen} no arquivo
-            </Badge>
-          )}
-        </div>
-
-        {importErrors.length > 0 && (
-          <div className="mt-3 rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
-            <AlertTriangle size={14} className="mr-1 inline" />
-            {importErrors.length} aviso(s):
-            <ul className="ml-4 mt-1 list-disc">
-              {importErrors.slice(0, 6).map((e) => (
-                <li key={e.index}>{e.message}</li>
-              ))}
-              {importErrors.length > 6 && <li>… e mais {importErrors.length - 6}</li>}
-            </ul>
-          </div>
-        )}
-
-        {/* Offers table */}
-        {offers.length > 0 && (
-          <div className="mt-4">
+        {catalogQuery.isPending ? <Spinner /> : catalogQuery.isError ? (
+          <p role="alert" className="text-sm text-red-700">Não foi possível carregar o catálogo. <button type="button" className="underline" onClick={() => void catalogQuery.refetch()}>Tentar novamente</button></p>
+        ) : offers.length === 0 ? (
+          <p className="text-sm text-zinc-600">Nenhum produto salvo. Classifique um JSON e salve os produtos antes de criar a campanha.</p>
+        ) : (
+          <>
+            <p className="mb-3 text-sm text-zinc-500">{includedOffers.length} de {offers.length} produto(s) incluído(s). Selecione os produtos que quer enviar nesta campanha.</p>
             <div className="mb-3 flex flex-wrap items-center gap-2" aria-label="Filtrar produtos por categoria">
               {(['all', ...CATEGORIES, ...(categoryCounts.uncategorized > 0 ? ['uncategorized'] as const : [])] as CategoryFilter[]).map((category) => {
                 const count = category === 'all' ? offers.length : categoryCounts[category]
@@ -351,101 +305,41 @@ export default function ComposePage() {
                   </tr>
                 </thead>
                 <tbody>
-                {visibleOffers.map(({ offer: o, index: i }) => {
+                {visibleOffers.map(({ offer: o, id }) => {
                   const pct = discountPct(o)
-                  const isIn = !excluded.has(i)
+                  const isIn = selectedProductIds.has(id)
                   return (
-                    <tr
-                      key={i}
-                      className={`border-b border-zinc-100 ${isIn ? '' : 'opacity-40'}`}
-                    >
-                      <td className="px-2 py-2">
-                        <input type="checkbox" checked={isIn} onChange={() => toggleOffer(i)} />
-                      </td>
+                    <tr key={id} className={`border-b border-zinc-100 ${isIn ? '' : 'opacity-40'}`}>
+                      <td className="px-2 py-2"><input type="checkbox" aria-label={`Incluir ${o.title}`} checked={isIn} onChange={() => toggleOffer(id)} /></td>
                       <td className="px-2 py-2">
                         <div className="flex items-center gap-2">
-                          {o.imageUrl && (
-                            <img
-                              src={o.imageUrl}
-                              alt=""
-                              className="h-8 w-8 rounded object-cover"
-                              loading="lazy"
-                            />
-                          )}
+                          {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" loading="lazy" />}
                           <span className="line-clamp-2 max-w-xs">{o.title}</span>
                         </div>
                       </td>
                       <td className="px-2 py-2 whitespace-nowrap">
-                        {o.category ? (
-                          <div className="space-y-1">
-                            <Badge tone={CATEGORY_TONES[o.category]}>Categoria {o.category}</Badge>
-                            {typeof o.relevanceScore === 'number' && (
-                              <div className="text-xs text-zinc-500">Relevância {o.relevanceScore}/100</div>
-                            )}
-                          </div>
-                        ) : <span className="text-xs text-zinc-400">Sem categoria</span>}
+                        {o.category ? <div className="space-y-1"><Badge tone={CATEGORY_TONES[o.category]}>Categoria {o.category}</Badge>{typeof o.relevanceScore === 'number' && <div className="text-xs text-zinc-500">Relevância {o.relevanceScore}/100</div>}</div> : <span className="text-xs text-zinc-400">Sem categoria</span>}
                       </td>
-                      <td className="px-2 py-2 whitespace-nowrap">
-                        <div className="font-medium">{formatBRL(o.discountedPrice)}</div>
-                        {o.originalPrice && (
-                          <div className="text-xs text-zinc-400 line-through">
-                            {formatBRL(o.originalPrice)}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-2 py-2">
-                        {pct !== null ? <Badge tone="green">{pct}%</Badge> : <span className="text-zinc-300">—</span>}
-                      </td>
-                      <td className="px-2 py-2">
-                        {o.commissionPercent || typeof o.commissionRate === 'number' ? (
-                          <Badge tone="violet">{o.commissionPercent || `${o.commissionRate}%`}</Badge>
-                        ) : (
-                          <span className="text-zinc-300">—</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-2">
-                        {o.commissioned === false ? (
-                          <Badge tone="amber">sem comissão</Badge>
-                        ) : (
-                          <Badge tone="blue">afiliado</Badge>
-                        )}
-                      </td>
-                      <td className="px-2 py-2">
-                        {(() => {
-                          const f = offerFlags[offerIdentity(o)]
-                          if (!f) return <span className="text-zinc-300">—</span>
-                          return (
-                            <div className="flex flex-col gap-1">
-                              {f.alreadySent && (
-                                <span
-                                  className="inline-flex items-center gap-1 text-xs text-amber-700"
-                                  title={`Enviado ${f.sentCount}× · ${f.sampleGroup ?? ''} ${timeAgo(f.lastSentAt)}`}
-                                >
-                                  <History size={12} /> já enviado {f.sentCount}× · {timeAgo(f.lastSentAt)}
-                                </span>
-                              )}
-                              {f.inActiveCampaign && (
-                                <span
-                                  className="inline-flex items-center gap-1 text-xs text-blue-700"
-                                  title={f.activeCampaignNames.join(', ')}
-                                >
-                                  <CalendarClock size={12} /> em campanha
-                                </span>
-                              )}
-                              {!f.alreadySent && !f.inActiveCampaign && (
-                                <span className="text-xs text-green-600">novo</span>
-                              )}
-                            </div>
-                          )
-                        })()}
-                      </td>
+                      <td className="px-2 py-2 whitespace-nowrap"><div className="font-medium">{formatBRL(o.discountedPrice)}</div>{o.originalPrice && <div className="text-xs text-zinc-400 line-through">{formatBRL(o.originalPrice)}</div>}</td>
+                      <td className="px-2 py-2">{pct !== null ? <Badge tone="green">{pct}%</Badge> : <span className="text-zinc-300">—</span>}</td>
+                      <td className="px-2 py-2">{o.commissionPercent || typeof o.commissionRate === 'number' ? <Badge tone="violet">{o.commissionPercent || `${o.commissionRate}%`}</Badge> : <span className="text-zinc-300">—</span>}</td>
+                      <td className="px-2 py-2">{o.commissioned === false ? <Badge tone="amber">sem comissão</Badge> : <Badge tone="blue">afiliado</Badge>}</td>
+                      <td className="px-2 py-2">{(() => {
+                        const f = offerFlags[offerIdentity(o)]
+                        if (!f) return <span className="text-zinc-300">—</span>
+                        return <div className="flex flex-col gap-1">
+                          {f.alreadySent && <span className="inline-flex items-center gap-1 text-xs text-amber-700" title={`Enviado ${f.sentCount}× · ${f.sampleGroup ?? ''} ${timeAgo(f.lastSentAt)}`}><History size={12} /> já enviado {f.sentCount}× · {timeAgo(f.lastSentAt)}</span>}
+                          {f.inActiveCampaign && <span className="inline-flex items-center gap-1 text-xs text-blue-700" title={f.activeCampaignNames.join(', ')}><CalendarClock size={12} /> em campanha</span>}
+                          {!f.alreadySent && !f.inActiveCampaign && <span className="text-xs text-green-600">novo</span>}
+                        </div>
+                      })()}</td>
                     </tr>
                   )
                 })}
                 </tbody>
               </table>
             </div>
-          </div>
+          </>
         )}
       </Card>
 

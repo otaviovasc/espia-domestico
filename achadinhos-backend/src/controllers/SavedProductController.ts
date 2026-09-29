@@ -1,0 +1,59 @@
+import { Request, Response } from 'express'
+import { inject, injectable } from 'tsyringe'
+import { z } from 'zod'
+import { OfferSchema } from '@/dtos/campaign'
+import { BadRequestError, NotFoundError, UnauthorizedError } from '@/middleware/Error/AppError'
+import { SavedProductService } from '@/services/SavedProductService'
+
+const SaveSchema = z.object({
+  offers: z
+    .array(
+      OfferSchema.extend({
+        category: z.enum(['A', 'B', 'C', 'D']),
+        affiliateUrl: z.string().url().max(2048),
+      }),
+    )
+    .min(1)
+    .max(100),
+})
+
+function pagination(value: unknown, defaultValue: number, max: number): number {
+  if (value === undefined) return defaultValue
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw BadRequestError('Paginação inválida')
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed > max) throw BadRequestError('Paginação inválida')
+  return parsed
+}
+
+@injectable()
+export class SavedProductController {
+  constructor(@inject(SavedProductService) private service: SavedProductService) {}
+
+  private userId(req: Request): number {
+    if (!req.user) throw UnauthorizedError('Não autenticado')
+    return req.user.userId
+  }
+
+  async save(req: Request, res: Response): Promise<void> {
+    const parsed = SaveSchema.parse(req.body)
+    const result = await this.service.save(this.userId(req), parsed.offers)
+    res.json({ success: true, data: result })
+  }
+
+  async list(req: Request, res: Response): Promise<void> {
+    const limit = pagination(req.query.limit, 100, 100)
+    if (limit < 1) throw BadRequestError('Paginação inválida')
+    const offset = pagination(req.query.offset, 0, Number.MAX_SAFE_INTEGER)
+    const result = await this.service.list(this.userId(req), limit, offset)
+    res.json({ success: true, data: result })
+  }
+
+  async remove(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isSafeInteger(id) || id < 1) throw BadRequestError('ID inválido')
+    if (!(await this.service.remove(this.userId(req), id))) {
+      throw NotFoundError('Produto salvo não encontrado')
+    }
+    res.json({ success: true, data: { id } })
+  }
+}

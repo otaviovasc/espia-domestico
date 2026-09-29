@@ -10,9 +10,10 @@ Cada membro do time tem seu próprio login e sua própria conexão do WhatsApp
 1. **Login** → cada suporte entra com e-mail e senha.
 2. **Conexão** → conecta seu número lendo o QR Code (ou por código de pareamento).
 3. **Grupos** → lista os grupos do número conectado e seleciona os alvos.
-4. **Produtos** → importa um lote de produtos via **JSON** (batching inteligente).
-5. **Segurança** → define intervalo entre mensagens, limite por hora, aquecimento e embaralhamento.
-6. **Enviar / Agendar** → dispara na hora ou agenda; acompanha o progresso e os logs.
+4. **Produtos** → classifica um lote JSON na página `/painel/products`, escolhe e salva os produtos em um catálogo pessoal.
+5. **Nova campanha** → seleciona produtos do catálogo e os grupos de destino.
+6. **Segurança** → define intervalo entre mensagens, limite por hora, aquecimento e embaralhamento.
+7. **Enviar / Agendar** → dispara na hora ou agenda; acompanha o progresso e os logs.
 
 Construído reaproveitando a base sólida do projeto `repasses` (UazapiClient,
 padrões de erro, lifecycle de conexão, stack de frontend), porém **enxuto e
@@ -69,6 +70,8 @@ npm run dev                  # http://localhost:5273
 - **`/`** → página pública (landing "Espia Doméstico"), convite para os grupos.
 - **`/painel`** → ferramenta interna do time (login obrigatório). A UI de suporte
   fica sob esse caminho, separada da página pública.
+- **`/painel/products`** → classifica um JSON e gerencia os produtos salvos.
+- **`/painel/compose`** → seleciona os produtos salvos para uma campanha.
 
 Em produção: `npm run build` gera `dist/index.html` (LP) e `dist/painel/index.html`
 (app), com `serve.json` para as rotas SPA de `/painel`. Sirva com `npm start`
@@ -102,9 +105,16 @@ condições comerciais; D indica baixa prioridade. Produtos sem desconto ou taxa
 de comissão informados recebem zero nesses critérios. Se o Jev estiver
 indisponível, a importação falha com uma mensagem para tentar novamente;
 nenhuma categoria é inventada. As categorias seguem com as ofertas salvas
-na campanha.
+no catálogo e na campanha.
+
 Cada importação aceita até 100 produtos para limitar o tempo e o custo das
 avaliações pagas.
+
+Na página de produtos, escolha quais resultados quer salvar. O catálogo pertence
+ao usuário logado; salvar novamente o mesmo produto atualiza seus dados e sua
+categoria. A página de campanha lê esse catálogo para montar um disparo posterior.
+Rode `npm run migrate` no backend após atualizar o código para criar a tabela
+`saved_products` no PostgreSQL local.
 
 A nota final pesa relevância (60%), desconto (25%, com teto em 50%) e comissão
 (15%, com teto em 20%). A exige relevância de pelo menos 75/100, desconto de
@@ -176,7 +186,10 @@ Bateria de 30h, cancelamento de ruído
 | POST | `/api/v1/connection/connect` | Provisiona + inicia QR/pareamento |
 | POST | `/api/v1/connection/disconnect` | Desconecta |
 | GET | `/api/v1/groups?search=` | Lista grupos do número conectado |
-| POST | `/api/v1/campaigns/import-offers` | Valida um lote JSON de produtos + prévia |
+| POST | `/api/v1/campaigns/import-offers` | Classifica um lote JSON com Jev e retorna A/B/C/D |
+| POST | `/api/v1/saved-products` | Salva ou atualiza produtos classificados do usuário |
+| GET | `/api/v1/saved-products?limit=100&offset=0` | Lista o catálogo pessoal |
+| DELETE | `/api/v1/saved-products/:id` | Remove um produto do catálogo pessoal |
 | POST | `/api/v1/campaigns/preview` | Prévia das mensagens |
 | POST | `/api/v1/campaigns` | Cria campanha (rascunho ou agendada) |
 | POST | `/api/v1/campaigns/:id/run` | Dispara agora |

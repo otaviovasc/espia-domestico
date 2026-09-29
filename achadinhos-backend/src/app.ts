@@ -14,6 +14,7 @@ import { authRoutes } from '@/routes/authRoutes'
 import { connectionRoutes } from '@/routes/connectionRoutes'
 import { groupRoutes } from '@/routes/groupRoutes'
 import { campaignRoutes } from '@/routes/campaignRoutes'
+import { savedProductRoutes } from '@/routes/savedProductRoutes'
 
 export function createApp(): Application {
   const app = express()
@@ -55,6 +56,7 @@ export function createApp(): Application {
   app.use(`${prefix}/connection`, connectionRoutes)
   app.use(`${prefix}/groups`, groupRoutes)
   app.use(`${prefix}/campaigns`, campaignRoutes)
+  app.use(`${prefix}/saved-products`, savedProductRoutes)
 
   app.use(notFoundHandler)
   app.use(errorHandler)

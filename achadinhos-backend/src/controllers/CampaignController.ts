@@ -136,7 +136,7 @@ export class CampaignController {
     const userId = this.userId(req)
     const schema = z.object({
       offers: z
-        .array(z.object({ productId: z.string().optional(), affiliateUrl: z.string().url() }))
+        .array(z.object({ source: z.string().max(40).optional(), productId: z.string().max(60).optional(), affiliateUrl: z.string().url() }))
         .min(1),
     })
     const parsed = schema.safeParse(req.body)

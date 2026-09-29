@@ -37,13 +37,14 @@ export class CampaignService {
   /**
    * For each provided offer, report whether it was already SENT before (from
    * campaign_logs) and whether it currently appears in an active (scheduled or
-   * running) campaign. Identity is productId first, then affiliateUrl.
+   * running) campaign. Identity is (source, productId) when both exist,
+   * productId for legacy source-free offers, then affiliateUrl.
    *
    * Returns a map keyed by the offer's identity so the UI can annotate rows.
    */
   async checkOffers(
     userId: number,
-    offers: { productId?: string; affiliateUrl: string }[],
+    offers: { source?: string; productId?: string; affiliateUrl: string }[],
   ): Promise<
     Record<
       string,
@@ -57,8 +58,12 @@ export class CampaignService {
       }
     >
   > {
-    const identityOf = (o: { productId?: string; affiliateUrl: string }) =>
-      o.productId?.trim() || o.affiliateUrl.trim()
+    const identityOf = (o: { source?: string; productId?: string; affiliateUrl: string }) =>
+      o.productId?.trim()
+        ? o.source?.trim()
+          ? JSON.stringify([o.source.trim(), o.productId.trim()])
+          : o.productId.trim()
+        : o.affiliateUrl.trim()
 
     const productIds = offers.map((o) => o.productId?.trim()).filter((v): v is string => !!v)
     const urls = offers.map((o) => o.affiliateUrl.trim()).filter(Boolean)
@@ -69,6 +74,7 @@ export class CampaignService {
       attributes: ['id', 'name', 'status', 'offers'],
     })
     const userCampaignIds = userCampaigns.map((c) => c.id)
+    const campaignById = new Map(userCampaigns.map((c) => [c.id, c]))
 
     const logs = await (async () => {
       if (!userCampaignIds.length) return []
@@ -82,7 +88,7 @@ export class CampaignService {
           success: true,
           [Op.or]: orConditions,
         },
-        attributes: ['offerProductId', 'offerUrl', 'groupName', 'sentAt'],
+        attributes: ['campaignId', 'offerProductId', 'offerUrl', 'groupName', 'sentAt'],
         order: [['sentAt', 'DESC']],
       })
     })()
@@ -110,14 +116,29 @@ export class CampaignService {
       const id = identityOf(offer)
       const pid = offer.productId?.trim()
       const url = offer.affiliateUrl.trim()
+      const source = offer.source?.trim() || 'generic'
 
       const matches = logs.filter(
-        (l) => (pid && l.offerProductId === pid) || (l.offerUrl && l.offerUrl === url),
+        (l) => {
+          if (l.offerUrl === url) return true
+          if (!pid || l.offerProductId !== pid) return false
+          if (!offer.source) return true
+          const campaign = campaignById.get(l.campaignId)
+          return (campaign?.offers ?? []).some((candidate) =>
+            candidate.productId === pid &&
+            (candidate.source?.trim() || 'generic') === source &&
+            candidate.affiliateUrl === l.offerUrl,
+          )
+        },
       )
       const activeNames = activeCampaigns
         .filter((c) =>
-          (c.offers as { productId?: string; affiliateUrl?: string }[]).some(
-            (o) => (pid && o.productId === pid) || o.affiliateUrl === url,
+          c.offers.some(
+            (candidate) =>
+              candidate.affiliateUrl === url ||
+              (pid &&
+                candidate.productId === pid &&
+                (!offer.source || (candidate.source?.trim() || 'generic') === source)),
           ),
         )
         .map((c) => c.name)

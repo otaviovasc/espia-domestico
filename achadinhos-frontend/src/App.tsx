@@ -1,10 +1,11 @@
 import { Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
-import { Send, History, LogOut, Smartphone } from 'lucide-react'
+import { Send, History, LogOut, Smartphone, Tags } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui'
 import LoginPage from '@/pages/LoginPage'
 import ConnectionPage from '@/pages/ConnectionPage'
 import ComposePage from '@/pages/ComposePage'
+import ProductCatalogPage from '@/pages/ProductCatalogPage'
 import CampaignsPage from '@/pages/CampaignsPage'
 import CampaignDetailPage from '@/pages/CampaignDetailPage'
 import type { ReactNode } from 'react'
@@ -37,6 +38,9 @@ function Shell({ children }: { children: ReactNode }) {
           </NavLink>
           <NavLink to="/compose" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
             <Send size={18} /> Nova campanha
+          </NavLink>
+          <NavLink to="/products" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
+            <Tags size={18} /> Produtos
           </NavLink>
           <NavLink to="/campaigns" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
             <History size={18} /> Campanhas
@@ -87,6 +91,7 @@ export default function App() {
       />
       <Route path="/connection" element={<Protected><ConnectionPage /></Protected>} />
       <Route path="/compose" element={<Protected><ComposePage /></Protected>} />
+      <Route path="/products" element={<Protected><ProductCatalogPage /></Protected>} />
       <Route path="/campaigns" element={<Protected><CampaignsPage /></Protected>} />
       <Route path="/campaigns/:id" element={<Protected><CampaignDetailPage /></Protected>} />
       <Route path="*" element={<Navigate to="/connection" replace />} />

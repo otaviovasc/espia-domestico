@@ -105,6 +105,13 @@ export interface Offer {
   commissionRate?: number
 }
 
+export interface SavedProduct {
+  id: number
+  offer: Offer
+  createdAt: string
+  updatedAt: string
+}
+
 export interface Ingestor {
   id: string
   label: string
@@ -296,7 +303,7 @@ export const campaignApi = {
     return unwrap<OfferPreview[]>(await api.post('/campaigns/preview', { offers, template }))
   },
   async checkOffers(
-    offers: { productId?: string; affiliateUrl: string }[],
+    offers: { source?: string; productId?: string; affiliateUrl: string }[],
   ): Promise<Record<string, OfferFlag>> {
     return unwrap<Record<string, OfferFlag>>(await api.post('/campaigns/check-offers', { offers }))
   },
@@ -346,5 +353,21 @@ export const campaignApi = {
   },
   async logs(id: number): Promise<CampaignLog[]> {
     return unwrap<CampaignLog[]>(await api.get(`/campaigns/${id}/logs`))
+  },
+}
+
+export const savedProductApi = {
+  async list(limit = 100, offset = 0): Promise<{ items: SavedProduct[]; total: number }> {
+    return unwrap<{ items: SavedProduct[]; total: number }>(
+      await api.get('/saved-products', { params: { limit, offset } }),
+    )
+  },
+  async save(offers: Offer[]): Promise<{ saved: SavedProduct[]; created: number; updated: number }> {
+    return unwrap<{ saved: SavedProduct[]; created: number; updated: number }>(
+      await api.post('/saved-products', { offers }),
+    )
+  },
+  async remove(id: number): Promise<void> {
+    await api.delete(`/saved-products/${id}`)
   },
 }
