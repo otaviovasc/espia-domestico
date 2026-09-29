@@ -3,6 +3,7 @@
   "directoryListing": false,
   "rewrites": [
     { "source": "/", "destination": "/index.html" },
+    { "source": "/masculino", "destination": "/masculino/index.html" },
     { "source": "/painel", "destination": "/painel/index.html" },
     { "source": "/painel/connection", "destination": "/painel/index.html" },
     { "source": "/painel/compose", "destination": "/painel/index.html" },

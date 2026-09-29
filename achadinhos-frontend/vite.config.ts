@@ -13,8 +13,36 @@ const LANDING_ASSETS = resolve(__dirname, 'landing/assets')
 const APP_BASE = '/painel/'
 
 /**
- * Serve the public landing page (landing/index.html) at `/` during dev, so the
- * root shows the marketing LP while the support app lives under /painel.
+ * Additional standalone landing pages, each served at its own route. Each dir
+ * contains an index.html (+ optional assets) and is copied to dist/<route>/ on
+ * build and served at /<route> in dev.
+ */
+const EXTRA_LANDINGS: { route: string; dir: string }[] = [
+  { route: 'masculino', dir: 'landing/masculino' },
+]
+
+const MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+}
+
+function serveFile(res: import('http').ServerResponse, file: string): void {
+  res.setHeader('Content-Type', MIME[extname(file).toLowerCase()] || 'application/octet-stream')
+  res.setHeader('Cache-Control', 'public, max-age=3600')
+  createReadStream(file).pipe(res)
+}
+
+/**
+ * Serve the public landing page (landing/index.html) at `/` during dev, plus
+ * any EXTRA_LANDINGS at their routes, so the root shows the marketing LP while
+ * the support app lives under /painel.
  */
 function landingDevServer(): Plugin {
   return {
@@ -23,6 +51,8 @@ function landingDevServer(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, res, next) => {
         const url = (req.url || '').split('?')[0]
+
+        // Root landing.
         if (url === '/' || url === '/index.html') {
           if (existsSync(LANDING)) {
             res.setHeader('Content-Type', 'text/html; charset=utf-8')
@@ -30,23 +60,34 @@ function landingDevServer(): Plugin {
             return
           }
         }
-        // Serve landing/assets/* at /assets/* and ./assets/* in dev.
+
+        // Extra landings: /<route> (and /<route>/...) + their assets.
+        for (const { route, dir } of EXTRA_LANDINGS) {
+          const base = `/${route}`
+          if (url === base || url === `${base}/` || url === `${base}/index.html`) {
+            const html = resolve(__dirname, dir, 'index.html')
+            if (existsSync(html)) {
+              res.setHeader('Content-Type', 'text/html; charset=utf-8')
+              res.end(readFileSync(html, 'utf-8'))
+              return
+            }
+          }
+          if (url.startsWith(`${base}/`)) {
+            const rel = url.slice(base.length + 1)
+            const file = resolve(__dirname, dir, rel)
+            if (existsSync(file) && statSync(file).isFile()) {
+              serveFile(res, file)
+              return
+            }
+          }
+        }
+
+        // Root landing assets at /assets/*.
         if (url.startsWith('/assets/')) {
           const rel = url.replace('/assets/', '')
           const file = join(LANDING_ASSETS, rel)
           if (existsSync(file) && statSync(file).isFile()) {
-            const ext = extname(file).toLowerCase()
-            const mime: Record<string, string> = {
-              '.png': 'image/png',
-              '.jpg': 'image/jpeg',
-              '.jpeg': 'image/jpeg',
-              '.webp': 'image/webp',
-              '.svg': 'image/svg+xml',
-              '.ico': 'image/x-icon',
-            }
-            res.setHeader('Content-Type', mime[ext] || 'application/octet-stream')
-            res.setHeader('Cache-Control', 'public, max-age=3600')
-            createReadStream(file).pipe(res)
+            serveFile(res, file)
             return
           }
         }
@@ -58,9 +99,8 @@ function landingDevServer(): Plugin {
 
 /**
  * After Vite builds the app into dist/painel (outDir below), place the public
- * landing page at dist/index.html with its assets at dist/assets, and ship
- * serve.json. The app is fully self-contained under dist/painel/ (HTML +
- * dist/painel/assets/*), so /painel/assets/* resolves to real files.
+ * landing page at dist/index.html with its assets at dist/assets, copy each
+ * extra landing to dist/<route>/, and ship serve.json.
  */
 function landingBuild(): Plugin {
   return {
@@ -69,13 +109,17 @@ function landingBuild(): Plugin {
     closeBundle() {
       const distRoot = resolve(__dirname, 'dist')
       mkdirSync(distRoot, { recursive: true })
-      // Landing page becomes the site root.
+      // Root landing page.
       if (existsSync(LANDING)) copyFileSync(LANDING, resolve(distRoot, 'index.html'))
-      // Landing assets (logo + review prints + depo photos) at dist/assets.
       if (existsSync(LANDING_ASSETS)) {
         cpSync(LANDING_ASSETS, resolve(distRoot, 'assets'), { recursive: true })
       }
-      // SPA rewrites for /painel.
+      // Extra landings → dist/<route>/ (entire dir, incl. assets).
+      for (const { route, dir } of EXTRA_LANDINGS) {
+        const src = resolve(__dirname, dir)
+        if (existsSync(src)) cpSync(src, resolve(distRoot, route), { recursive: true })
+      }
+      // SPA rewrites for /painel + landing routes.
       const serveJson = resolve(__dirname, 'serve.json')
       if (existsSync(serveJson)) copyFileSync(serveJson, resolve(distRoot, 'serve.json'))
     },
