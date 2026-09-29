@@ -126,6 +126,72 @@ export class ConnectionService {
     return this.toStatusResult(connection, pairingCode)
   }
 
+  /**
+   * Attach the user's connection to an ALREADY-EXISTING UAZAPI instance the
+   * user brings — no admin token, no QR, no provisioning. We verify the token
+   * by calling GET /instance/status and, if the session is live, store the
+   * credentials and mark the connection CONNECTED.
+   *
+   * `instanceId` is optional (only needed later for admin delete); when the
+   * status response exposes an id we capture it.
+   */
+  async attachExisting(
+    userId: number,
+    params: { baseUrl: string; instanceToken: string; instanceId?: string },
+  ): Promise<ConnectionStatusResult> {
+    const baseUrl = params.baseUrl?.trim()
+    const instanceToken = params.instanceToken?.trim()
+    if (!baseUrl || !instanceToken) {
+      throw BadRequestError('Informe a URL do servidor UAZAPI e o token da instância')
+    }
+
+    const creds = { baseUrl, token: instanceToken }
+    let status
+    try {
+      status = await this.uazapi.getStatus(creds)
+    } catch {
+      throw BadRequestError(
+        'Não foi possível validar a instância. Verifique a URL do servidor e o token.',
+      )
+    }
+
+    const connected = Boolean(
+      status.status?.connected || status.instance?.status === 'connected',
+    )
+    const instanceId =
+      params.instanceId?.trim() || status.instance?.id || undefined
+    const owner = status.instance?.owner ?? null
+
+    const connection = await this.getOrCreate(userId)
+    connection.credentials = {
+      baseUrl,
+      instanceId: instanceId ?? '',
+      instanceToken,
+    }
+    connection.qrCode = null
+    connection.qrCodeExpiresAt = null
+
+    if (connected) {
+      connection.status = CONNECTION_STATUS_ENUM.CONNECTED
+      connection.phoneNumber = owner ?? connection.phoneNumber ?? null
+      connection.lastConnectedAt = new Date()
+    } else {
+      // Token is valid but the WhatsApp session is not connected yet — keep the
+      // creds and let the normal connect() flow surface a QR when needed.
+      connection.status = CONNECTION_STATUS_ENUM.DISCONNECTED
+    }
+    await connection.save()
+
+    if (!connected) {
+      throw BadRequestError(
+        'A instância foi reconhecida, mas o WhatsApp não está conectado nela. Conecte o número na instância e tente novamente.',
+      )
+    }
+
+    logger.info({ userId, instanceId }, 'Attached to existing UAZAPI instance')
+    return this.toStatusResult(connection)
+  }
+
   /** Poll UAZAPI status and reconcile the local row. */
   async refreshStatus(userId: number): Promise<ConnectionStatusResult> {
     const connection = await this.getByUser(userId)

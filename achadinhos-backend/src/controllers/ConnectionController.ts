@@ -12,6 +12,12 @@ const ConnectRequestSchema = z.object({
     .optional(),
 })
 
+const AttachExistingSchema = z.object({
+  baseUrl: z.string().url('URL do servidor UAZAPI inválida'),
+  instanceToken: z.string().min(8, 'Token da instância inválido'),
+  instanceId: z.string().optional(),
+})
+
 @injectable()
 export class ConnectionController {
   constructor(@inject(ConnectionService) private connectionService: ConnectionService) {}
@@ -44,6 +50,16 @@ export class ConnectionController {
   async disconnect(req: Request, res: Response): Promise<void> {
     await this.connectionService.disconnect(this.userId(req))
     res.json({ success: true })
+  }
+
+  /** POST /connection/attach — link to an existing UAZAPI instance (no QR). */
+  async attachExisting(req: Request, res: Response): Promise<void> {
+    const parsed = AttachExistingSchema.safeParse(req.body ?? {})
+    if (!parsed.success) {
+      throw BadRequestError(parsed.error.errors.map((e) => e.message).join(', '))
+    }
+    const result = await this.connectionService.attachExisting(this.userId(req), parsed.data)
+    res.json({ success: true, data: result })
   }
 
   /** GET /connection/webhook — show configured vs expected webhook URL. */

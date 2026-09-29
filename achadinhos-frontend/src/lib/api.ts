@@ -198,6 +198,13 @@ export const connectionApi = {
       await api.post('/connection/connect', pairingPhoneNumber ? { pairingPhoneNumber } : {}),
     )
   },
+  async attachExisting(params: {
+    baseUrl: string
+    instanceToken: string
+    instanceId?: string
+  }): Promise<ConnectionState> {
+    return unwrap<ConnectionState>(await api.post('/connection/attach', params))
+  },
   async disconnect(): Promise<void> {
     await api.post('/connection/disconnect')
   },

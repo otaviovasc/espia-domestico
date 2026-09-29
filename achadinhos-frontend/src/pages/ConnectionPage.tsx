@@ -100,8 +100,11 @@ function WebhookPanel() {
 
 export default function ConnectionPage() {
   const qc = useQueryClient()
+  const [mode, setMode] = useState<'new' | 'existing'>('new')
   const [usePairing, setUsePairing] = useState(false)
   const [phone, setPhone] = useState('')
+  const [baseUrl, setBaseUrl] = useState('https://free.uazapi.com')
+  const [instanceToken, setInstanceToken] = useState('')
   const [error, setError] = useState<string | null>(null)
 
   const statusQuery = useQuery({
@@ -126,6 +129,16 @@ export default function ConnectionPage() {
   const disconnectMutation = useMutation({
     mutationFn: connectionApi.disconnect,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['connection'] }),
+  })
+
+  const attachMutation = useMutation({
+    mutationFn: () =>
+      connectionApi.attachExisting({ baseUrl: baseUrl.trim(), instanceToken: instanceToken.trim() }),
+    onSuccess: (data) => {
+      qc.setQueryData(['connection'], data)
+      setError(null)
+    },
+    onError: (e) => setError(apiErrorMessage(e)),
   })
 
   const state = statusQuery.data
@@ -172,6 +185,64 @@ export default function ConnectionPage() {
 
         {!connected && (
           <div className="space-y-4">
+            {/* Mode: provision a new instance (QR) OR attach an existing one. */}
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setMode('new')}
+                className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                  mode === 'new'
+                    ? 'border-violet-500 bg-violet-50 text-violet-700'
+                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
+                }`}
+              >
+                Novo número (QR)
+              </button>
+              <button
+                onClick={() => setMode('existing')}
+                className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                  mode === 'existing'
+                    ? 'border-violet-500 bg-violet-50 text-violet-700'
+                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
+                }`}
+              >
+                Instância existente
+              </button>
+            </div>
+
+            {mode === 'existing' ? (
+              <div className="space-y-3">
+                <p className="text-sm text-zinc-500">
+                  Já tem uma instância UAZAPI com um número conectado? Informe a URL do servidor e o
+                  token da instância para conectar direto — sem QR.
+                </p>
+                <div>
+                  <Label>Servidor UAZAPI (Base URL)</Label>
+                  <Input
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://free.uazapi.com"
+                  />
+                </div>
+                <div>
+                  <Label>Token da instância</Label>
+                  <Input
+                    type="password"
+                    value={instanceToken}
+                    onChange={(e) => setInstanceToken(e.target.value)}
+                    placeholder="cole o token da instância aqui"
+                    autoComplete="off"
+                  />
+                </div>
+                {error && <p className="text-sm text-red-600">{error}</p>}
+                <Button
+                  onClick={() => attachMutation.mutate()}
+                  disabled={attachMutation.isPending || !baseUrl.trim() || instanceToken.trim().length < 8}
+                >
+                  {attachMutation.isPending ? 'Conectando…' : 'Conectar instância'}
+                </Button>
+              </div>
+            ) : (
+              <>
             <div className="flex items-center gap-4 text-sm">
               <label className="flex items-center gap-2">
                 <input
@@ -228,6 +299,8 @@ export default function ConnectionPage() {
             >
               {connectMutation.isPending ? 'Gerando…' : state?.qrCode ? 'Gerar novo QR' : 'Conectar'}
             </Button>
+              </>
+            )}
           </div>
         )}
       </Card>
