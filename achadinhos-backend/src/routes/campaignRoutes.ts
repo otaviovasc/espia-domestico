@@ -10,6 +10,9 @@ campaignRoutes.get('/meta', authenticate, (req, res) => controller.meta(req, res
 campaignRoutes.post('/import-offers', authenticate, (req, res) => controller.importOffers(req, res))
 campaignRoutes.post('/preview', authenticate, (req, res) => controller.preview(req, res))
 campaignRoutes.post('/check-offers', authenticate, (req, res) => controller.checkOffers(req, res))
+campaignRoutes.post('/delivery-claims/resolve', authenticate, (req, res) =>
+  controller.resolveDeliveryClaim(req, res),
+)
 campaignRoutes.post('/', authenticate, (req, res) => controller.create(req, res))
 campaignRoutes.get('/', authenticate, (req, res) => controller.list(req, res))
 campaignRoutes.get('/:id', authenticate, (req, res) => controller.get(req, res))

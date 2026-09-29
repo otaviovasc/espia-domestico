@@ -11,13 +11,13 @@ import {
   ImageOff,
   Image as ImageIcon,
   History,
-  CalendarClock,
 } from 'lucide-react'
 import {
   groupApi,
   campaignApi,
   savedProductApi,
   apiErrorMessage,
+  offerIdentity,
   type Offer,
   type Group,
   type Safety,
@@ -25,6 +25,7 @@ import {
 } from '@/lib/api'
 import { Button, Card, Input, Label, Badge, Spinner } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
+import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const DEFAULT_SAFETY: Safety = {
   minDelaySeconds: 8,
@@ -49,27 +50,7 @@ function discountPct(o: Offer): number | null {
 const CATEGORIES = ['A', 'B', 'C', 'D'] as const
 type CategoryFilter = 'all' | (typeof CATEGORIES)[number] | 'uncategorized'
 const CATEGORY_TONES = { A: 'green', B: 'blue', C: 'amber', D: 'red' } as const
-
-/** Matches the keys returned by /campaigns/check-offers. */
-function offerIdentity(o: Offer): string {
-  return o.productId?.trim()
-    ? o.source?.trim()
-      ? JSON.stringify([o.source.trim(), o.productId.trim()])
-      : o.productId.trim()
-    : o.affiliateUrl.trim()
-}
-
-/** Human "há X dias/horas" from an ISO date. */
-function timeAgo(iso: string | null): string {
-  if (!iso) return ''
-  const diff = Date.now() - new Date(iso).getTime()
-  const days = Math.floor(diff / 86400000)
-  if (days >= 1) return `há ${days} dia${days > 1 ? 's' : ''}`
-  const hours = Math.floor(diff / 3600000)
-  if (hours >= 1) return `há ${hours}h`
-  const mins = Math.floor(diff / 60000)
-  return `há ${Math.max(1, mins)} min`
-}
+const EMPTY_OFFER_FLAGS: Record<string, OfferFlag> = {}
 
 export default function ComposePage() {
   const navigate = useNavigate()
@@ -78,7 +59,6 @@ export default function ComposePage() {
   const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(new Set())
   const [template, setTemplate] = useState<string | null>(null)
   const [sendImages, setSendImages] = useState(true)
-  const [offerFlags, setOfferFlags] = useState<Record<string, OfferFlag>>({})
   const [previews, setPreviews] = useState<{ title: string; message: string }[]>([])
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
   const [search, setSearch] = useState('')
@@ -103,13 +83,43 @@ export default function ComposePage() {
     },
   })
 
-  const offers = useMemo(() => catalogQuery.data?.map((item) => item.offer) ?? [], [catalogQuery.data])
+  const offers = useMemo(
+    () => catalogQuery.data?.map((item) => ({
+      ...item.offer,
+      savedProductId: item.offer.savedProductId ?? item.id,
+    })) ?? [],
+    [catalogQuery.data],
+  )
+  const selectedGroupIdList = useMemo(() => [...selectedGroupIds].sort(), [selectedGroupIds])
+  const groupNames = useMemo(
+    () => new Map((groupsQuery.data ?? []).map((group) => [group.id, group.name])),
+    [groupsQuery.data],
+  )
+  const catalogIds = useMemo(() => catalogQuery.data?.map((item) => item.id) ?? [], [catalogQuery.data])
+
+  const offerFlagsQuery = useQuery({
+    queryKey: ['offer-group-delivery', catalogIds, selectedGroupIdList],
+    queryFn: () => campaignApi.checkOffersBatched(
+      offers.map((offer) => ({
+        savedProductId: offer.savedProductId,
+        source: offer.source,
+        productId: offer.productId,
+        affiliateUrl: offer.affiliateUrl,
+      })),
+      selectedGroupIdList.length > 0 ? selectedGroupIdList : undefined,
+    ),
+    enabled: offers.length > 0,
+  })
+  const offerFlags = offerFlagsQuery.data ?? EMPTY_OFFER_FLAGS
 
   // The editor shows the user's edits, or the server default until they type.
   const effectiveTemplate = template ?? metaQuery.data?.defaultTemplate ?? ''
 
   const includedOffers = useMemo(
-    () => catalogQuery.data?.filter((item) => selectedProductIds.has(item.id)).map((item) => item.offer) ?? [],
+    () => catalogQuery.data?.filter((item) => selectedProductIds.has(item.id)).map((item) => ({
+      ...item.offer,
+      savedProductId: item.offer.savedProductId ?? item.id,
+    })) ?? [],
     [catalogQuery.data, selectedProductIds],
   )
   const categoryCounts = useMemo(() => {
@@ -122,38 +132,11 @@ export default function ComposePage() {
   }, [offers])
   const visibleOffers = useMemo(
     () => (catalogQuery.data ?? [])
-      .map((item) => ({ offer: item.offer, id: item.id }))
+      .map((item) => ({ offer: { ...item.offer, savedProductId: item.offer.savedProductId ?? item.id }, id: item.id }))
       .filter(({ offer }) => categoryFilter === 'all'
         || (categoryFilter === 'uncategorized' ? !offer.category : offer.category === categoryFilter)),
     [catalogQuery.data, categoryFilter],
   )
-
-  useEffect(() => {
-    if (!catalogQuery.data) return
-    let active = true
-    const savedOffers = catalogQuery.data.map((item) => item.offer)
-    if (savedOffers.length > 0) {
-      // Keep each request bounded even when the personal catalog grows large.
-      const checkBatches = async () => {
-        const flags: Record<string, OfferFlag> = {}
-        for (let offset = 0; offset < savedOffers.length; offset += 100) {
-          const batch = savedOffers.slice(offset, offset + 100).map((offer) => ({
-            source: offer.source,
-            productId: offer.productId,
-            affiliateUrl: offer.affiliateUrl,
-          }))
-          Object.assign(flags, await campaignApi.checkOffers(batch))
-          if (!active) return
-        }
-        return flags
-      }
-      void checkBatches().then((flags) => {
-        if (!active) return
-        setOfferFlags(flags ?? {})
-      }).catch(() => { if (active) setOfferFlags({}) })
-    }
-    return () => { active = false }
-  }, [catalogQuery.data])
 
   // Re-render previews when the template or included offers change (debounced).
   const previewMutation = useMutation({
@@ -233,11 +216,34 @@ export default function ComposePage() {
   }
 
   const nonCommissioned = includedOffers.filter((o) => o.source && o.commissioned === false).length
-  const alreadySentIncluded = includedOffers.filter(
-    (o) => offerFlags[offerIdentity(o)]?.alreadySent,
-  ).length
-  const totalMessages = includedOffers.length * selectedGroupIds.size
-  const canSubmit = includedOffers.length > 0 && selectedGroupIds.size > 0 && !createMutation.isPending
+  const deliverySummary = useMemo(() => {
+    const counts = { eligible: 0, sent: 0, sending: 0, ambiguous: 0 }
+    for (const offer of includedOffers) {
+      const groups = offerFlags[offerIdentity(offer)]?.groups ?? []
+      for (const group of groups) {
+        if (group.status === 'unsent') counts.eligible++
+        else if (group.status === 'sent') counts.sent++
+        else if (group.claimStatus === 'unconfirmed' && group.recoverable) counts.ambiguous++
+        else counts.sending++
+      }
+    }
+    return counts
+  }, [includedOffers, offerFlags])
+  const totalPairs = includedOffers.length * selectedGroupIds.size
+  const hasSelection = includedOffers.length > 0 && selectedGroupIds.size > 0
+  const canSaveDraft = hasSelection && !createMutation.isPending
+  const canDispatch = canSaveDraft
+    && !offerFlagsQuery.isPending
+    && !offerFlagsQuery.isError
+    && deliverySummary.eligible > 0
+
+  const keepOnlyEligibleProducts = () => {
+    if (!catalogQuery.data) return
+    setSelectedProductIds(new Set(catalogQuery.data
+      .filter((item) => selectedProductIds.has(item.id)
+        && (offerFlags[offerIdentity({ ...item.offer, savedProductId: item.offer.savedProductId ?? item.id })]?.eligibleGroupIds.length ?? 0) > 0)
+      .map((item) => item.id)))
+  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -301,7 +307,7 @@ export default function ComposePage() {
                     <th className="px-2 py-2">Desc.</th>
                     <th className="px-2 py-2">Comissão</th>
                     <th className="px-2 py-2">Link</th>
-                    <th className="px-2 py-2">Status</th>
+                    <th className="px-2 py-2">Envio por grupo nesta conexão</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -322,16 +328,19 @@ export default function ComposePage() {
                       </td>
                       <td className="px-2 py-2 whitespace-nowrap"><div className="font-medium">{formatBRL(o.discountedPrice)}</div>{o.originalPrice && <div className="text-xs text-zinc-400 line-through">{formatBRL(o.originalPrice)}</div>}</td>
                       <td className="px-2 py-2">{pct !== null ? <Badge tone="green">{pct}%</Badge> : <span className="text-zinc-300">—</span>}</td>
-                      <td className="px-2 py-2">{o.commissionPercent || typeof o.commissionRate === 'number' ? <Badge tone="violet">{o.commissionPercent || `${o.commissionRate}%`}</Badge> : <span className="text-zinc-300">—</span>}</td>
+                      <td className="px-2 py-2">{typeof o.commissionRate === 'number' || o.commissionPercent ? <Badge tone="violet">{typeof o.commissionRate === 'number' ? `${o.commissionRate}%` : o.commissionPercent}</Badge> : <span className="text-zinc-300">—</span>}</td>
                       <td className="px-2 py-2">{o.commissioned === false ? <Badge tone="amber">sem comissão</Badge> : <Badge tone="blue">afiliado</Badge>}</td>
-                      <td className="px-2 py-2">{(() => {
+                      <td className="px-2 py-2 align-top">{(() => {
                         const f = offerFlags[offerIdentity(o)]
-                        if (!f) return <span className="text-zinc-300">—</span>
-                        return <div className="flex flex-col gap-1">
-                          {f.alreadySent && <span className="inline-flex items-center gap-1 text-xs text-amber-700" title={`Enviado ${f.sentCount}× · ${f.sampleGroup ?? ''} ${timeAgo(f.lastSentAt)}`}><History size={12} /> já enviado {f.sentCount}× · {timeAgo(f.lastSentAt)}</span>}
-                          {f.inActiveCampaign && <span className="inline-flex items-center gap-1 text-xs text-blue-700" title={f.activeCampaignNames.join(', ')}><CalendarClock size={12} /> em campanha</span>}
-                          {!f.alreadySent && !f.inActiveCampaign && <span className="text-xs text-green-600">novo</span>}
-                        </div>
+                        if (offerFlagsQuery.isPending) return <span className="text-xs text-zinc-400">Verificando…</span>
+                        if (offerFlagsQuery.isError) return <span className="text-xs text-red-600">Indisponível</span>
+                        return <ProductDeliveryStatus
+                          groups={f?.groups ?? []}
+                          savedProductId={o.savedProductId}
+                          groupNames={groupNames}
+                          compact={selectedGroupIds.size > 4}
+                          emptyLabel={selectedGroupIds.size > 0 ? 'Sem status para estes grupos' : 'Nunca enviado'}
+                        />
                       })()}</td>
                     </tr>
                   )
@@ -457,6 +466,18 @@ export default function ComposePage() {
                     onChange={() => toggleGroup(g.id)}
                   />
                   <span className="flex-1 text-sm">{g.name}</span>
+                  {selectedGroupIds.has(g.id) && !offerFlagsQuery.isPending && (() => {
+                    let ready = 0
+                    let skipped = 0
+                    let ambiguous = 0
+                    for (const offer of includedOffers) {
+                      const delivery = offerFlags[offerIdentity(offer)]?.groups.find((item) => item.groupId === g.id)
+                      if (delivery?.status === 'unsent') ready++
+                      else if (delivery?.claimStatus === 'unconfirmed' && delivery.recoverable) ambiguous++
+                      else if (delivery?.status === 'sent' || delivery?.status === 'sending') skipped++
+                    }
+                    return <span className="text-xs text-zinc-500">{ready} a enviar · {skipped} ignorado(s){ambiguous > 0 ? ` · ${ambiguous} sem confirmação` : ''}</span>
+                  })()}
                   {g.announceOnly && <Badge tone="amber">só admin</Badge>}
                   <span className="text-xs text-zinc-400">{g.size} membros</span>
                 </label>
@@ -524,15 +545,34 @@ export default function ComposePage() {
       <Card>
         <h2 className="mb-3 font-semibold">5 · Enviar</h2>
         <div className="mb-4 rounded-lg bg-violet-50 p-3 text-sm text-violet-800">
-          Total de mensagens: <strong>{totalMessages}</strong> ({includedOffers.length} produto(s) ×{' '}
-          {selectedGroupIds.size} grupo(s))
+          Envios novos: <strong>{offerFlagsQuery.isPending && hasSelection ? 'verificando…' : deliverySummary.eligible}</strong>
+          {' '}de {totalPairs} combinação(ões) de produto e grupo.
         </div>
 
-        {alreadySentIncluded > 0 && (
+        {offerFlagsQuery.isError && hasSelection && (
+          <div role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-800">
+            Não foi possível verificar o histórico por grupo. O envio fica bloqueado até a
+            verificação funcionar. <button type="button" className="underline" onClick={() => void offerFlagsQuery.refetch()}>Tentar novamente</button>
+          </div>
+        )}
+
+        {(deliverySummary.sent > 0 || deliverySummary.sending > 0 || deliverySummary.ambiguous > 0) && (
           <div className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
             <History size={14} className="mr-1 inline" />
-            {alreadySentIncluded} produto(s) já enviados antes continuam incluídos. Revise a coluna
-            "Status" e desmarque os que não quer reenviar.
+            {deliverySummary.sent} combinação(ões) já enviada(s), {deliverySummary.sending} em outra
+            campanha e {deliverySummary.ambiguous} com envio sem confirmação nesta conexão serão
+            ignoradas automaticamente. Abra o status do grupo para resolver envios sem confirmação.
+            <button type="button" className="ml-2 underline" onClick={keepOnlyEligibleProducts}>
+              Manter só produtos com envios novos
+            </button>
+          </div>
+        )}
+
+        {hasSelection && !offerFlagsQuery.isPending && !offerFlagsQuery.isError && deliverySummary.eligible === 0 && (
+          <div role="status" className="mb-4 rounded-lg bg-zinc-100 p-3 text-sm text-zinc-700">
+            {deliverySummary.ambiguous > 0
+              ? `Nenhum envio novo. Há ${deliverySummary.ambiguous} envio(s) sem confirmação: confira o WhatsApp e use as ações no status de cada grupo para confirmar ou liberar uma nova tentativa.`
+              : 'Nenhum envio novo: todos os produtos selecionados já foram enviados ou estão em campanha para os grupos escolhidos. Selecione outro produto ou grupo.'}
           </div>
         )}
 
@@ -557,18 +597,18 @@ export default function ComposePage() {
 
         <div className="flex gap-3">
           {scheduledAt ? (
-            <Button onClick={() => createMutation.mutate(false)} disabled={!canSubmit}>
+            <Button onClick={() => createMutation.mutate(false)} disabled={!canDispatch}>
               <Clock size={16} /> Agendar campanha
             </Button>
           ) : (
-            <Button onClick={() => createMutation.mutate(true)} disabled={!canSubmit}>
+            <Button onClick={() => createMutation.mutate(true)} disabled={!canDispatch}>
               <Send size={16} /> Enviar agora
             </Button>
           )}
           <Button
             variant="secondary"
             onClick={() => createMutation.mutate(false)}
-            disabled={!canSubmit}
+            disabled={!canSaveDraft}
           >
             Salvar rascunho
           </Button>

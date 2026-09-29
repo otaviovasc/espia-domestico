@@ -1,4 +1,10 @@
-import { DataTypes, Model, InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize'
+import {
+  DataTypes,
+  Model,
+  InferAttributes,
+  InferCreationAttributes,
+  CreationOptional,
+} from 'sequelize'
 import { sequelize } from '@/database'
 
 /**
@@ -11,9 +17,12 @@ export class CampaignLog extends Model<
 > {
   declare id: CreationOptional<number>
   declare campaignId: number
+  declare connectionScope: CreationOptional<string | null>
   declare groupId: string
   declare groupName: string
   declare offerTitle: string
+  declare offerSource: CreationOptional<string | null>
+  declare offerIdentity: CreationOptional<string | null>
   /** Stable product identity for "already sent" checks (e.g. ML productId). */
   declare offerProductId: CreationOptional<string | null>
   /** Affiliate/product URL — fallback identity when productId is absent. */
@@ -30,15 +39,23 @@ CampaignLog.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     campaignId: { type: DataTypes.INTEGER, allowNull: false, field: 'campaign_id' },
+    connectionScope: { type: DataTypes.STRING(160), allowNull: true, field: 'connection_scope' },
     groupId: { type: DataTypes.STRING, allowNull: false, field: 'group_id' },
     groupName: { type: DataTypes.STRING, allowNull: false, field: 'group_name' },
     offerTitle: { type: DataTypes.STRING, allowNull: false, field: 'offer_title' },
+    offerSource: { type: DataTypes.STRING(40), allowNull: true, field: 'offer_source' },
+    offerIdentity: { type: DataTypes.STRING(255), allowNull: true, field: 'offer_identity' },
     offerProductId: { type: DataTypes.STRING, allowNull: true, field: 'offer_product_id' },
     offerUrl: { type: DataTypes.TEXT, allowNull: true, field: 'offer_url' },
     success: { type: DataTypes.BOOLEAN, allowNull: false },
     messageId: { type: DataTypes.STRING, allowNull: true, field: 'message_id' },
     error: { type: DataTypes.TEXT, allowNull: true },
-    sentAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW, field: 'sent_at' },
+    sentAt: {
+      type: DataTypes.DATE,
+      allowNull: false,
+      defaultValue: DataTypes.NOW,
+      field: 'sent_at',
+    },
     createdAt: { type: DataTypes.DATE, field: 'created_at' },
     updatedAt: { type: DataTypes.DATE, field: 'updated_at' },
   },

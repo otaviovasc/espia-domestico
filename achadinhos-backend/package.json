@@ -19,7 +19,8 @@
     "docker:down": "docker compose down",
     "validate": "npm run type-check && npm run lint",
     "test": "npm run build && node --test test/*.test.cjs",
-    "test:catalog:integration": "npm run build && node --test test/saved-products.integration.cjs"
+    "test:catalog:integration": "npm run build && node --test test/saved-products.integration.cjs",
+    "test:delivery:integration": "npm run build && node --test test/campaign-group-delivery.integration.cjs"
   },
   "keywords": [
     "whatsapp",

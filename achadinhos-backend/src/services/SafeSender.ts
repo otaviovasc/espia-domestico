@@ -192,6 +192,7 @@ export class SafeSender {
     tasks: SendTask[],
     onResult?: (result: SendResult, index: number, total: number) => Promise<void> | void,
     shouldAbort?: () => Promise<boolean> | boolean,
+    beforeSend?: (task: SendTask) => Promise<boolean> | boolean,
   ): Promise<SendResult[]> {
     const results: SendResult[] = []
     let sinceWarmupPause = 0
@@ -204,6 +205,14 @@ export class SafeSender {
 
       await this.enforceHourlyCap()
 
+      // The cap may sleep for a long time. Recheck operator/connection state,
+      // then acquire the durable claim immediately before the provider call.
+      if (shouldAbort && (await shouldAbort())) {
+        logger.info({ sent: results.length, total: tasks.length }, 'Broadcast aborted after pacing')
+        break
+      }
+      if (beforeSend && !(await beforeSend(tasks[i]))) continue
+
       const result = await this.sendOne(tasks[i])
       results.push(result)
       this.sentTimestamps.push(Date.now())
@@ -214,10 +223,7 @@ export class SafeSender {
 
       // Warmup ramp pause.
       sinceWarmupPause++
-      if (
-        this.safety.warmupBatchSize > 0 &&
-        sinceWarmupPause >= this.safety.warmupBatchSize
-      ) {
+      if (this.safety.warmupBatchSize > 0 && sinceWarmupPause >= this.safety.warmupBatchSize) {
         sinceWarmupPause = 0
         const pauseMs = this.safety.maxDelaySeconds * this.safety.warmupPauseFactor * 1000
         logger.debug({ pauseMs }, 'Warmup pause')

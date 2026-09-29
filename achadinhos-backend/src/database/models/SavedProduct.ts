@@ -13,6 +13,7 @@ export class SavedProduct extends Model<
   declare affiliateUrl: string
   declare affiliateUrlHash: string
   declare offer: OfferInput
+  declare manualOverrides: CreationOptional<string[]>
   declare createdAt: CreationOptional<Date>
   declare updatedAt: CreationOptional<Date>
 }
@@ -26,6 +27,7 @@ SavedProduct.init(
     affiliateUrl: { type: DataTypes.TEXT, allowNull: false, field: 'affiliate_url' },
     affiliateUrlHash: { type: DataTypes.CHAR(64), allowNull: false, field: 'affiliate_url_hash' },
     offer: { type: DataTypes.JSONB, allowNull: false },
+    manualOverrides: { type: DataTypes.JSONB, allowNull: false, defaultValue: [], field: 'manual_overrides' },
     createdAt: { type: DataTypes.DATE, field: 'created_at' },
     updatedAt: { type: DataTypes.DATE, field: 'updated_at' },
   },

@@ -44,6 +44,7 @@ function serializeCampaign(c: Campaign) {
     completedAt: c.completedAt,
     totalSent: c.totalSent,
     totalFailed: c.totalFailed,
+    totalSkipped: c.totalSkipped,
     createdAt: c.createdAt,
     editable,
   }
@@ -136,15 +137,54 @@ export class CampaignController {
     const userId = this.userId(req)
     const schema = z.object({
       offers: z
-        .array(z.object({ source: z.string().max(40).optional(), productId: z.string().max(60).optional(), affiliateUrl: z.string().url() }))
+        .array(
+          z.object({
+            savedProductId: z.number().int().positive().optional(),
+            source: z.string().max(40).optional(),
+            productId: z.string().max(60).optional(),
+            affiliateUrl: z.string().url(),
+          }),
+        )
         .min(1),
+      groupIds: z.array(z.string().endsWith('@g.us')).max(5000).optional(),
     })
     const parsed = schema.safeParse(req.body)
     if (!parsed.success) {
       throw BadRequestError(parsed.error.errors.map((e) => e.message).join(', '))
     }
-    const flags = await this.campaignService.checkOffers(userId, parsed.data.offers)
+    const flags = await this.campaignService.checkOffers(
+      userId,
+      parsed.data.offers,
+      parsed.data.groupIds,
+    )
     res.json({ success: true, data: flags })
+  }
+
+  /** POST /campaigns/delivery-claims/resolve — operator resolves an ambiguous send. */
+  async resolveDeliveryClaim(req: Request, res: Response): Promise<void> {
+    const parsed = z
+      .object({
+        savedProductId: z.number().int().positive().optional(),
+        offer: z
+          .object({
+            source: z.string().max(40).optional(),
+            productId: z.string().max(60).optional(),
+            affiliateUrl: z.string().url(),
+          })
+          .optional(),
+        groupId: z.string().endsWith('@g.us'),
+        resolution: z.enum(['sent', 'retry']),
+      })
+      .strict()
+      .refine((value) => Boolean(value.savedProductId || value.offer), {
+        message: 'Informe savedProductId ou offer',
+      })
+      .safeParse(req.body)
+    if (!parsed.success) {
+      throw BadRequestError(parsed.error.errors.map((error) => error.message).join(', '))
+    }
+    const result = await this.campaignService.resolveDeliveryClaim(this.userId(req), parsed.data)
+    res.json({ success: true, data: result })
   }
 
   /** POST /campaigns — create a campaign (draft or scheduled). */

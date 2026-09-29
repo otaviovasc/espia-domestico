@@ -8,6 +8,7 @@ import { z } from 'zod'
  * Prices are plain numbers in the currency's major unit (e.g. 199.9 = R$199,90).
  */
 export const OfferSchema = z.object({
+  savedProductId: z.number().int().positive().optional(),
   title: z.string().min(1, 'Título é obrigatório').max(200),
   originalPrice: z.number().positive().optional(),
   discountedPrice: z.number().positive('Preço com desconto é obrigatório'),

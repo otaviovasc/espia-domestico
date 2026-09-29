@@ -24,6 +24,8 @@ export enum CAMPAIGN_STATUS_ENUM {
  * discount percentage from original vs discounted price.
  */
 export interface CampaignOffer {
+  /** Stable local catalog identity; survives edits to URL/title/pricing. */
+  savedProductId?: number
   title: string
   originalPrice?: number
   discountedPrice: number
@@ -90,6 +92,8 @@ export class Campaign extends Model<InferAttributes<Campaign>, InferCreationAttr
   declare completedAt: CreationOptional<Date | null>
   declare totalSent: CreationOptional<number>
   declare totalFailed: CreationOptional<number>
+  /** Product/group pairs skipped because they were already sent or in-flight. */
+  declare totalSkipped: CreationOptional<number>
   declare createdAt: CreationOptional<Date>
   declare updatedAt: CreationOptional<Date>
 }
@@ -129,6 +133,12 @@ Campaign.init(
       allowNull: false,
       defaultValue: 0,
       field: 'total_failed',
+    },
+    totalSkipped: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: 'total_skipped',
     },
     createdAt: { type: DataTypes.DATE, field: 'created_at' },
     updatedAt: { type: DataTypes.DATE, field: 'updated_at' },

@@ -86,6 +86,7 @@ export interface WebhookInfo {
 }
 
 export interface Offer {
+  savedProductId?: number
   title: string
   originalPrice?: number
   discountedPrice: number
@@ -105,11 +106,41 @@ export interface Offer {
   commissionRate?: number
 }
 
+/** Matches the identity keys returned by /campaigns/check-offers. */
+export function offerIdentity(offer: Pick<Offer, 'savedProductId' | 'source' | 'productId' | 'affiliateUrl'>): string {
+  return offer.savedProductId
+    ? `saved:${offer.savedProductId}`
+    : offer.productId?.trim()
+    ? offer.source?.trim()
+      ? JSON.stringify([offer.source.trim().toLowerCase(), offer.productId.trim()])
+      : offer.productId.trim()
+    : offer.affiliateUrl.trim()
+}
+
 export interface SavedProduct {
   id: number
   offer: Offer
+  manualOverrides?: string[]
   createdAt: string
   updatedAt: string
+}
+
+type SavedProductEditableField =
+  | 'title'
+  | 'description'
+  | 'category'
+  | 'discountedPrice'
+  | 'originalPrice'
+  | 'discountPercent'
+  | 'commissionRate'
+  | 'commissionPercent'
+  | 'commissioned'
+  | 'coupon'
+  | 'affiliateUrl'
+  | 'imageUrl'
+
+export type SavedProductOfferPatch = {
+  [K in SavedProductEditableField]?: Offer[K] | null
 }
 
 export interface Ingestor {
@@ -161,6 +192,7 @@ export interface Campaign {
   completedAt: string | null
   totalSent: number
   totalFailed: number
+  totalSkipped: number
   createdAt: string
   editable: boolean
 }
@@ -189,6 +221,24 @@ export interface OfferFlag {
   sampleGroup: string | null
   inActiveCampaign: boolean
   activeCampaignNames: string[]
+  groups: OfferGroupDelivery[]
+  sentGroupIds: string[]
+  sendingGroupIds: string[]
+  eligibleGroupIds: string[]
+}
+
+export interface OfferGroupDelivery {
+  groupId: string
+  groupName: string
+  status: 'sent' | 'sending' | 'unsent'
+  sentCount: number
+  lastSentAt: string | null
+  inActiveCampaign: boolean
+  activeCampaignNames: string[]
+  claimStatus: 'sent' | 'sending' | 'unconfirmed' | null
+  claimCreatedAt: string | null
+  claimCampaignId: number | null
+  recoverable: boolean
 }
 
 export interface ImportResult {
@@ -303,9 +353,33 @@ export const campaignApi = {
     return unwrap<OfferPreview[]>(await api.post('/campaigns/preview', { offers, template }))
   },
   async checkOffers(
-    offers: { source?: string; productId?: string; affiliateUrl: string }[],
+    offers: Pick<Offer, 'savedProductId' | 'source' | 'productId' | 'affiliateUrl'>[],
+    groupIds?: string[],
   ): Promise<Record<string, OfferFlag>> {
-    return unwrap<Record<string, OfferFlag>>(await api.post('/campaigns/check-offers', { offers }))
+    return unwrap<Record<string, OfferFlag>>(
+      await api.post('/campaigns/check-offers', { offers, ...(groupIds ? { groupIds } : {}) }),
+    )
+  },
+  async checkOffersBatched(
+    offers: Pick<Offer, 'savedProductId' | 'source' | 'productId' | 'affiliateUrl'>[],
+    groupIds?: string[],
+  ): Promise<Record<string, OfferFlag>> {
+    const batches: Array<Promise<Record<string, OfferFlag>>> = []
+    for (let offset = 0; offset < offers.length; offset += 100) {
+      batches.push(this.checkOffers(offers.slice(offset, offset + 100), groupIds))
+    }
+    return Object.assign({}, ...(await Promise.all(batches)))
+  },
+  async resolveDeliveryClaim(
+    identity:
+      | { savedProductId: number }
+      | { offer: Pick<Offer, 'source' | 'productId' | 'affiliateUrl'> },
+    groupId: string,
+    resolution: 'sent' | 'retry',
+  ): Promise<{ savedProductId: number | null; groupId: string; status: 'sent' | 'unsent' }> {
+    return unwrap<{ savedProductId: number | null; groupId: string; status: 'sent' | 'unsent' }>(
+      await api.post('/campaigns/delivery-claims/resolve', { ...identity, groupId, resolution }),
+    )
   },
   async create(payload: {
     name: string
@@ -366,6 +440,9 @@ export const savedProductApi = {
     return unwrap<{ saved: SavedProduct[]; created: number; updated: number }>(
       await api.post('/saved-products', { offers }),
     )
+  },
+  async update(id: number, offer: SavedProductOfferPatch): Promise<SavedProduct> {
+    return unwrap<SavedProduct>(await api.patch(`/saved-products/${id}`, { offer }))
   },
   async remove(id: number): Promise<void> {
     await api.delete(`/saved-products/${id}`)

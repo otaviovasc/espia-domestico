@@ -1,9 +1,6 @@
 import { injectable, inject } from 'tsyringe'
-import {
-  Connection,
-  CONNECTION_STATUS_ENUM,
-  UazapiCredentials,
-} from '@/database/models/Connection'
+import { createHash } from 'crypto'
+import { Connection, CONNECTION_STATUS_ENUM, UazapiCredentials } from '@/database/models/Connection'
 import { UazapiClient, UazapiInstanceCredentials } from '@/channels/uazapi/UazapiClient'
 import { env } from '@/config/env'
 import { logger } from '@/utils/logger'
@@ -17,6 +14,27 @@ export interface ConnectionStatusResult {
   qrCode: string | null
   pairingCode: string | null
   lastConnectedAt: Date | null
+}
+
+export interface ConnectedContext {
+  creds: UazapiInstanceCredentials
+  /** Stable, non-secret identity for the currently attached UAZAPI instance. */
+  scope: string
+}
+
+export function connectionScopeForCredentials(credentials: UazapiCredentials): string {
+  let normalizedBaseUrl: string
+  try {
+    const url = new URL(credentials.baseUrl)
+    normalizedBaseUrl = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`
+  } catch {
+    normalizedBaseUrl = credentials.baseUrl.trim().replace(/\/+$/, '')
+  }
+  const serverHash = createHash('sha256').update(normalizedBaseUrl).digest('hex').slice(0, 32)
+  const instanceId = credentials.instanceId?.trim()
+  return instanceId
+    ? `server:${serverHash}:instance:${instanceId}`
+    : `server:${serverHash}:token:${createHash('sha256').update(credentials.instanceToken).digest('hex')}`
 }
 
 const QR_TTL_MS = 60_000
@@ -55,7 +73,21 @@ export class ConnectionService {
     })
   }
 
-  private toStatusResult(connection: Connection, pairingCode: string | null = null): ConnectionStatusResult {
+  private connectionScope(connection: Connection): string | null {
+    const credentials = connection.credentials
+    if (!credentials?.instanceToken) return null
+    return connectionScopeForCredentials(credentials)
+  }
+
+  async getConnectionScope(userId: number): Promise<string | null> {
+    const connection = await this.getByUser(userId)
+    return connection ? this.connectionScope(connection) : null
+  }
+
+  private toStatusResult(
+    connection: Connection,
+    pairingCode: string | null = null,
+  ): ConnectionStatusResult {
     return {
       id: connection.id,
       uuid: connection.uuid,
@@ -155,11 +187,8 @@ export class ConnectionService {
       )
     }
 
-    const connected = Boolean(
-      status.status?.connected || status.instance?.status === 'connected',
-    )
-    const instanceId =
-      params.instanceId?.trim() || status.instance?.id || undefined
+    const connected = Boolean(status.status?.connected || status.instance?.status === 'connected')
+    const instanceId = params.instanceId?.trim() || status.instance?.id || undefined
     const owner = status.instance?.owner ?? null
 
     const connection = await this.getOrCreate(userId)
@@ -250,14 +279,22 @@ export class ConnectionService {
 
   /** Resolve client credentials for a connected user, or throw. */
   async requireConnectedCreds(userId: number): Promise<UazapiInstanceCredentials> {
+    return (await this.requireConnectedContext(userId)).creds
+  }
+
+  /** Resolve credentials plus an instance scope used to isolate send history. */
+  async requireConnectedContext(userId: number): Promise<ConnectedContext> {
     const connection = await this.getByUser(userId)
-    if (!connection) throw BadRequestError('Você ainda não tem uma conexão. Conecte um número primeiro.')
+    if (!connection)
+      throw BadRequestError('Você ainda não tem uma conexão. Conecte um número primeiro.')
     const creds = this.toClientCreds(connection)
     if (!creds) throw BadRequestError('Conexão não provisionada. Conecte um número primeiro.')
     if (connection.status !== CONNECTION_STATUS_ENUM.CONNECTED) {
       throw BadRequestError('Seu número do WhatsApp não está conectado.')
     }
-    return creds
+    const scope = this.connectionScope(connection)
+    if (!scope) throw BadRequestError('Conexão não provisionada. Conecte um número primeiro.')
+    return { creds, scope }
   }
 
   /** The webhook URL this backend expects UAZAPI to call for this connection. */

@@ -1,12 +1,61 @@
 import { useMemo, useState } from 'react'
-import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { CheckCircle2, FileJson, Upload } from 'lucide-react'
-import { apiErrorMessage, campaignApi, savedProductApi, type ImportResult } from '@/lib/api'
-import { Badge, Button, Card, Spinner } from '@/components/ui'
+import { CheckCircle2, FileJson, Pencil, Search, Upload, X } from 'lucide-react'
+import {
+  apiErrorMessage,
+  campaignApi,
+  groupApi,
+  offerIdentity,
+  savedProductApi,
+  type ImportResult,
+  type Offer,
+  type SavedProductOfferPatch,
+} from '@/lib/api'
+import { Badge, Button, Card, Input, Label, Spinner } from '@/components/ui'
+import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const CATEGORIES = ['A', 'B', 'C', 'D'] as const
 const TONES = { A: 'green', B: 'blue', C: 'amber', D: 'red' } as const
+const FIELD_LABELS: Record<string, string> = {
+  title: 'título',
+  description: 'descrição',
+  category: 'categoria',
+  discountedPrice: 'preço atual',
+  originalPrice: 'preço original',
+  discountPercent: 'desconto',
+  commissionRate: 'comissão',
+  commissionPercent: 'comissão exibida',
+  commissioned: 'comissionado',
+  coupon: 'cupom',
+  affiliateUrl: 'link afiliado',
+  imageUrl: 'imagem',
+  relevanceScore: 'pontuação Jev',
+}
+const EDITABLE_FIELDS = [
+  'title',
+  'description',
+  'category',
+  'discountedPrice',
+  'originalPrice',
+  'discountPercent',
+  'commissionRate',
+  'commissionPercent',
+  'commissioned',
+  'coupon',
+  'affiliateUrl',
+  'imageUrl',
+] as const satisfies readonly (keyof SavedProductOfferPatch)[]
+
+function changedOfferFields(original: Offer, current: Offer): SavedProductOfferPatch {
+  const patch: SavedProductOfferPatch = {}
+  for (const field of EDITABLE_FIELDS) {
+    if (original[field] !== current[field]) {
+      Object.assign(patch, { [field]: current[field] ?? null })
+    }
+  }
+  return patch
+}
 
 function money(value: number) {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value)
@@ -21,7 +70,15 @@ export default function ProductCatalogPage() {
   const [categoryFilter, setCategoryFilter] = useState<'all' | typeof CATEGORIES[number]>('all')
   const [error, setError] = useState<string | null>(null)
   const [feedback, setFeedback] = useState<string | null>(null)
+  const [catalogFeedback, setCatalogFeedback] = useState<string | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<number | null>(null)
+  const [editOffer, setEditOffer] = useState<Offer | null>(null)
+  const [originalEditOffer, setOriginalEditOffer] = useState<Offer | null>(null)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null)
+  const [catalogSearch, setCatalogSearch] = useState('')
+  const [catalogCategory, setCatalogCategory] = useState<'all' | typeof CATEGORIES[number]>('all')
 
   const catalog = useInfiniteQuery({
     queryKey: ['saved-products', 'pages'],
@@ -33,6 +90,30 @@ export default function ProductCatalogPage() {
     },
   })
   const savedItems = useMemo(() => catalog.data?.pages.flatMap((page) => page.items) ?? [], [catalog.data])
+  const groups = useQuery({
+    queryKey: ['groups'],
+    queryFn: () => groupApi.list(),
+    retry: false,
+  })
+  const groupIds = useMemo(() => groups.data?.map((group) => group.id).sort() ?? [], [groups.data])
+  const groupNames = useMemo(
+    () => new Map((groups.data ?? []).map((group) => [group.id, group.name])),
+    [groups.data],
+  )
+  const savedItemIds = useMemo(() => savedItems.map((item) => item.id), [savedItems])
+  const delivery = useQuery({
+    queryKey: ['offer-group-delivery', savedItemIds, groupIds],
+    queryFn: () => campaignApi.checkOffersBatched(
+      savedItems.map((item) => ({
+        savedProductId: item.offer.savedProductId ?? item.id,
+        source: item.offer.source,
+        productId: item.offer.productId,
+        affiliateUrl: item.offer.affiliateUrl,
+      })),
+      groupIds.length > 0 ? groupIds : undefined,
+    ),
+    enabled: savedItems.length > 0,
+  })
   const savedKeys = useMemo(() => new Set(savedItems.map((item) =>
     item.offer.source && item.offer.productId
       ? `${item.offer.source}:${item.offer.productId}`
@@ -41,11 +122,30 @@ export default function ProductCatalogPage() {
   const remove = useMutation({
     mutationFn: savedProductApi.remove,
     onSuccess: async () => {
-      setFeedback('Produto removido do catálogo.')
+      setCatalogFeedback('Produto removido do catálogo.')
       setError(null)
-      await queryClient.invalidateQueries({ queryKey: ['saved-products'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['saved-products'] }),
+        queryClient.invalidateQueries({ queryKey: ['offer-group-delivery'] }),
+      ])
     },
     onError: (cause) => setError(apiErrorMessage(cause)),
+  })
+  const update = useMutation({
+    mutationFn: ({ id, offer }: { id: number; offer: SavedProductOfferPatch }) => savedProductApi.update(id, offer),
+    onSuccess: async () => {
+      setEditingId(null)
+      setEditOffer(null)
+      setOriginalEditOffer(null)
+      setEditError(null)
+      setCatalogFeedback('Produto atualizado.')
+      setError(null)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['saved-products'] }),
+        queryClient.invalidateQueries({ queryKey: ['offer-group-delivery'] }),
+      ])
+    },
+    onError: (cause) => setEditError(apiErrorMessage(cause)),
   })
   const classify = useMutation({
     mutationFn: () => campaignApi.importOffers(jsonText, { source: 'mercadolivre' }),
@@ -64,7 +164,10 @@ export default function ProductCatalogPage() {
       setSelected(new Set())
       setFeedback(`${data.created} produto(s) salvo(s), ${data.updated} atualizado(s).`)
       setError(null)
-      await queryClient.invalidateQueries({ queryKey: ['saved-products'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['saved-products'] }),
+        queryClient.invalidateQueries({ queryKey: ['offer-group-delivery'] }),
+      ])
     },
     onError: (cause) => setError(apiErrorMessage(cause)),
   })
@@ -89,6 +192,7 @@ export default function ProductCatalogPage() {
     setSelected(new Set())
     setCategoryFilter('all')
     setFeedback(null)
+    setCatalogFeedback(null)
     setError(null)
   }
 
@@ -111,6 +215,36 @@ export default function ProductCatalogPage() {
       return next
     })
   }
+
+  const startEditing = (id: number, offer: Offer) => {
+    setEditingId(id)
+    setEditOffer({ ...offer })
+    setOriginalEditOffer({ ...offer })
+    setEditError(null)
+    setError(null)
+    setFeedback(null)
+    setCatalogFeedback(null)
+  }
+
+  const updateEdit = <K extends keyof Offer>(field: K, value: Offer[K]) => {
+    setEditOffer((current) => current ? { ...current, [field]: value } : current)
+  }
+
+  const numberOrUndefined = (value: string): number | undefined => {
+    if (!value.trim()) return undefined
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : undefined
+  }
+  const visibleSavedItems = useMemo(() => {
+    const query = catalogSearch.trim().toLocaleLowerCase('pt-BR')
+    return savedItems.filter((item) => {
+      if (catalogCategory !== 'all' && item.offer.category !== catalogCategory) return false
+      if (!query) return true
+      return item.offer.title.toLocaleLowerCase('pt-BR').includes(query)
+        || item.offer.productId?.toLocaleLowerCase('pt-BR').includes(query)
+        || item.offer.affiliateUrl.toLocaleLowerCase('pt-BR').includes(query)
+    })
+  }, [catalogCategory, catalogSearch, savedItems])
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -196,13 +330,167 @@ export default function ProductCatalogPage() {
 
       <Card>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h2 className="font-semibold">Catálogo salvo</h2><p className="text-sm text-zinc-500">Produtos disponíveis para campanhas futuras.</p></div>
+          <div><h2 className="font-semibold">Catálogo salvo</h2><p className="text-sm text-zinc-500">Produtos disponíveis para campanhas futuras, com histórico por grupo nesta conexão do WhatsApp.</p></div>
           <Link to="/compose" className="text-sm font-medium text-violet-700 underline">Criar campanha</Link>
         </div>
+        {groups.isError && (
+          <p role="alert" className="mt-3 text-sm text-amber-800">
+            Não foi possível carregar os grupos conectados. O histórico enviado continua disponível,
+            mas os grupos que ainda faltam só aparecem depois de reconectar o WhatsApp.
+            {' '}<button type="button" className="underline" onClick={() => void groups.refetch()}>Tentar novamente</button>
+          </p>
+        )}
+        {delivery.isError && (
+          <p role="alert" className="mt-3 text-sm text-red-700">
+            Não foi possível carregar o histórico de envios.
+            {' '}<button type="button" className="underline" onClick={() => void delivery.refetch()}>Tentar novamente</button>
+          </p>
+        )}
+        {catalogFeedback && <p role="status" className="mt-3 flex items-center gap-2 text-sm text-green-700"><CheckCircle2 size={16} />{catalogFeedback}</p>}
+        {savedItems.length > 0 && (
+          <div className="mt-4 space-y-2">
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+              <div className="relative">
+                <Search size={16} className="absolute left-3 top-3 text-zinc-400" />
+                <Input className="pl-9" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar nos produtos carregados" aria-label="Buscar no catálogo carregado" />
+              </div>
+              <select value={catalogCategory} onChange={(event) => setCatalogCategory(event.target.value as typeof catalogCategory)} className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" aria-label="Filtrar catálogo salvo por categoria">
+                <option value="all">Todas as categorias</option>
+                {CATEGORIES.map((category) => <option key={category} value={category}>Categoria {category}</option>)}
+              </select>
+            </div>
+            <p className="text-xs text-zinc-500">
+              {visibleSavedItems.length} resultado(s) entre {savedItems.length} produto(s) carregado(s).
+              {(catalog.data?.pages[0]?.total ?? savedItems.length) > savedItems.length
+                ? ' Carregue mais para pesquisar o restante do catálogo.'
+                : ' Todo o catálogo está carregado.'}
+            </p>
+          </div>
+        )}
         {catalog.isPending ? <div className="mt-4"><Spinner /></div> : catalog.isError ? (
           <p role="alert" className="mt-4 text-sm text-red-700">Não foi possível carregar o catálogo. <button type="button" className="underline" onClick={() => void catalog.refetch()}>Tentar novamente</button></p>
         ) : savedItems.length ? (
-          <div className="mt-4 space-y-2">{savedItems.map((item) => <div key={item.id} className="flex items-center justify-between gap-3 border-b border-zinc-100 py-2 text-sm"><span className="min-w-0 truncate">{item.offer.title}</span><Badge tone={item.offer.category ? TONES[item.offer.category] : 'zinc'}>{item.offer.category || 'Sem categoria'}</Badge><button type="button" disabled={remove.isPending} onClick={() => remove.mutate(item.id)} className="text-red-700 underline disabled:opacity-50" aria-label={`Remover ${item.offer.title}`}>Remover</button></div>)}<p className="text-xs text-zinc-500">Mostrando {savedItems.length} de {catalog.data?.pages[0]?.total ?? savedItems.length} produtos.</p>{catalog.hasNextPage && <Button variant="secondary" disabled={catalog.isFetchingNextPage} onClick={() => void catalog.fetchNextPage()}>{catalog.isFetchingNextPage ? 'Carregando…' : 'Carregar mais'}</Button>}</div>
+          <div className="mt-4 space-y-2">
+            {visibleSavedItems.map((item) => {
+              const flag = delivery.data?.[offerIdentity({
+                ...item.offer,
+                savedProductId: item.offer.savedProductId ?? item.id,
+              })]
+              return (
+                <div key={item.id} className="grid gap-2 border-b border-zinc-100 py-3 text-sm md:grid-cols-[minmax(0,1fr)_auto_minmax(13rem,auto)_auto] md:items-start">
+                  <span className="min-w-0 truncate font-medium" title={item.offer.title}>{item.offer.title}</span>
+                  <div className="flex flex-wrap gap-1">
+                    <Badge tone={item.offer.category ? TONES[item.offer.category] : 'zinc'}>{item.offer.category || 'Sem categoria'}</Badge>
+                    {(item.manualOverrides?.length ?? 0) > 0 && <span title={`Campos ajustados: ${item.manualOverrides?.map((field) => FIELD_LABELS[field] ?? field).join(', ')}`}><Badge tone="violet">Editado manualmente</Badge></span>}
+                  </div>
+                  {delivery.isPending ? (
+                    <span className="text-xs text-zinc-400">Carregando histórico…</span>
+                  ) : delivery.isError ? (
+                    <span className="text-xs text-red-600">Histórico indisponível</span>
+                  ) : (
+                    <ProductDeliveryStatus
+                      groups={flag?.groups ?? []}
+                      savedProductId={item.offer.savedProductId ?? item.id}
+                      groupNames={groupNames}
+                      compact
+                      emptyLabel={groupIds.length > 0 ? 'Pronto para todos os grupos desta conexão' : 'Nunca enviado nesta conexão'}
+                    />
+                  )}
+                  <div className="flex gap-3 md:justify-end">
+                    <button type="button" disabled={update.isPending} onClick={() => startEditing(item.id, item.offer)} className="inline-flex items-center gap-1 text-violet-700 underline disabled:opacity-50" aria-label={`Editar ${item.offer.title}`}><Pencil size={13} />Editar</button>
+                    {deleteConfirmId === item.id ? (
+                      <span className="inline-flex flex-wrap items-center gap-2 text-xs text-red-800">
+                        Remover?
+                        <button type="button" disabled={remove.isPending} onClick={() => remove.mutate(item.id, { onSuccess: () => setDeleteConfirmId(null) })} className="font-semibold underline disabled:opacity-50">Confirmar</button>
+                        <button type="button" disabled={remove.isPending} onClick={() => setDeleteConfirmId(null)} className="text-zinc-600 underline">Cancelar</button>
+                      </span>
+                    ) : <button type="button" disabled={remove.isPending || update.isPending} onClick={() => setDeleteConfirmId(item.id)} className="text-red-700 underline disabled:opacity-50" aria-label={`Remover ${item.offer.title}`}>Remover</button>}
+                  </div>
+                  {editingId === item.id && editOffer && (
+                    <form
+                      className="col-span-full mt-2 rounded-lg border border-violet-200 bg-violet-50/40 p-4"
+                      onSubmit={(event) => {
+                        event.preventDefault()
+                        if (!originalEditOffer) return
+                        const patch = changedOfferFields(originalEditOffer, editOffer)
+                        if (Object.keys(patch).length === 0) {
+                          setEditError('Faça ao menos uma alteração antes de salvar.')
+                          return
+                        }
+                        update.mutate({ id: item.id, offer: patch })
+                      }}
+                    >
+                      <div className="mb-4 flex items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-semibold text-zinc-900">Editar produto</h3>
+                          <p className="text-xs text-zinc-500">A origem e o ID do produto identificam o histórico e não podem ser alterados.</p>
+                        </div>
+                        <button type="button" aria-label="Fechar edição" onClick={() => { setEditingId(null); setEditOffer(null); setOriginalEditOffer(null); setEditError(null) }} className="rounded p-1 text-zinc-500 hover:bg-white"><X size={17} /></button>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="md:col-span-2"><Label>Título</Label><Input required value={editOffer.title} onChange={(event) => updateEdit('title', event.target.value)} /></div>
+                        <div className="md:col-span-2"><Label>Descrição</Label><textarea value={editOffer.description ?? ''} onChange={(event) => updateEdit('description', event.target.value || undefined)} className="min-h-20 w-full rounded-lg border border-zinc-300 bg-white p-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" /></div>
+                        <div className="md:col-span-2"><Label>Link afiliado</Label><Input required type="url" value={editOffer.affiliateUrl} onChange={(event) => updateEdit('affiliateUrl', event.target.value)} /></div>
+                        <div className="md:col-span-2"><Label>URL da imagem</Label><Input type="url" value={editOffer.imageUrl ?? ''} onChange={(event) => updateEdit('imageUrl', event.target.value || undefined)} /></div>
+                        <div><Label>Preço atual</Label><Input required type="number" min="0.01" step="0.01" value={editOffer.discountedPrice} onChange={(event) => updateEdit('discountedPrice', Number(event.target.value))} /></div>
+                        <div><Label>Preço original</Label><Input type="number" min="0.01" step="0.01" value={editOffer.originalPrice ?? ''} onChange={(event) => updateEdit('originalPrice', numberOrUndefined(event.target.value))} /></div>
+                        <div><Label>Desconto (%)</Label><Input type="number" min="0" max="100" step="0.01" value={editOffer.discountPercent ?? ''} onChange={(event) => updateEdit('discountPercent', numberOrUndefined(event.target.value))} /></div>
+                        <div><Label>Comissão (%)</Label><Input type="number" min="0" max="100" step="0.01" value={editOffer.commissionRate ?? ''} disabled={editOffer.commissioned === false} onChange={(event) => {
+                          const rate = numberOrUndefined(event.target.value)
+                          setEditOffer((current) => current ? {
+                            ...current,
+                            commissionRate: rate,
+                            commissionPercent: rate === undefined ? undefined : `${rate}%`,
+                          } : current)
+                        }} /></div>
+                        <div><Label>Cupom</Label><Input value={editOffer.coupon ?? ''} onChange={(event) => updateEdit('coupon', event.target.value || undefined)} /></div>
+                        <div>
+                          <Label>Categoria (ajuste manual)</Label>
+                          <select
+                            value={editOffer.category ?? ''}
+                            onChange={(event) => setEditOffer((current) => current ? {
+                              ...current,
+                              category: (event.target.value || undefined) as Offer['category'],
+                            } : current)}
+                            className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                          >
+                            {CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+                          </select>
+                          <p className="mt-1 text-xs text-zinc-500">Ao trocar a categoria, ela passa a ser um ajuste manual e a pontuação Jev deixa de ser associada a ela.</p>
+                        </div>
+                        <label className="flex items-center gap-2 text-sm md:col-span-2">
+                          <input
+                            type="checkbox"
+                            checked={editOffer.commissioned !== false}
+                            onChange={(event) => setEditOffer((current) => current ? {
+                              ...current,
+                              commissioned: event.target.checked,
+                              ...(!event.target.checked ? { commissionRate: undefined, commissionPercent: undefined } : {}),
+                            } : current)}
+                          />
+                          Produto com comissão afiliada
+                        </label>
+                        {(editOffer.source || editOffer.productId) && (
+                          <div className="rounded-md bg-white p-3 text-xs text-zinc-500 md:col-span-2">
+                            Origem: <strong>{editOffer.source ?? 'genérica'}</strong>
+                            {editOffer.productId ? <> · ID: <strong>{editOffer.productId}</strong></> : null}
+                          </div>
+                        )}
+                      </div>
+                      {editError && <p role="alert" className="mt-3 text-sm text-red-700">{editError}</p>}
+                      <div className="mt-4 flex gap-2">
+                        <Button type="submit" disabled={update.isPending || !editOffer.title.trim() || !editOffer.affiliateUrl.trim() || !originalEditOffer || Object.keys(changedOfferFields(originalEditOffer, editOffer)).length === 0}>{update.isPending ? 'Salvando…' : 'Salvar alterações'}</Button>
+                        <Button type="button" variant="secondary" disabled={update.isPending} onClick={() => { setEditingId(null); setEditOffer(null); setOriginalEditOffer(null); setEditError(null) }}>Cancelar</Button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              )
+            })}
+            {visibleSavedItems.length === 0 && <p className="py-4 text-center text-sm text-zinc-500">Nenhum produto carregado corresponde à busca e ao filtro.</p>}
+            <p className="text-xs text-zinc-500">Mostrando {savedItems.length} de {catalog.data?.pages[0]?.total ?? savedItems.length} produtos.</p>
+            {catalog.hasNextPage && <Button variant="secondary" disabled={catalog.isFetchingNextPage} onClick={() => void catalog.fetchNextPage()}>{catalog.isFetchingNextPage ? 'Carregando…' : 'Carregar mais'}</Button>}
+          </div>
         ) : <p className="mt-4 text-sm text-zinc-600">Nenhum produto salvo. Classifique um JSON e escolha os produtos acima.</p>}
       </Card>
     </div>

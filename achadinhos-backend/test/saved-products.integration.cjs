@@ -11,6 +11,7 @@ const { CampaignLog } = require('../dist/database/models/CampaignLog.js')
 const { SavedProduct } = require('../dist/database/models/SavedProduct.js')
 const { createApp } = require('../dist/app.js')
 const { generateToken } = require('../dist/middleware/auth.js')
+const { offerIdentity } = require('../dist/utils/offerIdentity.js')
 
 test('saved product API persists selected categories and isolates users', async () => {
   const databaseHost = new URL(env.DATABASE_URL).hostname
@@ -58,6 +59,7 @@ test('saved product API persists selected categories and isolates users', async 
       relevanceScore: 96,
       discountPercent: 20,
       commissionRate: 12,
+      coupon: 'OLD',
     }
 
     const invalid = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [{ ...offer, category: undefined }] }) })
@@ -69,10 +71,12 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal(first.body.data.saved[0].offer.category, 'A')
     const id = first.body.data.saved[0].id
 
-    const repeated = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [offer] }) })
+    const repeated = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [{ ...offer, savedProductId: 999999 }] }) })
     assert.equal(repeated.body.data.created, 0)
     assert.equal(repeated.body.data.updated, 1)
     assert.equal(repeated.body.data.saved[0].id, id)
+    assert.equal(repeated.body.data.saved[0].offer.savedProductId, id)
+    assert.equal((await SavedProduct.findByPk(id)).offer.savedProductId, undefined)
 
     const renamedLink = { ...offer, affiliateUrl: `https://meli.la/catalog-new-${stamp}`, category: 'B' }
     const updated = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [renamedLink] }) })
@@ -82,11 +86,40 @@ test('saved product API persists selected categories and isolates users', async 
     const ownList = await request(0)
     assert.equal(ownList.body.data.total, 1)
     assert.equal(ownList.body.data.items[0].offer.category, 'B')
+    assert.equal(ownList.body.data.items[0].offer.savedProductId, id)
+
+    assert.equal((await request(1, `/${id}`, { method: 'PATCH', body: JSON.stringify({ offer: { title: 'Wrong user' } }) })).status, 404)
+    assert.equal((await request(0, `/${id}`, { method: 'PATCH', body: JSON.stringify({ offer: { productId: 'forged' } }) })).status, 400)
+    assert.equal((await request(0, `/${id}`, { method: 'PATCH', body: JSON.stringify({ offer: { savedProductId: 999 } }) })).status, 400)
+    assert.equal((await request(0, `/${id}`, { method: 'PATCH', body: JSON.stringify({ offer: { title: '' } }) })).status, 400)
+    const manual = await request(0, `/${id}`, { method: 'PATCH', body: JSON.stringify({ offer: { title: 'Panela revisada', category: 'A', coupon: null, description: 'Texto manual', commissionRate: 14 } }) })
+    assert.equal(manual.status, 200)
+    assert.equal(manual.body.data.offer.savedProductId, id)
+    assert.equal(manual.body.data.offer.relevanceScore, undefined)
+    assert.deepEqual(manual.body.data.manualOverrides, ['category', 'commissionPercent', 'commissionRate', 'coupon', 'description', 'relevanceScore', 'title'])
+    assert.equal(manual.body.data.offer.coupon, undefined)
+    assert.equal(manual.body.data.offer.commissionPercent, '14%')
+    const reimport = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [{ ...renamedLink, title: 'Automatic title', category: 'C', coupon: 'NEW', relevanceScore: 30, discountedPrice: 70 }] }) })
+    assert.equal(reimport.status, 200)
+    assert.equal(reimport.body.data.saved[0].offer.title, 'Panela revisada')
+    assert.equal(reimport.body.data.saved[0].offer.category, 'A')
+    assert.equal(reimport.body.data.saved[0].offer.coupon, undefined)
+    assert.equal(reimport.body.data.saved[0].offer.relevanceScore, undefined)
+    assert.equal(reimport.body.data.saved[0].offer.discountedPrice, 70)
+    assert.equal(reimport.body.data.saved[0].offer.commissionRate, 14)
 
     const otherSource = { ...offer, source: 'amazon', affiliateUrl: `https://amzn.to/catalog-${stamp}` }
     const second = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [otherSource] }) })
     assert.equal(second.body.data.created, 1)
     assert.notEqual(second.body.data.saved[0].id, id)
+    assert.equal((await request(0, `/${second.body.data.saved[0].id}`, { method: 'PATCH', body: JSON.stringify({ offer: { affiliateUrl: renamedLink.affiliateUrl } }) })).status, 409)
+    const manualUrl = `https://meli.la/manual-${stamp}`
+    const linkEdit = await request(0, `/${id}`, { method: 'PATCH', body: JSON.stringify({ offer: { affiliateUrl: manualUrl } }) })
+    assert.equal(linkEdit.status, 200)
+    assert.equal(linkEdit.body.data.offer.affiliateUrl, manualUrl)
+    const afterLinkReimport = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [renamedLink] }) })
+    assert.equal(afterLinkReimport.body.data.saved[0].id, id)
+    assert.equal(afterLinkReimport.body.data.saved[0].offer.affiliateUrl, manualUrl)
 
     const sentCampaign = await Campaign.create({
       userId: users[0].id,
@@ -105,6 +138,15 @@ test('saved product API persists selected categories and isolates users', async 
       offerUrl: offer.affiliateUrl,
       success: true,
     })
+    await CampaignLog.create({
+      campaignId: sentCampaign.id,
+      groupId: '123@g.us',
+      groupName: 'Test',
+      offerTitle: offer.title,
+      offerUrl: manualUrl,
+      success: true,
+    })
+    assert.equal((await request(0, `/${id}`, { method: 'PATCH', body: JSON.stringify({ offer: { affiliateUrl: `https://meli.la/manual-new-${stamp}` } }) })).status, 409)
 
     const flagsResponse = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/campaigns/check-offers`, {
       method: 'POST',
@@ -138,6 +180,24 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal(storedGeneric.source, null)
     assert.equal(storedGeneric.productId, generic.productId)
 
+    const idless = { ...generic, productId: undefined, affiliateUrl: `https://example.com/idless-${stamp}` }
+    const idlessSaved = await request(0, '', { method: 'POST', body: JSON.stringify({ offers: [idless] }) })
+    const idlessId = idlessSaved.body.data.saved[0].id
+    const idlessLog = await CampaignLog.create({
+      campaignId: sentCampaign.id,
+      groupId: '123@g.us',
+      groupName: 'Test',
+      offerTitle: idless.title,
+      offerUrl: idless.affiliateUrl,
+      success: true,
+    })
+    const idlessLinkEdit = await request(0, `/${idlessId}`, { method: 'PATCH', body: JSON.stringify({ offer: { affiliateUrl: `https://example.com/idless-new-${stamp}` } }) })
+    assert.equal(idlessLinkEdit.status, 409)
+    await idlessLog.update({ offerIdentity: offerIdentity({ savedProductId: idlessId, affiliateUrl: idless.affiliateUrl }) })
+    const catalogLinkEdit = await request(0, `/${idlessId}`, { method: 'PATCH', body: JSON.stringify({ offer: { affiliateUrl: `https://example.com/idless-new-${stamp}` } }) })
+    assert.equal(catalogLinkEdit.status, 200)
+    assert.equal(catalogLinkEdit.body.data.offer.savedProductId, idlessId)
+
     const bulk = Array.from({ length: 101 }, (_, index) => ({
       ...offer,
       source: 'test',
@@ -148,9 +208,9 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal((await request(0, '', { method: 'POST', body: JSON.stringify({ offers: bulk.slice(100) }) })).body.data.created, 1)
     const firstPage = await request(0, '?limit=100&offset=0')
     const secondPage = await request(0, '?limit=100&offset=100')
-    assert.equal(firstPage.body.data.total, 104)
+    assert.equal(firstPage.body.data.total, 105)
     assert.equal(firstPage.body.data.items.length, 100)
-    assert.equal(secondPage.body.data.items.length, 4)
+    assert.equal(secondPage.body.data.items.length, 5)
 
     const otherList = await request(1)
     assert.equal(otherList.body.data.total, 0)
@@ -158,6 +218,7 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal((await request(0, `/${id}`, { method: 'DELETE' })).status, 200)
     assert.equal((await request(0, `/${second.body.data.saved[0].id}`, { method: 'DELETE' })).status, 200)
     assert.equal((await request(0, `/${genericId}`, { method: 'DELETE' })).status, 200)
+    assert.equal((await request(0, `/${idlessId}`, { method: 'DELETE' })).status, 200)
     assert.equal((await request(0)).body.data.total, 101)
   } finally {
     if (server) await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))

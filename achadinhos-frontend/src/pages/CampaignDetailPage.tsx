@@ -20,12 +20,14 @@ import {
   campaignApi,
   groupApi,
   apiErrorMessage,
+  offerIdentity,
   type Campaign,
   type Offer,
   type Safety,
 } from '@/lib/api'
 import { Button, Card, Badge, Spinner, Input, Label } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
+import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const ACTIVE: Campaign['status'][] = ['RUNNING', 'SCHEDULED']
 
@@ -169,6 +171,38 @@ export default function CampaignDetailPage() {
     return list.filter((g) => g.name.toLowerCase().includes(q))
   }, [groupsQuery.data, groupSearch])
 
+  const campaignOfferKeys = useMemo(() => offers.map(offerIdentity), [offers])
+  const campaignGroupIds = useMemo(() => groups.map((group) => group.id).sort(), [groups])
+  const campaignGroupNames = useMemo(
+    () => new Map(groups.map((group) => [group.id, group.name])),
+    [groups],
+  )
+  const deliveryQuery = useQuery({
+    queryKey: ['offer-group-delivery', campaignOfferKeys, campaignGroupIds],
+    queryFn: () => campaignApi.checkOffersBatched(
+      offers.map((offer) => ({
+        savedProductId: offer.savedProductId,
+        source: offer.source,
+        productId: offer.productId,
+        affiliateUrl: offer.affiliateUrl,
+      })),
+      campaignGroupIds,
+    ),
+    enabled: offers.length > 0 && campaignGroupIds.length > 0,
+  })
+  const deliverySummary = useMemo(() => {
+    const counts = { eligible: 0, sent: 0, sending: 0, ambiguous: 0 }
+    for (const offer of offers) {
+      for (const group of deliveryQuery.data?.[offerIdentity(offer)]?.groups ?? []) {
+        if (group.status === 'unsent') counts.eligible++
+        else if (group.status === 'sent') counts.sent++
+        else if (group.claimStatus === 'unconfirmed' && group.recoverable) counts.ambiguous++
+        else counts.sending++
+      }
+    }
+    return counts
+  }, [deliveryQuery.data, offers])
+
   if (campaignQuery.isLoading || !c || !safety) {
     return (
       <div className="flex justify-center pt-10">
@@ -179,8 +213,12 @@ export default function CampaignDetailPage() {
 
   const editable = c.editable
   const totalPlanned = offers.length * groups.length
-  const done = c.totalSent + c.totalFailed
+  const done = Math.min(totalPlanned, c.totalSent + c.totalFailed + (c.totalSkipped ?? 0))
   const pct = totalPlanned > 0 ? Math.round((done / totalPlanned) * 100) : 0
+  const canRun = !runM.isPending
+    && !deliveryQuery.isPending
+    && !deliveryQuery.isError
+    && deliverySummary.eligible > 0
 
   const toggleGroupSel = (g: { id: string; name: string }) =>
     setGroups((prev) =>
@@ -221,8 +259,8 @@ export default function CampaignDetailPage() {
               <Save size={16} /> {saveMutation.isPending ? 'Salvando…' : 'Salvar'}
             </Button>
           )}
-          {(c.status === 'DRAFT' || c.status === 'FAILED' || c.status === 'PAUSED') && (
-            <Button variant="secondary" onClick={() => runM.mutate()} disabled={runM.isPending}>
+          {(c.status === 'DRAFT' || c.status === 'FAILED') && (
+            <Button variant="secondary" onClick={() => runM.mutate()} disabled={!canRun}>
               <Play size={16} /> Enviar agora
             </Button>
           )}
@@ -254,6 +292,38 @@ export default function CampaignDetailPage() {
         <p className="text-sm text-green-600">Alterações salvas.</p>
       )}
 
+      {offers.length > 0 && groups.length > 0 && (
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="font-semibold">Envio por produto e grupo</h2>
+              <p className="text-sm text-zinc-500">O mesmo produto pode ir a vários grupos da conexão atual; cada combinação é controlada separadamente.</p>
+            </div>
+            {deliveryQuery.isPending ? <Spinner /> : (
+              <div className="flex flex-wrap gap-3 text-sm">
+                <span className="font-medium text-green-700">{deliverySummary.eligible} a enviar</span>
+                <span className="font-medium text-amber-700">{deliverySummary.sent} já enviada(s)</span>
+                <span className="font-medium text-blue-700">{deliverySummary.sending} em campanha</span>
+                <span className="font-medium text-red-700">{deliverySummary.ambiguous} sem confirmação</span>
+              </div>
+            )}
+          </div>
+          {deliveryQuery.isError && (
+            <p role="alert" className="mt-3 text-sm text-red-700">
+              Não foi possível verificar o histórico. O início da campanha fica bloqueado até a
+              verificação funcionar. <button type="button" className="underline" onClick={() => void deliveryQuery.refetch()}>Tentar novamente</button>
+            </p>
+          )}
+          {!deliveryQuery.isPending && !deliveryQuery.isError && deliverySummary.eligible === 0 && c.status === 'DRAFT' && (
+            <p role="status" className="mt-3 text-sm text-amber-800">
+              {deliverySummary.ambiguous > 0
+                ? `Há ${deliverySummary.ambiguous} envio(s) sem confirmação. Confira o WhatsApp e resolva cada item abaixo antes de iniciar.`
+                : 'Todos os pares desta campanha já foram enviados ou estão em outra campanha. Adicione outro produto ou grupo antes de iniciar.'}
+            </p>
+          )}
+        </Card>
+      )}
+
       {!editable && (
         <Card>
           <div className="mb-2 flex items-center justify-between text-sm">
@@ -268,6 +338,7 @@ export default function CampaignDetailPage() {
           <div className="mt-3 flex gap-4 text-sm">
             <span className="text-green-600">{c.totalSent} enviadas</span>
             <span className="text-red-600">{c.totalFailed} falhas</span>
+            <span className="text-zinc-500">{c.totalSkipped ?? 0} ignoradas por histórico</span>
           </div>
         </Card>
       )}
@@ -355,11 +426,12 @@ export default function CampaignDetailPage() {
             <h2 className="mb-3 font-semibold">Produtos ({offers.length})</h2>
             <div className="max-h-80 space-y-1 overflow-y-auto">
               {offers.map((o, i) => (
-                <div key={i} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-zinc-50">
+                <div key={i} className="grid gap-2 rounded-lg px-2 py-2 hover:bg-zinc-50 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)_auto] md:items-start">
                   {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
-                  <span className="flex-1 truncate text-sm">{o.title}</span>
+                  <span className="min-w-0 truncate text-sm">{o.title}</span>
                   <OfferCategoryBadge offer={o} />
                   <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
+                  <ProductDeliveryStatus groups={deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} compact={groups.length > 4} />
                   {o.commissioned === false && <Badge tone="amber">sem comissão</Badge>}
                   <button
                     onClick={() => setOffers((prev) => prev.filter((_, idx) => idx !== i))}
@@ -501,11 +573,12 @@ export default function CampaignDetailPage() {
             <h2 className="mb-3 font-semibold">Produtos ({offers.length})</h2>
             <div className="max-h-80 space-y-1 overflow-y-auto">
               {offers.map((o, i) => (
-                <div key={i} className="flex items-center gap-3 rounded-lg px-2 py-1.5">
+                <div key={i} className="grid gap-2 rounded-lg px-2 py-2 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)] md:items-start">
                   {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
-                  <span className="flex-1 truncate text-sm">{o.title}</span>
+                  <span className="min-w-0 truncate text-sm">{o.title}</span>
                   <OfferCategoryBadge offer={o} />
                   <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
+                  <ProductDeliveryStatus groups={deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} compact={groups.length > 4} />
                 </div>
               ))}
             </div>

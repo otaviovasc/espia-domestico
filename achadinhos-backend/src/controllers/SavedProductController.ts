@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { inject, injectable } from 'tsyringe'
 import { z } from 'zod'
 import { OfferSchema } from '@/dtos/campaign'
+import { SavedProductOfferPatchSchema } from '@/dtos/savedProduct'
 import { BadRequestError, NotFoundError, UnauthorizedError } from '@/middleware/Error/AppError'
 import { SavedProductService } from '@/services/SavedProductService'
 
@@ -45,6 +46,14 @@ export class SavedProductController {
     if (limit < 1) throw BadRequestError('Paginação inválida')
     const offset = pagination(req.query.offset, 0, Number.MAX_SAFE_INTEGER)
     const result = await this.service.list(this.userId(req), limit, offset)
+    res.json({ success: true, data: result })
+  }
+
+  async update(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isSafeInteger(id) || id < 1) throw BadRequestError('ID inválido')
+    const parsed = z.object({ offer: SavedProductOfferPatchSchema }).strict().parse(req.body)
+    const result = await this.service.update(this.userId(req), id, parsed.offer)
     res.json({ success: true, data: result })
   }
 

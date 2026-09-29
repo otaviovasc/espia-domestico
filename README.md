@@ -114,8 +114,27 @@ de 100 produtos por importação.
 Na página de produtos, escolha quais resultados quer salvar. O catálogo pertence
 ao usuário logado; salvar novamente o mesmo produto atualiza seus dados e sua
 categoria. A página de campanha lê esse catálogo para montar um disparo posterior.
-Rode `npm run migrate` no backend após atualizar o código para criar a tabela
-`saved_products` no PostgreSQL local.
+No catálogo, é possível buscar entre os produtos carregados, filtrar por
+categoria, editar título, preço, comissão, link e outros campos, ou remover um
+produto. Campos alterados manualmente são preservados quando o mesmo produto é
+importado novamente. A origem e o ID do marketplace não podem ser editados.
+
+O histórico mostra cada produto por grupo da conexão WhatsApp atual. Ao criar
+uma campanha, a interface informa quais combinações de produto e grupo ainda
+podem ser enviadas. O backend ignora automaticamente combinações já aceitas
+pela UAZAPI ou em envio, mas permite o mesmo produto nos grupos que ainda não
+o receberam. Enquanto a chamada à UAZAPI está ativa, o backend renova a posse
+do envio; a resolução manual só fica disponível cinco minutos após a última
+renovação. Um envio sem confirmação após interrupção exige conferência no
+WhatsApp antes de marcar como enviado ou liberar nova tentativa. A marca
+"enviado" indica que a UAZAPI aceitou a mensagem com um ID; não é recibo de
+leitura ou confirmação de entrega do WhatsApp.
+
+Rode `npm run migrate` no backend após atualizar o código para aplicar as
+migrações do catálogo e do histórico de envio por grupo no PostgreSQL local.
+A migração `20260929000009` mantém o endereço do servidor na identidade da
+conexão. Ela não pode ser revertida para código anterior sem ocultar o histórico
+de envios e criar risco de disparos repetidos; seu rollback falha explicitamente.
 
 A nota final pesa relevância (60%), desconto (25%, com teto em 50%) e comissão
 (15%, com teto em 20%). A exige relevância de pelo menos 75/100, desconto de
