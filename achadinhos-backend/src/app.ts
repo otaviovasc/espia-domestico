@@ -17,6 +17,7 @@ import { campaignRoutes } from '@/routes/campaignRoutes'
 import { savedProductRoutes } from '@/routes/savedProductRoutes'
 import { classificationProfileRoutes } from '@/routes/classificationProfileRoutes'
 import { productGroupRoutes } from '@/routes/productGroupRoutes'
+import { adProjectRoutes } from '@/routes/adProjectRoutes'
 
 export function createApp(): Application {
   const app = express()
@@ -61,6 +62,7 @@ export function createApp(): Application {
   app.use(`${prefix}/saved-products`, savedProductRoutes)
   app.use(`${prefix}/classification-profiles`, classificationProfileRoutes)
   app.use(`${prefix}/product-groups`, productGroupRoutes)
+  app.use(`${prefix}/ad-projects`, adProjectRoutes)
 
   app.use(notFoundHandler)
   app.use(errorHandler)

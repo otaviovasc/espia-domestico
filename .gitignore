@@ -24,3 +24,5 @@ coverage/
 .railway/
 
 /afiliados-extension
+/.codebase-memory/
+/.playwright-mcp/

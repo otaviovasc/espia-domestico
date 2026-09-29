@@ -11,9 +11,10 @@ Cada membro do time tem seu próprio login e sua própria conexão do WhatsApp
 2. **Conexão** → conecta seu número lendo o QR Code (ou por código de pareamento).
 3. **Grupos** → lista os grupos do número conectado e seleciona os alvos.
 4. **Produtos** → classifica um lote JSON na página `/painel/products`, escolhe e salva os produtos em um catálogo pessoal.
-5. **Nova campanha** → seleciona produtos do catálogo e os grupos de destino.
-6. **Segurança** → define intervalo entre mensagens, limite por hora, aquecimento e embaralhamento.
-7. **Enviar / Agendar** → dispara na hora ou agenda; acompanha o progresso e os logs.
+5. **Biblioteca de anúncios** → combina clipes, textos e música para criar vídeos verticais de divulgação.
+6. **Nova campanha** → seleciona produtos do catálogo e os grupos de destino.
+7. **Segurança** → define intervalo entre mensagens, limite por hora, aquecimento e embaralhamento.
+8. **Enviar / Agendar** → dispara na hora ou agenda; acompanha o progresso e os logs.
 
 Construído reaproveitando a base sólida do projeto `repasses` (UazapiClient,
 padrões de erro, lifecycle de conexão, stack de frontend), porém **enxuto e
@@ -31,6 +32,7 @@ achadinhos-project/
 
 - Node.js ≥ 22 (AI SDK v7 e provedor OpenRouter)
 - Docker (para o Postgres local)
+- FFmpeg e FFprobe (para gerar vídeos na biblioteca de anúncios)
 - Um **UAZAPI_ADMIN_TOKEN** (para provisionar instâncias) e a base URL da UAZAPI
 
 ## Subindo o backend
@@ -71,6 +73,7 @@ npm run dev                  # http://localhost:5273
 - **`/painel`** → ferramenta interna do time (login obrigatório). A UI de suporte
   fica sob esse caminho, separada da página pública.
 - **`/painel/products`** → classifica um JSON e gerencia os produtos salvos.
+- **`/painel/ads`** → cria e gerencia vídeos da biblioteca de anúncios.
 - **`/painel/compose`** → seleciona os produtos salvos para uma campanha.
 
 Em produção: `npm run build` gera `dist/index.html` (LP) e `dist/painel/index.html`
@@ -82,6 +85,52 @@ A landing page fica em `achadinhos-frontend/landing/index.html` — edite os lin
 
 Em desenvolvimento o Vite faz proxy de `/api` para o backend, então o cookie de
 sessão (httpOnly) funciona no mesmo domínio, sem dor de cabeça de CORS.
+
+## Biblioteca de anúncios
+
+Em `/painel/ads`, crie um projeto, envie os clipes curtos e, se quiser, uma
+música de fundo. Escreva as frases que aparecerão no vídeo e escolha quantas
+variações gerar. Cada variação alterna os clipes e as frases. O áudio dos
+clipes é removido; apenas a música enviada pelo usuário aparece na saída.
+O editor permite escolher a duração, mudar clipe e frase em intervalos fixos
+ou em pulsos detectados na música, selecionar um tratamento de cor e ajustar
+tamanho, posição e contorno do texto. A prévia vertical mostra a composição
+antes de iniciar o render. Os vídeos prontos podem ser vistos e baixados na
+biblioteca; projetos podem ser salvos, duplicados e editados.
+
+Instale `ffmpeg` e `ffprobe` no host do backend. No deploy Railway via Nixpacks,
+`achadinhos-backend/nixpacks.toml` inclui FFmpeg e fontes DejaVu. Os metadados
+dos projetos ficam no PostgreSQL. O backend usa `AD_STORAGE_DRIVER=local` e
+`AD_MEDIA_DIR` (padrão: `./data/ad-media`) no desenvolvimento. Em produção,
+configure `AD_STORAGE_DRIVER=s3` e um Railway Storage Bucket privado com estas
+referências de variáveis no serviço backend:
+
+```text
+AD_S3_BUCKET=${{ad-library-media.BUCKET}}
+AD_S3_ENDPOINT=${{ad-library-media.ENDPOINT}}
+AD_S3_REGION=${{ad-library-media.REGION}}
+AD_S3_ACCESS_KEY_ID=${{ad-library-media.ACCESS_KEY_ID}}
+AD_S3_SECRET_ACCESS_KEY=${{ad-library-media.SECRET_ACCESS_KEY}}
+```
+
+O backend guarda clipes, músicas e MP4s no bucket; a API autentica o acesso
+aos arquivos. O diretório local é temporário para uploads e renders. O bucket
+é privado e deve permanecer assim. `AD_MAX_CLIP_MB`, `AD_MAX_MUSIC_MB` e
+`AD_RENDER_CONCURRENCY` controlam limites de upload e renders simultâneos;
+`AD_FONT_FILE` permite indicar outra fonte para o texto.
+
+Os renders são trabalhos em segundo plano. Se o servidor reiniciar, acompanhe
+o estado do trabalho na página e tente novamente quando necessário. O modo de
+sincronização com música usa análise de pulsos de volume, portanto músicas
+sem batidas claras podem produzir cortes em intervalos regulares. Confira as
+variações antes de publicar e use apenas vídeos e músicas para os quais você
+tem direito de uso. A [pesquisa técnica](docs/ads-research.md) registra as
+fontes e as decisões de implementação.
+
+Os emojis gráficos são derivados de [Twemoji](https://github.com/jdecked/twemoji),
+por Twitter e colaboradores, sob [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+O pacote otimiza os SVGs para uso no render; esta atribuição deve acompanhar
+o produto quando as peças forem compartilhadas.
 
 ## Importação de produtos (ingestores por marketplace)
 

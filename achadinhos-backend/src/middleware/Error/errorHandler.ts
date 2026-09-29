@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express'
 import { ZodError } from 'zod'
+import multer from 'multer'
 import { AppError } from './AppError'
 import { logger } from '@/utils/logger'
 
@@ -37,6 +38,17 @@ export function errorHandler(
         message: 'Validation failed',
         code: 'VALIDATION_ERROR',
         details: err.flatten(),
+      },
+    })
+    return
+  }
+
+  if (err instanceof multer.MulterError) {
+    res.status(400).json({
+      success: false,
+      error: {
+        message: err.code === 'LIMIT_FILE_SIZE' ? 'Arquivo excede o limite permitido' : 'Upload inválido',
+        code: 'UPLOAD_ERROR',
       },
     })
     return

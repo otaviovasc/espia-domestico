@@ -7,6 +7,9 @@ import { ClassificationProfileRecord } from './ClassificationProfile'
 import { ProductGroup } from './ProductGroup'
 import { SavedProduct } from './SavedProduct'
 import { SavedProductGroupMembership } from './SavedProductGroupMembership'
+import { AdProject } from './AdProject'
+import { AdAsset } from './AdAsset'
+import { AdRenderJob } from './AdRenderJob'
 
 /**
  * Register model associations. Call once at boot before serving requests.
@@ -43,6 +46,13 @@ export function registerAssociations(): void {
     otherKey: 'productGroupId',
     as: 'productGroups',
   })
+
+  User.hasMany(AdProject, { foreignKey: 'userId', as: 'adProjects' })
+  AdProject.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+  AdProject.hasMany(AdAsset, { foreignKey: 'projectId', as: 'assets' })
+  AdAsset.belongsTo(AdProject, { foreignKey: 'projectId', as: 'project' })
+  AdProject.hasMany(AdRenderJob, { foreignKey: 'projectId', as: 'renderJobs' })
+  AdRenderJob.belongsTo(AdProject, { foreignKey: 'projectId', as: 'project' })
 }
 
 export {
@@ -55,4 +65,7 @@ export {
   ProductGroup,
   SavedProduct,
   SavedProductGroupMembership,
+  AdProject,
+  AdAsset,
+  AdRenderJob,
 }
