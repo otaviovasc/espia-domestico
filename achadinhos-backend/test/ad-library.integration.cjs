@@ -110,6 +110,7 @@ test('ad library stores media, renders a beat-synced variation and serves ranges
   const token = generateToken(user)
   let server
   let projectId
+  let duplicateId
   try {
     server = createApp().listen(0)
     await new Promise((resolve) => server.once('listening', resolve))
@@ -186,11 +187,47 @@ test('ad library stores media, renders a beat-synced variation and serves ranges
 
     config.selectedClipIds = clips.body.data.map((item) => item.id)
     config.musicAssetId = uploadedMusic.body.data[0].id
+    config.musicTracks = [
+      { assetId: config.musicAssetId, volume: 0.7, startSeconds: 0, endSeconds: 1.5, sourceStartSeconds: 0, fadeInSeconds: 0.1, fadeOutSeconds: 0.1 },
+      { assetId: config.musicAssetId, volume: 0.55, startSeconds: 1.5, endSeconds: 3, sourceStartSeconds: 0, fadeInSeconds: 0.1, fadeOutSeconds: 0.1 },
+    ]
+    config.hook = { enabled: true, clipAssetId: config.selectedClipIds[0], durationSeconds: 0.75, text: 'VEJA ISSO' }
+    const firstClipId = config.selectedClipIds[0]
+    const foreignEdit = await jsonRequest(`${base}/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ config: { ...config, clipEdits: { 999999: { trimStart: 0.25 } } } }),
+    })
+    assert.equal(foreignEdit.response.status, 422)
+    const invalidTrim = await jsonRequest(`${base}/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ config: { ...config, clipEdits: { [firstClipId]: { trimStart: 0, trimEnd: 5 } } } }),
+    })
+    assert.equal(invalidTrim.response.status, 422)
+    const foreignMusic = await jsonRequest(`${base}/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ config: { ...config, musicTracks: [{ ...config.musicTracks[0], assetId: 999999 }] } }),
+    })
+    assert.equal(foreignMusic.response.status, 422)
+    const staleLegacyMusic = await jsonRequest(`${base}/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ config: { ...config, musicAssetId: 999999 } }),
+    })
+    assert.equal(staleLegacyMusic.response.status, 422)
+    config.clipEdits = { [firstClipId]: { trimStart: 0.25, trimEnd: 1.75, speed: 1.25 } }
     const updated = await jsonRequest(`${base}/${projectId}`, {
       method: 'PATCH',
       body: JSON.stringify({ config }),
     })
     assert.equal(updated.response.status, 200)
+    const duplicated = await jsonRequest(`${base}/${projectId}/duplicate`, { method: 'POST' })
+    assert.equal(duplicated.response.status, 201)
+    duplicateId = duplicated.body.data.id
+    const copiedClipId = duplicated.body.data.config.selectedClipIds[0]
+    assert.notEqual(copiedClipId, firstClipId)
+    assert.equal(duplicated.body.data.config.clipEdits[String(copiedClipId)].trimStart, 0.25)
+    assert.equal(duplicated.body.data.config.clipEdits[String(firstClipId)], undefined)
+    assert.equal(duplicated.body.data.config.hook.clipAssetId, copiedClipId)
+    assert.notEqual(duplicated.body.data.config.musicTracks[0].assetId, config.musicAssetId)
 
     const started = await jsonRequest(`${base}/${projectId}/render-jobs`, {
       method: 'POST',
@@ -286,13 +323,15 @@ test('ad library stores media, renders a beat-synced variation and serves ranges
       server.close()
       server.closeAllConnections()
     }
-    if (projectId) {
+    if (projectId || duplicateId) {
       const { AdProject } = require('../dist/database/models/AdProject.js')
-      await AdProject.destroy({ where: { id: projectId } })
-      await rm(path.join(path.resolve(env.AD_MEDIA_DIR), 'projects', String(projectId)), {
-        recursive: true,
-        force: true,
-      })
+      for (const id of [duplicateId, projectId].filter(Boolean)) {
+        await AdProject.destroy({ where: { id } })
+        await rm(path.join(path.resolve(env.AD_MEDIA_DIR), 'projects', String(id)), {
+          recursive: true,
+          force: true,
+        })
+      }
     }
     await user.destroy()
     await otherUser.destroy()

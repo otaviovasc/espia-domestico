@@ -12,11 +12,89 @@ export const AdTextStyleSchema = z
   })
   .default({})
 
+export const AdClipEditSchema = z.object({
+  trimStart: z.number().min(0).max(3600).default(0),
+  trimEnd: z.number().min(0).max(3600).nullable().default(null),
+  speed: z.union([
+    z.literal(0.5),
+    z.literal(0.75),
+    z.literal(1),
+    z.literal(1.25),
+    z.literal(1.5),
+    z.literal(2),
+  ]).default(1),
+  framingOverride: z.boolean().default(false),
+  focusX: z.number().int().min(0).max(100).default(50),
+  focusY: z.number().int().min(0).max(100).default(50),
+  zoom: z.number().min(1).max(3).default(1),
+})
+
+export const AdTransitionSchema = z
+  .object({
+    preset: z
+      .enum(['cut', 'fade', 'dissolve', 'slide-left', 'slide-up', 'zoom'])
+      .default('cut'),
+    durationSeconds: z.number().min(0.1).max(1.5).default(0.35),
+    sfx: z.enum(['none', 'whoosh', 'pop', 'click']).default('none'),
+    sfxVolume: z.number().min(0).max(0.5).default(0.18),
+  })
+  .default({})
+
+export const AdVisualEffectsSchema = z
+  .object({
+    preset: z
+      .enum(['natural', 'clean-product', 'warm-ugc', 'vivid', 'cinematic', 'custom'])
+      .default('natural'),
+    brightness: z.number().min(-1).max(1).default(0),
+    contrast: z.number().min(0.5).max(2).default(1),
+    saturation: z.number().min(0).max(3).default(1),
+    sharpness: z.number().min(0).max(2).default(0),
+    temperature: z.number().min(-1).max(1).default(0),
+    vignette: z.number().min(0).max(1).default(0),
+    grain: z.number().min(0).max(1).default(0),
+    glow: z.number().min(0).max(1).default(0),
+  })
+  .default({})
+
+export const AdHookSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    clipAssetId: z.number().int().positive().nullable().default(null),
+    durationSeconds: z.number().min(0.5).max(5).default(1.5),
+    text: z.string().trim().max(120).default(''),
+  })
+  .default({})
+
+export const AdMusicTrackSchema = z
+  .object({
+    assetId: z.number().int().positive(),
+    volume: z.number().min(0).max(1).default(0.8),
+    startSeconds: z.number().min(0).max(60).default(0),
+    endSeconds: z.number().min(0).max(60).nullable().default(null),
+    sourceStartSeconds: z.number().min(0).max(3600).default(0),
+    fadeInSeconds: z.number().min(0).max(5).default(0),
+    fadeOutSeconds: z.number().min(0).max(5).default(0.8),
+  })
+  .superRefine((track, context) => {
+    if (track.endSeconds !== null && track.endSeconds <= track.startSeconds) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['endSeconds'],
+        message: 'endSeconds deve ser maior que startSeconds',
+      })
+    }
+  })
+
 export const AdProjectConfigSchema = z.object({
   variationCount: z.number().int().min(1).max(20).default(5),
   texts: z.array(z.string().trim().min(1).max(280)).min(1).max(20),
   selectedClipIds: z.array(z.number().int().positive()).max(50).default([]),
+  clipEdits: z
+    .record(z.string().regex(/^[1-9]\d*$/), AdClipEditSchema)
+    .default({}),
   musicAssetId: z.number().int().positive().nullable().default(null),
+  musicVolume: z.number().min(0).max(1).default(0.8),
+  musicTracks: z.array(AdMusicTrackSchema).max(8).default([]),
   timing: z.discriminatedUnion('mode', [
     z.object({ mode: z.literal('fixed'), seconds: z.number().min(0.5).max(15).default(2.5) }),
     z.object({ mode: z.literal('beat') }),
@@ -36,6 +114,9 @@ export const AdProjectConfigSchema = z.object({
     backgroundColor: z.string().regex(/^#[0-9a-f]{6}$/i).default('#101018'),
   }).default({}),
   colorPreset: AdColorPresetSchema.default('natural'),
+  transition: AdTransitionSchema,
+  visualEffects: AdVisualEffectsSchema,
+  hook: AdHookSchema,
   textStyle: AdTextStyleSchema,
 })
 

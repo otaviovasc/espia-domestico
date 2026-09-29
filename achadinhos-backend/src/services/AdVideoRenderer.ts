@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -9,6 +9,11 @@ import { AdAsset } from '@/database/models/AdAsset'
 import type { AdRenderJob, AdRenderOutput } from '@/database/models/AdRenderJob'
 import type { AdProjectConfig } from '@/dtos/adProject'
 import { adMediaRoot, runProcess } from '@/services/AdMediaService'
+import {
+  buildGlowGraph,
+  buildLinearVisualEffectFilter,
+  hasVisualGlow,
+} from '@/services/adVideoEffects'
 
 const COLOR_FILTERS: Record<AdProjectConfig['colorPreset'], string> = {
   natural: 'eq=contrast=1.04:saturation=1.08:brightness=0.01',
@@ -16,23 +21,6 @@ const COLOR_FILTERS: Record<AdProjectConfig['colorPreset'], string> = {
   warm: 'eq=contrast=1.05:saturation=1.14:gamma_r=1.06:gamma_b=0.96',
   cool: 'eq=contrast=1.05:saturation=1.1:gamma_b=1.07:gamma_r=0.97',
   none: 'null',
-}
-
-function seededRandom(seed: string): () => number {
-  let state = createHash('sha256').update(seed).digest().readUInt32LE(0)
-  return () => {
-    state = (state * 1664525 + 1013904223) >>> 0
-    return state / 0x1_0000_0000
-  }
-}
-
-function shuffled<T>(values: T[], random: () => number): T[] {
-  const result = [...values]
-  for (let i = result.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(random() * (i + 1))
-    ;[result[i], result[j]] = [result[j], result[i]]
-  }
-  return result
 }
 
 function rotated<T>(values: T[], offset: number): T[] {
@@ -140,37 +128,164 @@ function fixedCuts(duration: number, seconds: number): number[] {
   return cuts
 }
 
-function segmentVideoFilter(config: AdProjectConfig): { filter: string; complex: boolean } {
+function cutsWithHook(config: AdProjectConfig, cuts: number[]): number[] {
+  if (!config.hook?.enabled) return cuts
+  const end = Math.min(config.output.durationSeconds, config.hook.durationSeconds)
+  if (end >= config.output.durationSeconds - 0.1) return [0, config.output.durationSeconds]
+  return [0, end, ...cuts.filter((cut) => cut > end + 0.1)]
+}
+
+type ClipEdit = AdProjectConfig['clipEdits'][string]
+
+const DEFAULT_CLIP_EDIT: ClipEdit = {
+  trimStart: 0,
+  trimEnd: null,
+  speed: 1,
+  framingOverride: false,
+  focusX: 50,
+  focusY: 50,
+  zoom: 1,
+}
+
+function storedClipEdit(config: AdProjectConfig, assetId: number): ClipEdit | undefined {
+  return config.clipEdits?.[String(assetId)]
+}
+
+function segmentVideoFilter(
+  config: AdProjectConfig,
+  edit: ClipEdit,
+  hasPerClipFraming: boolean,
+  sourceDuration: number,
+  outputDuration: number,
+): { filter: string; complex: boolean } {
   const { width, height, fps } = config.output
   const framing = config.framing ?? {
     mode: 'cover', focusX: 50, focusY: 50, backgroundColor: '#101018',
   }
-  const finish = `${COLOR_FILTERS[config.colorPreset]},fps=${fps},setsar=1,format=yuv420p`
-  const cover = `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}:(in_w-out_w)*${framing.focusX / 100}:(in_h-out_h)*${framing.focusY / 100}`
+  const focusX = hasPerClipFraming && edit.framingOverride ? edit.focusX : framing.focusX
+  const focusY = hasPerClipFraming && edit.framingOverride ? edit.focusY : framing.focusY
+  const zoom = hasPerClipFraming && edit.framingOverride ? edit.zoom : 1
+  const targetWidth = Math.max(width, Math.round((width * zoom) / 2) * 2)
+  const targetHeight = Math.max(height, Math.round((height * zoom) / 2) * 2)
+  const effectiveDuration = sourceDuration / edit.speed
+  // The loop filter buffers frames, so use it only for genuinely short selections.
+  // Longer clips get a frozen final frame if their selected range is just shy of
+  // the requested segment, avoiding unbounded memory use on high-resolution input.
+  const shouldLoop = effectiveDuration + 0.05 < outputDuration && effectiveDuration <= 12
+  const repeat = shouldLoop
+    ? `fps=${fps},loop=loop=-1:size=${Math.max(1, Math.ceil(effectiveDuration * fps))}:start=0,setpts=N/${fps}/TB`
+    : `tpad=stop_mode=clone:stop_duration=${outputDuration.toFixed(3)}`
+  const timing = `trim=duration=${sourceDuration.toFixed(3)},setpts=(PTS-STARTPTS)/${edit.speed},${repeat},trim=duration=${outputDuration.toFixed(3)},setpts=PTS-STARTPTS`
+  const finish = `${COLOR_FILTERS[config.colorPreset]},${buildLinearVisualEffectFilter(config)},fps=${fps},setsar=1,format=yuv420p`
+  const cover = `scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=increase,crop=${width}:${height}:(in_w-out_w)*${focusX / 100}:(in_h-out_h)*${focusY / 100}`
   if (framing.mode === 'contain-solid') {
     const color = `0x${framing.backgroundColor.slice(1)}`
     return {
-      filter: `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${color},${finish}`,
+      filter: `${timing},scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,crop='min(iw,${width})':'min(ih,${height})':'max(0,(iw-ow)*${focusX / 100})':'max(0,(ih-oh)*${focusY / 100})',pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=${color},${finish}`,
       complex: false,
     }
   }
   if (framing.mode === 'contain-blur') {
     return {
-      filter: `[0:v]split=2[background][foreground];[background]${cover},gblur=sigma=28[blurred];[foreground]scale=${width}:${height}:force_original_aspect_ratio=decrease[sharp];[blurred][sharp]overlay=(W-w)/2:(H-h)/2,${finish}[vout]`,
+      filter: `[0:v]${timing},split=2[background][foreground];[background]scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}:(in_w-out_w)*${focusX / 100}:(in_h-out_h)*${focusY / 100},gblur=sigma=28[blurred];[foreground]scale=${targetWidth}:${targetHeight}:force_original_aspect_ratio=decrease,crop='min(iw,${width})':'min(ih,${height})':'max(0,(iw-ow)*${focusX / 100})':'max(0,(ih-oh)*${focusY / 100})'[sharp];[blurred][sharp]overlay=(W-w)/2:(H-h)/2,${finish}[vout]`,
       complex: true,
     }
   }
-  return { filter: `${cover},${finish}`, complex: false }
+  return { filter: `${timing},${cover},${finish}`, complex: false }
+}
+
+const XFADE_TRANSITIONS: Record<
+  Exclude<AdProjectConfig['transition']['preset'], 'cut'>,
+  string
+> = {
+  fade: 'fade',
+  dissolve: 'dissolve',
+  'slide-left': 'slideleft',
+  'slide-up': 'slideup',
+  zoom: 'zoomin',
+}
+
+function transitionSettings(config: AdProjectConfig): AdProjectConfig['transition'] {
+  return config.transition ?? {
+    preset: 'cut',
+    durationSeconds: 0.35,
+    sfx: 'none',
+    sfxVolume: 0.18,
+  }
+}
+
+async function joinSegments(
+  segments: string[],
+  cuts: number[],
+  outputPath: string,
+  transition: AdProjectConfig['transition'],
+  signal?: AbortSignal,
+): Promise<void> {
+  if (transition.preset === 'cut' || segments.length < 2) {
+    const concatFile = path.join(path.dirname(outputPath), 'segments.ffconcat')
+    await writeFile(
+      concatFile,
+      `ffconcat version 1.0\n${segments.map((item) => `file '${ffconcatEscape(item)}'`).join('\n')}\n`,
+    )
+    await runProcess(
+      'ffmpeg',
+      ['-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', concatFile, '-c', 'copy', outputPath],
+      { signal },
+    )
+    return
+  }
+
+  const args = ['-v', 'error', '-y']
+  for (const segment of segments) args.push('-i', segment)
+  const filters: string[] = []
+  let current = '0:v'
+  for (let index = 1; index < segments.length; index += 1) {
+    const next = index === segments.length - 1 ? 'vout' : `xf${index}`
+    filters.push(
+      `[${current}][${index}:v]xfade=transition=${XFADE_TRANSITIONS[transition.preset]}:duration=${transition.durationSeconds.toFixed(3)}:offset=${cuts[index].toFixed(3)}[${next}]`,
+    )
+    current = next
+  }
+  args.push(
+    '-filter_complex', filters.join(';'),
+    '-map', '[vout]',
+    '-an',
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '20',
+    '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart',
+    outputPath,
+  )
+  await runProcess('ffmpeg', args, { signal })
+}
+
+function sfxFilter(
+  preset: AdProjectConfig['transition']['sfx'],
+  volume: number,
+  delaySeconds: number,
+  label: string,
+): string {
+  const delay = Math.round(delaySeconds * 1000)
+  const gain = volume.toFixed(3)
+  if (preset === 'whoosh') {
+    return `anoisesrc=color=pink:amplitude=0.35:duration=0.32:sample_rate=48000,highpass=f=700,lowpass=f=6500,afade=t=in:st=0:d=0.04,afade=t=out:st=0.12:d=0.2,volume=${gain},adelay=${delay}:all=1[${label}]`
+  }
+  if (preset === 'pop') {
+    return `sine=frequency=210:duration=0.14:sample_rate=48000,afade=t=out:st=0.025:d=0.115,volume=${gain},adelay=${delay}:all=1[${label}]`
+  }
+  return `sine=frequency=1800:duration=0.055:sample_rate=48000,afade=t=out:st=0.012:d=0.043,volume=${gain},adelay=${delay}:all=1[${label}]`
 }
 
 async function detectBeatCuts(
   musicPath: string,
   duration: number,
+  sourceStart = 0,
   signal?: AbortSignal,
 ): Promise<{ cuts: number[]; timingSource: 'beat' | 'fallback' }> {
   const pcm = await runProcess(
     'ffmpeg',
-    ['-v', 'error', '-stream_loop', '-1', '-i', musicPath, '-t', String(duration), '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'],
+    ['-v', 'error', '-stream_loop', '-1', '-ss', sourceStart.toFixed(3), '-i', musicPath, '-t', String(duration), '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'],
     { captureStdout: true, signal },
   )
   const samplesPerWindow = 400 // 50ms at 8kHz
@@ -218,20 +333,53 @@ export class AdVideoRenderer {
   async render(
     job: AdRenderJob,
     clips: AdAsset[],
-    music: AdAsset | null,
+    music: AdAsset[],
     onProgress: (progress: number) => Promise<void>,
     signal?: AbortSignal,
   ): Promise<AdRenderOutput[]> {
     const config = job.configSnapshot
     const duration = config.output.durationSeconds
+    const musicById = new Map(music.map((asset) => [asset.id, asset]))
+    const configuredTracks = config.musicTracks?.length
+      ? config.musicTracks
+      : config.musicAssetId
+        ? [{
+            assetId: config.musicAssetId,
+            volume: config.musicVolume ?? 0.8,
+            startSeconds: 0,
+            endSeconds: null,
+            sourceStartSeconds: 0,
+            fadeInSeconds: 0,
+            fadeOutSeconds: 0.8,
+          }]
+        : []
+    const musicTracks = configuredTracks
+      .map((track) => ({ track, asset: musicById.get(track.assetId) }))
+      .filter((item): item is { track: typeof configuredTracks[number]; asset: AdAsset } => Boolean(item.asset))
+    const beatTrack = musicTracks[0]
     const timing =
-      config.timing.mode === 'beat' && music
-        ? await detectBeatCuts(music.storagePath, duration, signal)
+      config.timing.mode === 'beat' && beatTrack
+        ? await detectBeatCuts(
+            beatTrack.asset.storagePath,
+            duration,
+            beatTrack.track.sourceStartSeconds,
+            signal,
+          )
         : {
             cuts: fixedCuts(duration, config.timing.mode === 'fixed' ? config.timing.seconds : 2.5),
             timingSource: config.timing.mode === 'fixed' ? ('fixed' as const) : ('fallback' as const),
           }
-    const { cuts, timingSource } = timing
+    const cuts = cutsWithHook(config, timing.cuts)
+    const { timingSource } = timing
+    const requestedTransition = transitionSettings(config)
+    const shortestSegment = Math.min(...cuts.slice(1).map((cut, index) => cut - cuts[index]))
+    const transition = {
+      ...requestedTransition,
+      durationSeconds: Math.min(
+        requestedTransition.durationSeconds,
+        Math.max(0.1, shortestSegment - 0.05),
+      ),
+    }
     const workRoot = path.join(adMediaRoot, '.work')
     await mkdir(workRoot, { recursive: true })
     const workDir = await mkdtemp(path.join(workRoot, `ad-render-${job.id}-`))
@@ -247,8 +395,17 @@ export class AdVideoRenderer {
     )
     await mkdir(outputDir, { recursive: true })
     const outputs: AdRenderOutput[] = []
-    const baseClipOrder = shuffled(clips, seededRandom(`${job.id}:clips`))
-    const baseTextOrder = shuffled(config.texts, seededRandom(`${job.id}:texts`))
+    const clipById = new Map(clips.map((clip) => [clip.id, clip]))
+    const selectedClipOrder = config.selectedClipIds
+      .map((id) => clipById.get(id))
+      .filter((clip): clip is AdAsset => Boolean(clip))
+    const hookClip = config.hook?.enabled
+      ? clipById.get(config.hook.clipAssetId ?? config.selectedClipIds[0])
+      : undefined
+    const baseClipOrder = hookClip
+      ? [hookClip, ...selectedClipOrder.filter((clip) => clip.id !== hookClip.id)]
+      : selectedClipOrder
+    const baseTextOrder = [...config.texts]
     let completed = false
     const totalUnits = config.variationCount * (Math.max(1, cuts.length - 1) + 2)
     let completedUnits = 0
@@ -267,10 +424,17 @@ export class AdVideoRenderer {
         const variationDir = path.join(workDir, String(variation))
         await mkdir(variationDir, { recursive: true })
         const seed = `${job.id}:${variation}`
-        const random = seededRandom(seed)
         // Rotate the first clip/text as a Cartesian sequence so requested
         // variants get visibly different combinations whenever possible.
-        const clipOrder = rotated(baseClipOrder, variation % baseClipOrder.length)
+        const clipOrder = hookClip
+          ? [
+              hookClip,
+              ...rotated(
+                baseClipOrder.slice(1),
+                variation % Math.max(1, baseClipOrder.length - 1),
+              ),
+            ]
+          : rotated(baseClipOrder, variation % baseClipOrder.length)
         const textOrder = rotated(
           baseTextOrder,
           Math.floor(variation / baseClipOrder.length) % baseTextOrder.length,
@@ -279,15 +443,30 @@ export class AdVideoRenderer {
 
         for (let index = 0; index < cuts.length - 1; index += 1) {
           const clip = clipOrder[index % clipOrder.length]
-          const segmentDuration = cuts[index + 1] - cuts[index]
-          const maxStart = Math.max(0, clip.durationSeconds - segmentDuration)
-          const start = maxStart > 0 ? random() * maxStart : 0
+          const storedEdit = storedClipEdit(config, clip.id)
+          const edit = storedEdit ?? DEFAULT_CLIP_EDIT
+          const baseDuration = cuts[index + 1] - cuts[index]
+          const transitionTail = transition.preset !== 'cut' && index < cuts.length - 2
+            ? transition.durationSeconds
+            : 0
+          const segmentDuration = baseDuration + transitionTail
+          const trimEnd = Math.min(edit.trimEnd ?? clip.durationSeconds, clip.durationSeconds)
+          const trimStart = Math.min(edit.trimStart, Math.max(0, trimEnd - 0.01))
+          const availableSourceDuration = Math.max(0.01, trimEnd - trimStart)
+          const requestedSourceDuration = segmentDuration * edit.speed
+          const sourceDuration = Math.min(availableSourceDuration, requestedSourceDuration)
           const segmentPath = path.join(variationDir, `segment-${String(index).padStart(3, '0')}.mp4`)
-            const videoFilter = segmentVideoFilter(config)
+            const videoFilter = segmentVideoFilter(
+              config,
+              edit,
+              Boolean(storedEdit),
+              sourceDuration,
+              segmentDuration,
+            )
             await runProcess(
               'ffmpeg',
               [
-                '-v', 'error', '-y', '-ss', start.toFixed(3), '-stream_loop', '-1', '-i', clip.storagePath,
+                '-v', 'error', '-y', '-ss', trimStart.toFixed(3), '-i', clip.storagePath,
                 '-t', segmentDuration.toFixed(3), '-an', videoFilter.complex ? '-filter_complex' : '-vf', videoFilter.filter,
                 ...(videoFilter.complex ? ['-map', '[vout]'] : []),
               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-movflags', '+faststart', segmentPath,
@@ -298,17 +477,18 @@ export class AdVideoRenderer {
           await advanceProgress()
         }
 
-        const concatFile = path.join(variationDir, 'segments.ffconcat')
-        await writeFile(concatFile, `ffconcat version 1.0\n${segments.map((item) => `file '${ffconcatEscape(item)}'`).join('\n')}\n`)
         const silentVideo = path.join(variationDir, 'silent.mp4')
-        await runProcess('ffmpeg', ['-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', concatFile, '-c', 'copy', silentVideo], { signal })
+        await joinSegments(segments, cuts, silentVideo, transition, signal)
         await advanceProgress()
 
         const drawFilters: string[] = []
         const emojiOverlays: Array<{ path: string; start: number; end: number }> = []
         for (let index = 0; index < cuts.length - 1; index += 1) {
           const textFile = path.join(variationDir, `text-${String(index).padStart(3, '0')}.txt`)
-          const split = splitSupportedEmoji(textOrder[index % textOrder.length])
+          const displayedText = index === 0 && config.hook?.enabled && config.hook.text
+            ? config.hook.text
+            : textOrder[index % textOrder.length]
+          const split = splitSupportedEmoji(displayedText)
           const maxChars = Math.max(
             12,
             Math.min(30, Math.floor(config.output.width / (config.textStyle.fontSize * 0.55))),
@@ -323,17 +503,27 @@ export class AdVideoRenderer {
             ? `fontfile='${filterEscape(path.resolve(env.AD_FONT_FILE))}'`
             : `font='DejaVu Sans\\:style=Bold'`
           drawFilters.push(
-            `drawtext=${font}:textfile='${filterEscape(textFile)}':expansion=none:fontsize=${config.textStyle.fontSize}:fontcolor=${config.textStyle.fontColor}:borderw=${config.textStyle.borderWidth}:bordercolor=${config.textStyle.borderColor}:line_spacing=12:x=(w-text_w)/2:y=(h-text_h)*${config.textStyle.positionY / 100}:enable='between(t,${cuts[index].toFixed(3)},${cuts[index + 1].toFixed(3)})'`,
+            `drawtext=${font}:textfile='${filterEscape(textFile)}':expansion=none:fontsize=${config.textStyle.fontSize}:fontcolor=${config.textStyle.fontColor}:borderw=${config.textStyle.borderWidth}:bordercolor=${config.textStyle.borderColor}:line_spacing=12:x=(w-text_w)/2:y=max(0\\,min(h-text_h\\,h*${config.textStyle.positionY / 100}-text_h/2)):enable='between(t,${cuts[index].toFixed(3)},${cuts[index + 1].toFixed(3)})'`,
           )
         }
 
         const tempOutput = path.join(variationDir, 'output.mp4')
         const args = ['-v', 'error', '-y', '-i', silentVideo]
         for (const overlay of emojiOverlays) args.push('-loop', '1', '-i', overlay.path)
-        const musicInput = emojiOverlays.length + 1
-        if (music) args.push('-stream_loop', '-1', '-i', music.storagePath)
+        const firstMusicInput = emojiOverlays.length + 1
+        for (const { track, asset } of musicTracks) {
+          args.push(
+            '-stream_loop', '-1',
+            '-ss', track.sourceStartSeconds.toFixed(3),
+            '-i', asset.storagePath,
+          )
+        }
         let currentLabel = '0:v'
         const complexFilters: string[] = []
+        if (hasVisualGlow(config)) {
+          complexFilters.push(buildGlowGraph(currentLabel, 'glowed', config, `fx${variation}`))
+          currentLabel = 'glowed'
+        }
         emojiOverlays.forEach((overlay, index) => {
           const nextLabel = `emoji${index}`
           complexFilters.push(
@@ -342,8 +532,48 @@ export class AdVideoRenderer {
           currentLabel = nextLabel
         })
         complexFilters.push(`[${currentLabel}]${drawFilters.join(',')}[vout]`)
+        const transitionTimes = cuts.slice(1, -1)
+        const hasSfx = transition.sfx !== 'none' && transitionTimes.length > 0
+        if (musicTracks.length || hasSfx) {
+          const audioLabels: string[] = []
+          musicTracks.forEach(({ track }, index) => {
+            const trackEnd = Math.min(duration, track.endSeconds ?? duration)
+            const trackDuration = Math.max(0.01, trackEnd - track.startSeconds)
+            const fadeIn = Math.min(track.fadeInSeconds, trackDuration)
+            const fadeOut = Math.min(track.fadeOutSeconds, trackDuration)
+            const filters = [
+              `atrim=duration=${trackDuration.toFixed(3)}`,
+              'asetpts=PTS-STARTPTS',
+              `volume=${track.volume.toFixed(3)}`,
+            ]
+            if (fadeIn > 0) filters.push(`afade=t=in:st=0:d=${fadeIn.toFixed(3)}`)
+            if (fadeOut > 0) {
+              filters.push(
+                `afade=t=out:st=${Math.max(0, trackDuration - fadeOut).toFixed(3)}:d=${fadeOut.toFixed(3)}`,
+              )
+            }
+            filters.push(`adelay=${Math.round(track.startSeconds * 1000)}:all=1`)
+            const label = `music${index}`
+            complexFilters.push(
+              `[${firstMusicInput + index}:a:0]${filters.join(',')}[${label}]`,
+            )
+            audioLabels.push(`[${label}]`)
+          })
+          if (hasSfx) {
+            transitionTimes.forEach((time, index) => {
+              const label = `sfx${index}`
+              complexFilters.push(sfxFilter(transition.sfx, transition.sfxVolume, time, label))
+              audioLabels.push(`[${label}]`)
+            })
+          }
+          if (audioLabels.length === 1) complexFilters.push(`${audioLabels[0]}anull[aout]`)
+          else
+            complexFilters.push(
+              `${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,alimiter=limit=0.92[aout]`,
+            )
+        }
         args.push('-t', String(duration), '-filter_complex', complexFilters.join(';'), '-map', '[vout]')
-        if (music) args.push('-map', `${musicInput}:a:0`, '-c:a', 'aac', '-b:a', '192k', '-af', 'afade=t=out:st=' + Math.max(0, duration - 0.8) + ':d=0.8')
+        if (musicTracks.length || hasSfx) args.push('-map', '[aout]', '-c:a', 'aac', '-b:a', '192k')
         else args.push('-an')
         args.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', tempOutput)
         await runProcess('ffmpeg', args, { signal })

@@ -46,6 +46,7 @@ body {
 
 .ad-phone-stage {
   position: relative;
+  container-type: inline-size;
   margin-inline: auto;
   width: min(100%, 21.5rem);
   overflow: hidden;
@@ -55,6 +56,89 @@ body {
   box-shadow:
     0 0 0 7px rgba(255, 255, 255, 0.05),
     0 24px 60px rgba(0, 0, 0, 0.38);
+}
+
+.ad-preview-transition {
+  position: absolute;
+  inset: 0;
+  animation-duration: var(--ad-transition-duration, 0.35s);
+  animation-timing-function: cubic-bezier(0.2, 0.75, 0.2, 1);
+  animation-fill-mode: both;
+  will-change: transform, opacity, filter;
+}
+
+.ad-preview-transition-fade,
+.ad-preview-transition-dissolve {
+  animation-name: ad-preview-fade;
+}
+
+.ad-preview-transition-dissolve {
+  animation-timing-function: ease-in-out;
+}
+
+.ad-preview-transition-slide-left {
+  animation-name: ad-preview-slide-left;
+}
+
+.ad-preview-transition-slide-up {
+  animation-name: ad-preview-slide-up;
+}
+
+.ad-preview-transition-zoom {
+  animation-name: ad-preview-zoom;
+}
+
+@keyframes ad-preview-fade {
+  from { opacity: 0.15; filter: brightness(1.25); }
+  to { opacity: 1; filter: brightness(1); }
+}
+
+@keyframes ad-preview-slide-left {
+  from { opacity: 0.35; transform: translateX(12%); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes ad-preview-slide-up {
+  from { opacity: 0.35; transform: translateY(10%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes ad-preview-zoom {
+  from { opacity: 0.45; transform: scale(1.08); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.ad-preview-scrubber {
+  display: block;
+  height: 0.25rem;
+  cursor: pointer;
+  accent-color: #ff735e;
+}
+
+.ad-preview-vignette,
+.ad-preview-grain,
+.ad-preview-glow {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.ad-preview-vignette {
+  background: radial-gradient(circle at center, transparent 45%, rgba(0, 0, 0, 0.92) 100%);
+}
+
+.ad-preview-grain {
+  background-image:
+    repeating-radial-gradient(circle at 17% 29%, rgba(255, 255, 255, 0.55) 0 0.6px, transparent 0.8px 3px),
+    repeating-radial-gradient(circle at 73% 61%, rgba(0, 0, 0, 0.7) 0 0.7px, transparent 0.9px 4px);
+  background-size: 7px 9px, 11px 8px;
+  mix-blend-mode: overlay;
+}
+
+.ad-preview-glow {
+  background: radial-gradient(circle at 50% 36%, rgba(255, 245, 220, 0.68), transparent 54%);
+  mix-blend-mode: screen;
 }
 
 .ad-safe-area {

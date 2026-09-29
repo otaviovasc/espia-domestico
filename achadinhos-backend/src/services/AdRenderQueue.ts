@@ -61,25 +61,28 @@ async function processJob(jobId: number): Promise<void> {
     const clips = assets.filter(
       (asset) => asset.kind === 'clip' && job.configSnapshot.selectedClipIds.includes(asset.id),
     )
-    const music =
-      assets.find(
-        (asset) => asset.kind === 'music' && asset.id === job.configSnapshot.musicAssetId,
-      ) ?? null
+    const musicIds = job.configSnapshot.musicTracks?.length
+      ? job.configSnapshot.musicTracks.map((track) => track.assetId)
+      : job.configSnapshot.musicAssetId ? [job.configSnapshot.musicAssetId] : []
+    const musicIdSet = new Set(musicIds)
+    const music = assets.filter(
+      (asset) => asset.kind === 'music' && musicIdSet.has(asset.id),
+    )
     if (!clips.length) throw new Error('Nenhum clipe selecionado está disponível')
-    if (job.configSnapshot.musicAssetId && !music)
-      throw new Error('A música selecionada não está disponível')
+    if (music.length !== musicIdSet.size)
+      throw new Error('Uma ou mais músicas selecionadas não estão disponíveis')
 
     // A queued job has no committed outputs. Clear files left by a crashed
     // attempt, then materialize private bucket objects into this attempt only.
     await media.removeRenderJobStorage(job.projectId, job.id)
     stage = await media.stageAssets(
       job.id,
-      [...clips, ...(music ? [music] : [])],
+      [...clips, ...music],
       controller.signal,
     )
     const stagedById = new Map(stage.assets.map((asset) => [asset.id, asset]))
     const stagedClips = clips.map((asset) => stagedById.get(asset.id)!).filter(Boolean)
-    const stagedMusic = music ? (stagedById.get(music.id) ?? null) : null
+    const stagedMusic = music.map((asset) => stagedById.get(asset.id)!).filter(Boolean)
 
     const renderer = container.resolve(AdVideoRenderer)
     const localOutputs = await renderer.render(

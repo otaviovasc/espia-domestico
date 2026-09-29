@@ -100,6 +100,15 @@ export class AdProjectService {
   }
 
   async create(userId: number, input: CreateAdProjectInput) {
+    // New projects have no assets yet. Reject references to another project.
+    if (
+      input.config.selectedClipIds.length ||
+      input.config.musicAssetId ||
+      Object.keys(input.config.clipEdits ?? {}).length ||
+      input.config.musicTracks?.length ||
+      input.config.hook?.clipAssetId
+    )
+      throw UnprocessableError('Envie as mídias antes de selecioná-las no projeto')
     const project = await AdProject.create({ userId, name: input.name, config: input.config })
     return await this.get(userId, project.id)
   }
@@ -142,6 +151,24 @@ export class AdProjectService {
           selectedClipIds: source.config.selectedClipIds
             .map((id) => assetMap.get(id))
             .filter((id): id is number => Boolean(id)),
+          clipEdits: Object.fromEntries(
+            Object.entries(source.config.clipEdits ?? {}).flatMap(([id, edit]) => {
+              const copiedId = assetMap.get(Number(id))
+              return copiedId ? [[String(copiedId), edit]] : []
+            }),
+          ),
+          hook: source.config.hook
+            ? {
+                ...source.config.hook,
+                clipAssetId: source.config.hook.clipAssetId
+                  ? (assetMap.get(source.config.hook.clipAssetId) ?? null)
+                  : null,
+              }
+            : { enabled: false, clipAssetId: null, durationSeconds: 2, text: '' },
+          musicTracks: (source.config.musicTracks ?? []).flatMap((track) => {
+            const copiedId = assetMap.get(track.assetId)
+            return copiedId ? [{ ...track, assetId: copiedId }] : []
+          }),
           musicAssetId: source.config.musicAssetId
             ? (assetMap.get(source.config.musicAssetId) ?? null)
             : null,
@@ -192,7 +219,9 @@ export class AdProjectService {
     if (active) throw ConflictError('Cancele as renderizações ativas antes de excluir a mídia')
     if (
       project.config.selectedClipIds.includes(assetId) ||
-      project.config.musicAssetId === assetId
+      project.config.musicAssetId === assetId ||
+      project.config.musicTracks?.some((track) => track.assetId === assetId) ||
+      (project.config.hook?.enabled && project.config.hook.clipAssetId === assetId)
     ) {
       throw ConflictError('Remova a mídia da seleção do projeto antes de excluí-la')
     }
@@ -215,17 +244,58 @@ export class AdProjectService {
     projectId: number,
     config: AdProject['config'],
   ): Promise<void> {
-    const ids = [...config.selectedClipIds, ...(config.musicAssetId ? [config.musicAssetId] : [])]
+    if (new Set(config.selectedClipIds).size !== config.selectedClipIds.length)
+      throw UnprocessableError('Um clipe não pode aparecer duas vezes na seleção')
+    const selected = new Set(config.selectedClipIds)
+    const clipEdits = config.clipEdits ?? {}
+    if (Object.keys(clipEdits).some((id) => !/^\d+$/.test(id) || !selected.has(Number(id))))
+      throw UnprocessableError('Um ou mais ajustes de clipe não pertencem à seleção')
+    if (config.hook?.enabled && config.hook.clipAssetId && !selected.has(config.hook.clipAssetId))
+      throw UnprocessableError('O clipe de abertura deve estar na seleção')
+    const musicTracks = config.musicTracks ?? []
+    const musicIds = [
+      ...musicTracks.map((track) => track.assetId),
+      ...(config.musicAssetId ? [config.musicAssetId] : []),
+    ]
+    const ids = [...config.selectedClipIds, ...musicIds]
     if (!ids.length) return
     const assets = await AdAsset.findAll({ where: { projectId, id: { [Op.in]: ids } } })
     const clips = new Set(assets.filter((item) => item.kind === 'clip').map((item) => item.id))
     if (config.selectedClipIds.some((id) => !clips.has(id)))
       throw UnprocessableError('Um ou mais clipes selecionados são inválidos')
-    if (
-      config.musicAssetId &&
-      !assets.some((item) => item.id === config.musicAssetId && item.kind === 'music')
-    ) {
+    const availableMusic = new Map(
+      assets.filter((item) => item.kind === 'music').map((item) => [item.id, item]),
+    )
+    if (musicIds.some((id) => !availableMusic.has(id))) {
       throw UnprocessableError('A música selecionada é inválida')
+    }
+    for (const track of musicTracks) {
+      const end = track.endSeconds ?? config.output.durationSeconds
+      if (
+        track.startSeconds >= config.output.durationSeconds ||
+        end > config.output.durationSeconds ||
+        end - track.startSeconds < 0.1 ||
+        track.fadeInSeconds + track.fadeOutSeconds > end - track.startSeconds + 0.01
+      ) {
+        throw UnprocessableError('O intervalo ou fade da faixa de música é inválido')
+      }
+      const music = availableMusic.get(track.assetId)!
+      if (track.sourceStartSeconds >= music.durationSeconds - 0.05)
+        throw UnprocessableError('O início da faixa está fora da duração da música')
+    }
+    for (const clip of assets.filter((item) => item.kind === 'clip')) {
+      const edit = clipEdits[String(clip.id)]
+      if (!edit) continue
+      const clipEnd = edit.trimEnd ?? clip.durationSeconds
+      if (
+        edit.trimStart >= clip.durationSeconds - 0.05 ||
+        clipEnd > clip.durationSeconds + 0.05 ||
+        clipEnd - edit.trimStart < 0.25
+      ) {
+        throw UnprocessableError(
+          `O recorte do clipe ${clip.originalName} deve ter ao menos 0,25 s e caber na duração original`,
+        )
+      }
     }
   }
 

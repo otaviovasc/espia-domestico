@@ -330,13 +330,67 @@ export type AdColorPreset = 'natural' | 'vibrant' | 'warm' | 'cool' | 'none'
 export type AdFramingMode = 'cover' | 'contain-blur' | 'contain-solid'
 export type AdAssetKind = 'clip' | 'music'
 export type AdRenderStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+export type AdClipSpeed = 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2
+export type AdTransitionPreset = 'cut' | 'fade' | 'dissolve' | 'slide-left' | 'slide-up' | 'zoom'
+export type AdTransitionSfx = 'none' | 'whoosh' | 'pop' | 'click'
+export type AdVisualEffectsPreset = 'natural' | 'clean-product' | 'warm-ugc' | 'vivid' | 'cinematic' | 'custom'
+
+export interface AdClipEdit {
+  trimStart: number
+  trimEnd: number | null
+  speed: AdClipSpeed
+  framingOverride: boolean
+  focusX: number
+  focusY: number
+  zoom: number
+}
+
+export interface AdTransitionConfig {
+  preset: AdTransitionPreset
+  durationSeconds: number
+  sfx: AdTransitionSfx
+  sfxVolume: number
+}
+
+export interface AdVisualEffectsConfig {
+  preset: AdVisualEffectsPreset
+  brightness: number
+  contrast: number
+  saturation: number
+  sharpness: number
+  temperature: number
+  vignette: number
+  grain: number
+  glow: number
+}
+
+export interface AdHookConfig {
+  enabled: boolean
+  clipAssetId: number | null
+  durationSeconds: number
+  text: string
+}
+
+export interface AdMusicTrack {
+  assetId: number
+  volume: number
+  startSeconds: number
+  endSeconds: number | null
+  sourceStartSeconds: number
+  fadeInSeconds: number
+  fadeOutSeconds: number
+}
 
 export interface AdProjectConfig {
   variationCount: number
   texts: string[]
   selectedClipIds: number[]
+  clipEdits: Record<string, AdClipEdit>
   musicAssetId: number | null
+  musicVolume: number
+  musicTracks: AdMusicTrack[]
   timing: { mode: 'fixed'; seconds: number } | { mode: 'beat' }
+  transition: AdTransitionConfig
   output: {
     width: number
     height: number
@@ -350,6 +404,8 @@ export interface AdProjectConfig {
     backgroundColor: string
   }
   colorPreset: AdColorPreset
+  visualEffects: AdVisualEffectsConfig
+  hook: AdHookConfig
   textStyle: {
     fontSize: number
     positionY: number
