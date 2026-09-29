@@ -17,7 +17,10 @@ export class AuthController {
     res.cookie(AUTH_COOKIE_NAME, token, {
       httpOnly: true,
       secure: env.COOKIE_SECURE,
-      sameSite: 'lax',
+      // Cross-service frontend (frontend.railway.app → backend.railway.app)
+      // needs SameSite=None + Secure, otherwise the browser drops the
+      // session cookie on cross-site fetch. Local dev keeps Lax.
+      sameSite: env.COOKIE_SECURE ? 'none' : 'lax',
       maxAge: SEVEN_DAYS_MS,
       path: '/',
     })
