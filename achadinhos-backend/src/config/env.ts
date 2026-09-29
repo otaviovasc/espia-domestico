@@ -36,6 +36,7 @@ const envSchema = z.object({
 
   // Public URL for webhook registration (optional in local dev)
   API_BASE_URL: z.string().optional(),
+  OPENROUTER_KEY: z.string().min(1).optional().or(z.literal('')),
 })
 
 const parsed = envSchema.safeParse(process.env)

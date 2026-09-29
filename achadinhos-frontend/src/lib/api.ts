@@ -99,6 +99,10 @@ export interface Offer {
   productId?: string
   source?: string
   commissioned?: boolean
+  category?: 'A' | 'B' | 'C' | 'D'
+  relevanceScore?: number
+  discountPercent?: number
+  commissionRate?: number
 }
 
 export interface Ingestor {
@@ -186,6 +190,10 @@ export interface ImportResult {
   offers: Offer[]
   errors: { index: number; message: string }[]
   previews: OfferPreview[]
+  categorization?: {
+    method: 'jev' | 'fallback'
+    counts: Record<'A' | 'B' | 'C' | 'D', number>
+  }
 }
 
 // ── Envelope helpers ────────────────────────────────

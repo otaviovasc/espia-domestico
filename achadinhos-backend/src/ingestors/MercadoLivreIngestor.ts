@@ -43,9 +43,10 @@ function isMlPayload(payload: unknown): payload is MlPayload {
   if (!payload || typeof payload !== 'object') return false
   const p = payload as Record<string, unknown>
   const hasCards = Array.isArray(p.cards)
-  const looksMl =
-    typeof p.sourceUrl === 'string' && p.sourceUrl.includes('mercadolivre')
-  return hasCards && (looksMl || p.extractorVersion === 'dom-v1' || typeof p.schemaVersion === 'number')
+  const looksMl = typeof p.sourceUrl === 'string' && p.sourceUrl.includes('mercadolivre')
+  return (
+    hasCards && (looksMl || p.extractorVersion === 'dom-v1' || typeof p.schemaVersion === 'number')
+  )
 }
 
 /**
@@ -65,7 +66,11 @@ export class MercadoLivreIngestor implements SourceIngestor {
 
   ingest(payload: unknown): IngestResult {
     if (!isMlPayload(payload)) {
-      return { offers: [], warnings: [{ index: -1, message: 'Payload não reconhecido como Mercado Livre' }], totalSeen: 0 }
+      return {
+        offers: [],
+        warnings: [{ index: -1, message: 'Payload não reconhecido como Mercado Livre' }],
+        totalSeen: 0,
+      }
     }
     const cards = payload.cards ?? []
     const offers: OfferInput[] = []
@@ -82,7 +87,11 @@ export class MercadoLivreIngestor implements SourceIngestor {
       const pricing = card.pricing ?? card.visible?.pricing ?? undefined
       const discountedPrice = pricing?.currentAmount ?? undefined
       if (!discountedPrice || discountedPrice <= 0) {
-        warnings.push({ index, productId, message: `"${title.slice(0, 40)}" sem preço atual — ignorado` })
+        warnings.push({
+          index,
+          productId,
+          message: `"${title.slice(0, 40)}" sem preço atual — ignorado`,
+        })
         return
       }
 
@@ -107,12 +116,14 @@ export class MercadoLivreIngestor implements SourceIngestor {
         card.visible?.images?.find((img) => img?.src)?.src ??
         undefined
 
-      const commissionPercent = card.commissionPercent ?? card.visible?.commissionPercent ?? undefined
+      const commissionPercent =
+        card.commissionPercent ?? card.visible?.commissionPercent ?? undefined
 
       offers.push({
         title,
         discountedPrice,
         originalPrice: pricing?.originalAmount ?? undefined,
+        discountPercent: pricing?.discountPercent ?? undefined,
         currency: pricing?.currency ?? 'BRL',
         affiliateUrl,
         imageUrl: image ?? undefined,

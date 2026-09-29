@@ -42,9 +42,14 @@ function formatBRL(v?: number) {
 }
 
 function discountPct(o: Offer): number | null {
+  if (typeof o.discountPercent === 'number') return o.discountPercent
   if (!o.originalPrice || o.originalPrice <= o.discountedPrice) return null
   return Math.round(((o.originalPrice - o.discountedPrice) / o.originalPrice) * 100)
 }
+
+const CATEGORIES = ['A', 'B', 'C', 'D'] as const
+type CategoryFilter = 'all' | (typeof CATEGORIES)[number] | 'uncategorized'
+const CATEGORY_TONES = { A: 'green', B: 'blue', C: 'amber', D: 'red' } as const
 
 /** Stable identity for an offer — productId first, then affiliate URL. */
 function offerIdentity(o: Offer): string {
@@ -69,6 +74,7 @@ export default function ComposePage() {
   const [source, setSource] = useState('mercadolivre')
   const [jsonText, setJsonText] = useState('')
   const [offers, setOffers] = useState<Offer[]>([])
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all')
   const [excluded, setExcluded] = useState<Set<number>>(new Set())
   const [importInfo, setImportInfo] = useState<{ source: string; totalSeen: number } | null>(null)
   const [importErrors, setImportErrors] = useState<{ index: number; message: string }[]>([])
@@ -93,11 +99,27 @@ export default function ComposePage() {
     () => offers.filter((_, i) => !excluded.has(i)),
     [offers, excluded],
   )
+  const categoryCounts = useMemo(() => {
+    const counts = { A: 0, B: 0, C: 0, D: 0, uncategorized: 0 }
+    offers.forEach((offer) => {
+      if (offer.category && offer.category in counts) counts[offer.category]++
+      else counts.uncategorized++
+    })
+    return counts
+  }, [offers])
+  const visibleOffers = useMemo(
+    () => offers
+      .map((offer, index) => ({ offer, index }))
+      .filter(({ offer }) => categoryFilter === 'all'
+        || (categoryFilter === 'uncategorized' ? !offer.category : offer.category === categoryFilter)),
+    [offers, categoryFilter],
+  )
 
   const importMutation = useMutation({
     mutationFn: () => campaignApi.importOffers(jsonText, { source, template: effectiveTemplate }),
     onSuccess: async (res) => {
       setOffers(res.offers)
+      setCategoryFilter('all')
       setExcluded(new Set())
       setImportInfo({ source: res.source, totalSeen: res.totalSeen })
       setImportErrors(res.errors)
@@ -292,21 +314,44 @@ export default function ComposePage() {
 
         {/* Offers table */}
         {offers.length > 0 && (
-          <div className="mt-4 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500">
-                  <th className="px-2 py-2">Incluir</th>
-                  <th className="px-2 py-2">Produto</th>
-                  <th className="px-2 py-2">Preço</th>
-                  <th className="px-2 py-2">Desc.</th>
-                  <th className="px-2 py-2">Comissão</th>
-                  <th className="px-2 py-2">Link</th>
-                  <th className="px-2 py-2">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {offers.map((o, i) => {
+          <div className="mt-4">
+            <div className="mb-3 flex flex-wrap items-center gap-2" aria-label="Filtrar produtos por categoria">
+              {(['all', ...CATEGORIES, ...(categoryCounts.uncategorized > 0 ? ['uncategorized'] as const : [])] as CategoryFilter[]).map((category) => {
+                const count = category === 'all' ? offers.length : categoryCounts[category]
+                const label = category === 'all' ? 'Todas' : category === 'uncategorized' ? 'Sem categoria' : `Categoria ${category}`
+                return (
+                  <button
+                    key={category}
+                    type="button"
+                    aria-pressed={categoryFilter === category}
+                    onClick={() => setCategoryFilter(category)}
+                    className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
+                      categoryFilter === category
+                        ? 'border-violet-500 bg-violet-50 text-violet-700'
+                        : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
+                    }`}
+                  >
+                    {label} · {count}
+                  </button>
+                )
+              })}
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500">
+                    <th className="px-2 py-2">Incluir</th>
+                    <th className="px-2 py-2">Produto</th>
+                    <th className="px-2 py-2">Categoria</th>
+                    <th className="px-2 py-2">Preço</th>
+                    <th className="px-2 py-2">Desc.</th>
+                    <th className="px-2 py-2">Comissão</th>
+                    <th className="px-2 py-2">Link</th>
+                    <th className="px-2 py-2">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                {visibleOffers.map(({ offer: o, index: i }) => {
                   const pct = discountPct(o)
                   const isIn = !excluded.has(i)
                   return (
@@ -331,6 +376,16 @@ export default function ComposePage() {
                         </div>
                       </td>
                       <td className="px-2 py-2 whitespace-nowrap">
+                        {o.category ? (
+                          <div className="space-y-1">
+                            <Badge tone={CATEGORY_TONES[o.category]}>Categoria {o.category}</Badge>
+                            {typeof o.relevanceScore === 'number' && (
+                              <div className="text-xs text-zinc-500">Relevância {o.relevanceScore}/100</div>
+                            )}
+                          </div>
+                        ) : <span className="text-xs text-zinc-400">Sem categoria</span>}
+                      </td>
+                      <td className="px-2 py-2 whitespace-nowrap">
                         <div className="font-medium">{formatBRL(o.discountedPrice)}</div>
                         {o.originalPrice && (
                           <div className="text-xs text-zinc-400 line-through">
@@ -339,11 +394,11 @@ export default function ComposePage() {
                         )}
                       </td>
                       <td className="px-2 py-2">
-                        {pct ? <Badge tone="green">{pct}%</Badge> : <span className="text-zinc-300">—</span>}
+                        {pct !== null ? <Badge tone="green">{pct}%</Badge> : <span className="text-zinc-300">—</span>}
                       </td>
                       <td className="px-2 py-2">
-                        {o.commissionPercent ? (
-                          <Badge tone="violet">{o.commissionPercent}</Badge>
+                        {o.commissionPercent || typeof o.commissionRate === 'number' ? (
+                          <Badge tone="violet">{o.commissionPercent || `${o.commissionRate}%`}</Badge>
                         ) : (
                           <span className="text-zinc-300">—</span>
                         )}
@@ -387,8 +442,9 @@ export default function ComposePage() {
                     </tr>
                   )
                 })}
-              </tbody>
-            </table>
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </Card>

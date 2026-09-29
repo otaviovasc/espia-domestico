@@ -22,6 +22,10 @@ export const OfferSchema = z.object({
   productId: z.string().max(60).optional(),
   source: z.string().max(40).optional(),
   commissioned: z.boolean().optional(),
+  category: z.enum(['A', 'B', 'C', 'D']).optional(),
+  relevanceScore: z.number().min(0).max(100).optional(),
+  discountPercent: z.number().min(0).max(100).optional(),
+  commissionRate: z.number().min(0).max(100).optional(),
 })
 export type OfferInput = z.infer<typeof OfferSchema>
 
@@ -83,10 +87,10 @@ export const UpdateCampaignSchema = z
     sendImages: z.boolean().optional(),
     scheduledAt: z.string().datetime().nullable().optional(),
   })
-  .refine(
-    (d) => !d.safety || d.safety.maxDelaySeconds >= d.safety.minDelaySeconds,
-    { message: 'maxDelaySeconds deve ser >= minDelaySeconds', path: ['safety', 'maxDelaySeconds'] },
-  )
+  .refine((d) => !d.safety || d.safety.maxDelaySeconds >= d.safety.minDelaySeconds, {
+    message: 'maxDelaySeconds deve ser >= minDelaySeconds',
+    path: ['safety', 'maxDelaySeconds'],
+  })
 export type UpdateCampaignInput = z.infer<typeof UpdateCampaignSchema>
 
 /**
@@ -145,5 +149,12 @@ export function normalizeRawOffer(raw: Record<string, unknown>): Record<string, 
     ),
     imageUrl: pick('imageUrl', 'image_url', 'image', 'imagem', 'img', 'foto', 'thumbnail'),
     coupon: pick('coupon', 'cupom', 'couponCode', 'codigo'),
+    commissionPercent:
+      String(pick('commissionPercent', 'commission_percent', 'comissao') ?? '') || undefined,
+    discountPercent: toNumber(pick('discountPercent', 'discount_percent', 'descontoPercentual')),
+    commissioned: pick('commissioned', 'comissionado'),
+    productId: pick('productId', 'product_id', 'idProduto'),
+    source: pick('source', 'origem'),
+    installmentLabel: pick('installmentLabel', 'parcelamento'),
   }
 }

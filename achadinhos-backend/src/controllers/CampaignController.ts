@@ -4,10 +4,17 @@ import { z } from 'zod'
 import { CampaignService } from '@/services/CampaignService'
 import { OfferImportService } from '@/services/OfferImportService'
 import { CreateCampaignSchema, UpdateCampaignSchema, OfferSchema } from '@/dtos/campaign'
-import { renderOfferMessage, DEFAULT_TEMPLATE, TEMPLATE_PLACEHOLDERS } from '@/utils/messageTemplate'
+import {
+  renderOfferMessage,
+  DEFAULT_TEMPLATE,
+  TEMPLATE_PLACEHOLDERS,
+} from '@/utils/messageTemplate'
 import { listIngestors } from '@/ingestors/registry'
 import { Campaign } from '@/database/models/Campaign'
 import { BadRequestError, UnauthorizedError } from '@/middleware/Error/AppError'
+import { AppError } from '@/middleware/Error/AppError'
+import { categorizeOffers } from '@/services/OfferCategorizationService'
+import { logger } from '@/utils/logger'
 
 const ImportSchema = z.object({
   // Either a JSON string or an already-parsed array/object.
@@ -72,15 +79,31 @@ export class CampaignController {
     const parsed = ImportSchema.safeParse(req.body)
     if (!parsed.success) throw BadRequestError('Envie o campo "json" com os produtos')
     const result = this.offerImportService.parse(parsed.data.json, parsed.data.source)
+    let categorized: Awaited<ReturnType<typeof categorizeOffers>>
+    try {
+      categorized = await categorizeOffers(result.offers)
+    } catch (error) {
+      if (error instanceof AppError) throw error
+      logger.warn(
+        { errorName: error instanceof Error ? error.name : 'Unknown' },
+        'Jev categorization failed',
+      )
+      throw new AppError(
+        'Não foi possível categorizar os produtos agora. Tente importar novamente.',
+        502,
+        'CATEGORIZATION_FAILED',
+      )
+    }
     const template = typeof req.body?.template === 'string' ? req.body.template : undefined
     res.json({
       success: true,
       data: {
         source: result.source,
         totalSeen: result.totalSeen,
-        offers: result.offers,
+        offers: categorized.offers,
         errors: result.errors,
-        previews: result.offers.map((offer) => ({
+        categorization: { method: 'jev', counts: categorized.counts },
+        previews: categorized.offers.map((offer) => ({
           title: offer.title,
           message: renderOfferMessage(offer, template),
         })),

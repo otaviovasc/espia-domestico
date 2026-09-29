@@ -1,4 +1,10 @@
-import { DataTypes, Model, InferAttributes, InferCreationAttributes, CreationOptional } from 'sequelize'
+import {
+  DataTypes,
+  Model,
+  InferAttributes,
+  InferCreationAttributes,
+  CreationOptional,
+} from 'sequelize'
 import { randomUUID } from 'crypto'
 import { sequelize } from '@/database'
 
@@ -34,6 +40,10 @@ export interface CampaignOffer {
   source?: string
   /** True when affiliateUrl is a commissioned/affiliate link (vs. plain product URL). */
   commissioned?: boolean
+  category?: 'A' | 'B' | 'C' | 'D'
+  relevanceScore?: number
+  discountPercent?: number
+  commissionRate?: number
 }
 
 /**
@@ -62,10 +72,7 @@ export interface CampaignGroup {
   name: string
 }
 
-export class Campaign extends Model<
-  InferAttributes<Campaign>,
-  InferCreationAttributes<Campaign>
-> {
+export class Campaign extends Model<InferAttributes<Campaign>, InferCreationAttributes<Campaign>> {
   declare id: CreationOptional<number>
   declare uuid: CreationOptional<string>
   declare userId: number

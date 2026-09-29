@@ -1,0 +1,470 @@
+{
+  "schemaVersion": 1,
+  "extractorVersion": "dom-v1",
+  "extractedAt": "2026-09-29T12:47:39.751Z",
+  "sourceUrl": "https://www.mercadolivre.com.br/afiliados/hub",
+  "requestedLimit": 4,
+  "discoveredCards": 17,
+  "exportedCards": 4,
+  "discovery": {
+    "stopReason": "requested_limit",
+    "uniqueSeen": 17,
+    "scrollAttempts": 0
+  },
+  "cards": [
+    {
+      "position": 1,
+      "productId": "MLB4590121239",
+      "title": "Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege",
+      "productUrl": "https://www.mercadolivre.com.br/jogo-panela-ceramica-antiaderente-5pc-tampa-silicone-inducao/up/MLBU3892648456?pdp_filters=item_id%3AMLB4590121239&extra_comm=true&brand_comm=false#polycard_client=affiliates&wid=MLB4590121239&sid=affiliates",
+      "commissionedUrl": "https://meli.la/2QEJ1qg",
+      "commissionedUrlStatus": "generated_from_page_state",
+      "commissionedUrlEvidence": "Captured createLink request and response for item MLB4590121239",
+      "visible": {
+        "prices": [
+          "491 reais com 41 centavos",
+          "54 reais com 60 centavos",
+          "R$ 491",
+          "R$ 54"
+        ],
+        "pricing": {
+          "currency": "BRL",
+          "currentAmount": 491.41,
+          "originalAmount": null,
+          "discountPercent": null,
+          "discountAmount": null,
+          "discountAmountSource": null,
+          "discountLabel": null,
+          "installment": {
+            "count": 9,
+            "amount": 54.6,
+            "currency": "BRL",
+            "interestFree": true,
+            "label": "9x R$ 54 , 60 sem juros"
+          },
+          "alternativePayment": null
+        },
+        "commissionPercent": "17%",
+        "text": "Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege 4.8 | +1000 vendidos Classificação 4.8 de 5 estrelas. Mais de 1000 produtos vendidos. GANHOS EXTRAS 17% R$ 491 , 41 9x R$ 54 , 60 sem juros Compartilhar",
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_815631-MLB109277052486_042026-AB.webp",
+            "alt": "Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege"
+          }
+        ]
+      },
+      "raw": {
+        "tagName": "LI",
+        "attributes": {
+          "class": "andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0",
+          "id": "_r_3_",
+          "data-andes-card": "true",
+          "data-andes-card-hierarchy": "primary"
+        },
+        "html": "<li class=\"andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0\" id=\"_r_3_\" data-andes-card=\"true\" data-andes-card-hierarchy=\"primary\"><div class=\"poly-card__portada\"><span class=\"poly-component__image-overlay\"></span><img class=\"poly-component__picture\" alt=\"Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege\" aria-hidden=\"true\" data-testid=\"picture\" loading=\"eager\" data-id=\"_r_4_\" decoding=\"sync\" is=\"n-img\" src=\"https://http2.mlstatic.com/D_Q_NP_2X_815631-MLB109277052486_042026-AB.webp\"></div><div class=\"poly-card__content\"><a href=\"https://www.mercadolivre.com.br/jogo-panela-ceramica-antiaderente-5pc-tampa-silicone-inducao/up/MLBU3892648456?pdp_filters=item_id%3AMLB4590121239&amp;extra_comm=true&amp;brand_comm=false#polycard_client=affiliates&amp;wid=MLB4590121239&amp;sid=affiliates\" target=\"_blank\" class=\"poly-component__title\">Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege</a><span class=\"poly-component__review-compacted\" aria-hidden=\"true\"><svg aria-hidden=\"true\" class=\"polylabel-icon\" width=\"10\" height=\"10\" viewBox=\"0 0 15 15\" style=\"--polylabel-icon-half-height: 5px;\"><use href=\"#poly_star_fill\"></use></svg> <span style=\"color: rgb(0, 0, 0);\" class=\"polylabel-label polylabel-fs-xs polylabel-fw-regular\">4.8</span> <span style=\"color: rgb(115, 115, 115);\" class=\"polylabel-label polylabel-fs-xs\">| +1000 vendidos</span></span><span class=\"andes-visually-hidden\">Classificação 4.8 de 5 estrelas. Mais de 1000 produtos vendidos.</span><div class=\"poly-component__chip poly-component__chip--composite\"><div class=\"poly-pill__wrapper\"><span style=\"background-color: rgb(165, 248, 242);\" class=\"poly-pill__pill polylabel-fw-semibold\"><span class=\"polylabel-label\">GANHOS</span> <span class=\"polylabel-label polylabel-fst-italic\">EXTRAS</span></span></div><span style=\"background-color: rgb(227, 246, 245);\" class=\"poly-component__label polylabel-fw-semibold\">17%</span></div><div class=\"poly-component__price\"><div class=\"poly-price__current\"><span class=\"andes-money-amount poly-price__amount andes-money-amount--cents-superscript andes-money-amount--weight-semibold\" style=\"font-size: 18px;\" role=\"img\" id=\"_r_5_\" aria-label=\"491 reais com 41 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"18\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">491</span><span class=\"andes-visually-hidden\" aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents andes-money-amount__cents--superscript-18\" style=\"font-size: 10px; margin-top: 3px;\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">41</span></span></div><span style=\"color: rgb(0, 166, 80);\" class=\"poly-price__installments\">9x <span class=\"andes-money-amount polylabel-price andes-money-amount--cents-comma\" style=\"font-size: inherit;\" role=\"img\" id=\"_r_6_\" aria-label=\"54 reais com 60 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"inherit\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">54</span><span aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">60</span></span> sem juros</span></div><div class=\"poly-action-links poly-component__action-links poly-component__action-links--buttons\"><div class=\"poly-action-links__action poly-action-links__action--button\"><div data-testid=\"form-action\" class=\"poly-action\"><input data-testid=\"form-data-id\" type=\"hidden\" value=\"MLB4590121239\" name=\"id\"><button type=\"submit\" class=\"andes-button andes-button--medium andes-button--quiet\" id=\"_r_7_\" data-andes-button=\"true\" data-andes-button-hierarchy=\"quiet\" data-andes-button-size=\"medium\"><span class=\"andes-button__content\" data-andes-button-content=\"true\"><span class=\"andes-button__text\" data-andes-button-text=\"true\">Compartilhar</span></span></button></div></div></div></div></li>",
+        "links": [
+          {
+            "text": "Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege",
+            "href": "https://www.mercadolivre.com.br/jogo-panela-ceramica-antiaderente-5pc-tampa-silicone-inducao/up/MLBU3892648456?pdp_filters=item_id%3AMLB4590121239&extra_comm=true&brand_comm=false#polycard_client=affiliates&wid=MLB4590121239&sid=affiliates",
+            "attributes": {
+              "href": "https://www.mercadolivre.com.br/jogo-panela-ceramica-antiaderente-5pc-tampa-silicone-inducao/up/MLBU3892648456?pdp_filters=item_id%3AMLB4590121239&extra_comm=true&brand_comm=false#polycard_client=affiliates&wid=MLB4590121239&sid=affiliates",
+              "target": "_blank",
+              "class": "poly-component__title"
+            }
+          }
+        ],
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_815631-MLB109277052486_042026-AB.webp",
+            "srcset": null,
+            "alt": "Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege",
+            "attributes": {
+              "class": "poly-component__picture",
+              "alt": "Jogo Panela Ceramica Antiaderente 5pç Tampa Silicone Induçao Bege",
+              "aria-hidden": "true",
+              "data-testid": "picture",
+              "loading": "eager",
+              "data-id": "_r_4_",
+              "decoding": "sync",
+              "is": "n-img",
+              "src": "https://http2.mlstatic.com/D_Q_NP_2X_815631-MLB109277052486_042026-AB.webp"
+            }
+          }
+        ],
+        "buttons": [
+          {
+            "text": "Compartilhar",
+            "attributes": {
+              "type": "submit",
+              "class": "andes-button andes-button--medium andes-button--quiet",
+              "id": "_r_7_",
+              "data-andes-button": "true",
+              "data-andes-button-hierarchy": "quiet",
+              "data-andes-button-size": "medium"
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "value": "MLB4590121239",
+            "attributes": {
+              "data-testid": "form-data-id",
+              "type": "hidden",
+              "value": "MLB4590121239",
+              "name": "id"
+            }
+          }
+        ],
+        "share": {
+          "short_url": "https://meli.la/2QEJ1qg",
+          "long_url": "https://www.mercadolivre.com.br/social/decarvalhootavio?matt_word=decarvalhootavio&matt_tool=62361074&forceInApp=true&ref=BKJJmDsCJlsqHOxDFVQEIBxPHdeWJmeGE65D1sGMKdTle4nIYyxhxu1TJCwKpHtz8N%2FXjiPLjUw3TQAsBimOGCQI%2BvkEPWvECfebslPiDd%2B%2FR1HZc%2FcytdMK%2BBn1Dnb78EPMBHzb2Q3larIVZC5zYleCAW%2FTKCbtWxBHuiZ8rtqwQL4xw49fGjaI8LursM0W38S0sQ%3D%3D",
+          "text": "🔍 Cole este texto no buscador do Mercado Livre: 7CN46U-TDJ9\n\n🔗 Ou acesse o link:\nhttps://meli.la/2QEJ1qg",
+          "type_url": "SOCIAL_PROFILE_ENCRYPTED",
+          "generated_date": "2026-09-29T12:47:38Z",
+          "origin_url": "https://www.mercadolivre.com.br/jogo-panela-ceramica-antiaderente-5pc-tampa-silicone-inducao/up/MLBU3892648456"
+        }
+      }
+    },
+    {
+      "position": 2,
+      "productId": "MLB5178681714",
+      "title": "Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60",
+      "productUrl": "https://www.mercadolivre.com.br/principia-kit-2-protetor-solar-corporal-ps-03-fps60/p/MLB43187757?pdp_filters=item_id%3AMLB5178681714&extra_comm=true&brand_comm=false#polycard_client=affiliates&wid=MLB5178681714&sid=affiliates",
+      "commissionedUrl": "https://meli.la/1oGq6HB",
+      "commissionedUrlStatus": "generated_from_page_state",
+      "commissionedUrlEvidence": "Captured createLink request and response for item MLB5178681714",
+      "visible": {
+        "prices": [
+          "Antes: 110 reais com 40 centavos",
+          "Agora: 87 reais com 05 centavos",
+          "91 reais com 63 centavos",
+          "R$ 110",
+          "R$ 87",
+          "R$ 91"
+        ],
+        "pricing": {
+          "currency": "BRL",
+          "currentAmount": 87.05,
+          "originalAmount": 110.4,
+          "discountPercent": 21,
+          "discountAmount": 23.35,
+          "discountAmountSource": "derived_from_visible_prices",
+          "discountLabel": "21% OFF no Pix",
+          "installment": null,
+          "alternativePayment": {
+            "amount": 91.63,
+            "currency": "BRL",
+            "label": "ou R$ 91 , 63 em outros meios"
+          }
+        },
+        "commissionPercent": "20%",
+        "text": "OFERTA IMPERDÍVEL Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60 4.9 | +1000 vendidos Classificação 4.9 de 5 estrelas. Mais de 1000 produtos vendidos. GANHOS EXTRAS 20% R$ 110 , 40 R$ 87 , 05 21% OFF no Pix ou R$ 91 , 63 em outros meios Compartilhar",
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_644422-MLA110121267428_042026-AB.webp",
+            "alt": "Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60"
+          }
+        ]
+      },
+      "raw": {
+        "tagName": "LI",
+        "attributes": {
+          "class": "andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0",
+          "id": "_r_8_",
+          "data-andes-card": "true",
+          "data-andes-card-hierarchy": "primary"
+        },
+        "html": "<li class=\"andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0\" id=\"_r_8_\" data-andes-card=\"true\" data-andes-card-hierarchy=\"primary\"><div class=\"poly-card__portada\"><span class=\"poly-component__image-overlay\"></span><img class=\"poly-component__picture\" alt=\"Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60\" aria-hidden=\"true\" data-testid=\"picture\" loading=\"eager\" data-id=\"_r_9_\" decoding=\"sync\" is=\"n-img\" src=\"https://http2.mlstatic.com/D_Q_NP_2X_644422-MLA110121267428_042026-AB.webp\"></div><div class=\"poly-card__content\"><span style=\"color: rgb(255, 255, 255); background-color: rgb(41, 104, 200);\" class=\"poly-component__highlight\"><svg aria-hidden=\"true\" class=\"polylabel-icon\" width=\"12\" height=\"12\" viewBox=\"0 0 12 12\" style=\"--polylabel-icon-half-height: 6px;\"><use href=\"#poly_black_friday\"></use></svg> OFERTA IMPERDÍVEL</span><a href=\"https://www.mercadolivre.com.br/principia-kit-2-protetor-solar-corporal-ps-03-fps60/p/MLB43187757?pdp_filters=item_id%3AMLB5178681714&amp;extra_comm=true&amp;brand_comm=false#polycard_client=affiliates&amp;wid=MLB5178681714&amp;sid=affiliates\" target=\"_blank\" class=\"poly-component__title\">Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60</a><span class=\"poly-component__review-compacted\" aria-hidden=\"true\"><svg aria-hidden=\"true\" class=\"polylabel-icon\" width=\"10\" height=\"10\" viewBox=\"0 0 15 15\" style=\"--polylabel-icon-half-height: 5px;\"><use href=\"#poly_star_fill\"></use></svg> <span style=\"color: rgb(0, 0, 0);\" class=\"polylabel-label polylabel-fs-xs polylabel-fw-regular\">4.9</span> <span style=\"color: rgb(115, 115, 115);\" class=\"polylabel-label polylabel-fs-xs\">| +1000 vendidos</span></span><span class=\"andes-visually-hidden\">Classificação 4.9 de 5 estrelas. Mais de 1000 produtos vendidos.</span><div class=\"poly-component__chip poly-component__chip--composite\"><div class=\"poly-pill__wrapper\"><span style=\"background-color: rgb(165, 248, 242);\" class=\"poly-pill__pill polylabel-fw-semibold\"><span class=\"polylabel-label\">GANHOS</span> <span class=\"polylabel-label polylabel-fst-italic\">EXTRAS</span></span></div><span style=\"background-color: rgb(227, 246, 245);\" class=\"poly-component__label polylabel-fw-semibold\">20%</span></div><div class=\"poly-component__price\"><s class=\"andes-money-amount poly-price__previous andes-money-amount--previous andes-money-amount--cents-comma\" style=\"font-size: 12px;\" role=\"img\" id=\"_r_a_\" aria-label=\"Antes: 110 reais com 40 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"12\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">110</span><span aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">40</span></s><div class=\"poly-price__current\"><span class=\"andes-money-amount poly-price__amount andes-money-amount--cents-superscript andes-money-amount--weight-semibold\" style=\"font-size: 18px;\" role=\"img\" id=\"_r_b_\" aria-label=\"Agora: 87 reais com 05 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"18\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">87</span><span class=\"andes-visually-hidden\" aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents andes-money-amount__cents--superscript-18\" style=\"font-size: 10px; margin-top: 3px;\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">05</span></span><span class=\"poly-price__disc-label andes-money-amount__discount\">21% OFF no Pix</span></div><span style=\"color: rgba(0, 0, 0, 0.9);\" class=\"poly-price__installments\">ou <span style=\"color: rgba(0, 0, 0, 0.9);\"><span class=\"andes-money-amount polylabel-price andes-money-amount--cents-comma\" style=\"font-size: inherit;\" role=\"img\" id=\"_r_c_\" aria-label=\"91 reais com 63 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"inherit\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">91</span><span aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">63</span></span></span> em outros meios</span></div><div class=\"poly-action-links poly-component__action-links poly-component__action-links--buttons\"><div class=\"poly-action-links__action poly-action-links__action--button\"><div data-testid=\"form-action\" class=\"poly-action\"><input data-testid=\"form-data-id\" type=\"hidden\" value=\"MLB5178681714\" name=\"id\"><button type=\"submit\" class=\"andes-button andes-button--medium andes-button--quiet\" id=\"_r_d_\" data-andes-button=\"true\" data-andes-button-hierarchy=\"quiet\" data-andes-button-size=\"medium\"><span class=\"andes-button__content\" data-andes-button-content=\"true\"><span class=\"andes-button__text\" data-andes-button-text=\"true\">Compartilhar</span></span></button></div></div></div></div></li>",
+        "links": [
+          {
+            "text": "Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60",
+            "href": "https://www.mercadolivre.com.br/principia-kit-2-protetor-solar-corporal-ps-03-fps60/p/MLB43187757?pdp_filters=item_id%3AMLB5178681714&extra_comm=true&brand_comm=false#polycard_client=affiliates&wid=MLB5178681714&sid=affiliates",
+            "attributes": {
+              "href": "https://www.mercadolivre.com.br/principia-kit-2-protetor-solar-corporal-ps-03-fps60/p/MLB43187757?pdp_filters=item_id%3AMLB5178681714&extra_comm=true&brand_comm=false#polycard_client=affiliates&wid=MLB5178681714&sid=affiliates",
+              "target": "_blank",
+              "class": "poly-component__title"
+            }
+          }
+        ],
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_644422-MLA110121267428_042026-AB.webp",
+            "srcset": null,
+            "alt": "Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60",
+            "attributes": {
+              "class": "poly-component__picture",
+              "alt": "Principia Kit 2 Protetor Solar Corporal Ps-03 FPS60",
+              "aria-hidden": "true",
+              "data-testid": "picture",
+              "loading": "eager",
+              "data-id": "_r_9_",
+              "decoding": "sync",
+              "is": "n-img",
+              "src": "https://http2.mlstatic.com/D_Q_NP_2X_644422-MLA110121267428_042026-AB.webp"
+            }
+          }
+        ],
+        "buttons": [
+          {
+            "text": "Compartilhar",
+            "attributes": {
+              "type": "submit",
+              "class": "andes-button andes-button--medium andes-button--quiet",
+              "id": "_r_d_",
+              "data-andes-button": "true",
+              "data-andes-button-hierarchy": "quiet",
+              "data-andes-button-size": "medium"
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "value": "MLB5178681714",
+            "attributes": {
+              "data-testid": "form-data-id",
+              "type": "hidden",
+              "value": "MLB5178681714",
+              "name": "id"
+            }
+          }
+        ],
+        "share": {
+          "short_url": "https://meli.la/1oGq6HB",
+          "long_url": "https://www.mercadolivre.com.br/social/decarvalhootavio?matt_word=decarvalhootavio&matt_tool=62361074&forceInApp=true&ref=BJds4geea4qgL8V9EkDxV1q1hPcx1uurtMJcdYajyUihp8JdPUEewO8JkunQZlopOdV6ZKZcG5wXPWYOya%2FbT99xKDH0468yBWau43%2FEIe9uH4Ykd1WcrDvcQi65%2FhNJCJars2eiIMvJY8P7OIeHlnZJWcmQBcT8vZqww2zEenoW8CS3wcrlFDunMwRQLUvLdKjTUQ%3D%3D",
+          "text": "🔍 Cole este texto no buscador do Mercado Livre: 7CN46U-7RRY\n\n🔗 Ou acesse o link:\nhttps://meli.la/1oGq6HB",
+          "type_url": "SOCIAL_PROFILE_ENCRYPTED",
+          "generated_date": "2026-09-29T12:47:38Z",
+          "origin_url": "https://www.mercadolivre.com.br/principia-kit-2-protetor-solar-corporal-ps-03-fps60/p/MLB43187757"
+        }
+      }
+    },
+    {
+      "position": 3,
+      "productId": "MLB3948186299",
+      "title": "Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16",
+      "productUrl": "https://www.mercadolivre.com.br/climatizador-ar-frio-portatil-evaporativo-16-litros-umidificador-ventisol-clin-16/p/MLB26208174?pdp_filters=deal%3AMLB1578289-1&extra_comm=false&brand_comm=false#polycard_client=affiliates&wid=MLB3948186299&sid=affiliates",
+      "commissionedUrl": "https://meli.la/31h1y7d",
+      "commissionedUrlStatus": "generated_from_page_state",
+      "commissionedUrlEvidence": "Captured createLink request and response for item MLB3948186299",
+      "visible": {
+        "prices": [
+          "529 reais",
+          "51 reais com 15 centavos",
+          "R$ 529",
+          "R$ 51"
+        ],
+        "pricing": {
+          "currency": "BRL",
+          "currentAmount": 529,
+          "originalAmount": null,
+          "discountPercent": null,
+          "discountAmount": null,
+          "discountAmountSource": null,
+          "discountLabel": null,
+          "installment": {
+            "count": 12,
+            "amount": 51.15,
+            "currency": "BRL",
+            "interestFree": false,
+            "label": "12x R$ 51 , 15"
+          },
+          "alternativePayment": null
+        },
+        "commissionPercent": "5%",
+        "text": "MAIS VENDIDO Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16 4.7 | +50mil vendidos Classificação 4.7 de 5 estrelas. Mais de 50mil produtos vendidos. GANHOS 5% R$ 529 12x R$ 51 , 15 Compartilhar",
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_843341-MLA99946710327_112025-AB.webp",
+            "alt": "Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16"
+          }
+        ]
+      },
+      "raw": {
+        "tagName": "LI",
+        "attributes": {
+          "class": "andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0",
+          "id": "_r_e_",
+          "data-andes-card": "true",
+          "data-andes-card-hierarchy": "primary"
+        },
+        "html": "<li class=\"andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0\" id=\"_r_e_\" data-andes-card=\"true\" data-andes-card-hierarchy=\"primary\"><div class=\"poly-card__portada\"><span class=\"poly-component__image-overlay\"></span><img class=\"poly-component__picture\" alt=\"Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16\" aria-hidden=\"true\" data-testid=\"picture\" loading=\"eager\" data-id=\"_r_f_\" decoding=\"sync\" is=\"n-img\" src=\"https://http2.mlstatic.com/D_Q_NP_2X_843341-MLA99946710327_112025-AB.webp\"></div><div class=\"poly-card__content\"><span style=\"color: rgb(255, 255, 255); background-color: rgb(255, 119, 51);\" class=\"poly-component__highlight\">MAIS VENDIDO</span><a href=\"https://www.mercadolivre.com.br/climatizador-ar-frio-portatil-evaporativo-16-litros-umidificador-ventisol-clin-16/p/MLB26208174?pdp_filters=deal%3AMLB1578289-1&amp;extra_comm=false&amp;brand_comm=false#polycard_client=affiliates&amp;wid=MLB3948186299&amp;sid=affiliates\" target=\"_blank\" class=\"poly-component__title\">Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16</a><span class=\"poly-component__review-compacted\" aria-hidden=\"true\"><svg aria-hidden=\"true\" class=\"polylabel-icon\" width=\"10\" height=\"10\" viewBox=\"0 0 15 15\" style=\"--polylabel-icon-half-height: 5px;\"><use href=\"#poly_star_fill\"></use></svg> <span style=\"color: rgb(0, 0, 0);\" class=\"polylabel-label polylabel-fs-xs polylabel-fw-regular\">4.7</span> <span style=\"color: rgb(115, 115, 115);\" class=\"polylabel-label polylabel-fs-xs\">| +50mil vendidos</span></span><span class=\"andes-visually-hidden\">Classificação 4.7 de 5 estrelas. Mais de 50mil produtos vendidos.</span><div class=\"poly-component__chip poly-component__chip--composite\"><div class=\"poly-pill__wrapper\"><span style=\"background-color: rgb(227, 246, 245);\" class=\"poly-pill__pill polylabel-fw-semibold\">GANHOS 5%</span></div></div><div class=\"poly-component__price\"><div class=\"poly-price__current\"><span class=\"andes-money-amount poly-price__amount andes-money-amount--cents-superscript andes-money-amount--weight-semibold\" style=\"font-size: 18px;\" role=\"img\" id=\"_r_g_\" aria-label=\"529 reais\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"18\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">529</span></span></div><span style=\"color: rgba(0, 0, 0, 0.9);\" class=\"poly-price__installments\">12x <span class=\"andes-money-amount polylabel-price andes-money-amount--cents-comma\" style=\"font-size: inherit;\" role=\"img\" id=\"_r_h_\" aria-label=\"51 reais com 15 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"inherit\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">51</span><span aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">15</span></span></span></div><div class=\"poly-action-links poly-component__action-links poly-component__action-links--buttons\"><div class=\"poly-action-links__action poly-action-links__action--button\"><div data-testid=\"form-action\" class=\"poly-action\"><input data-testid=\"form-data-id\" type=\"hidden\" value=\"MLB3948186299\" name=\"id\"><button type=\"submit\" class=\"andes-button andes-button--medium andes-button--quiet\" id=\"_r_i_\" data-andes-button=\"true\" data-andes-button-hierarchy=\"quiet\" data-andes-button-size=\"medium\"><span class=\"andes-button__content\" data-andes-button-content=\"true\"><span class=\"andes-button__text\" data-andes-button-text=\"true\">Compartilhar</span></span></button></div></div></div></div></li>",
+        "links": [
+          {
+            "text": "Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16",
+            "href": "https://www.mercadolivre.com.br/climatizador-ar-frio-portatil-evaporativo-16-litros-umidificador-ventisol-clin-16/p/MLB26208174?pdp_filters=deal%3AMLB1578289-1&extra_comm=false&brand_comm=false#polycard_client=affiliates&wid=MLB3948186299&sid=affiliates",
+            "attributes": {
+              "href": "https://www.mercadolivre.com.br/climatizador-ar-frio-portatil-evaporativo-16-litros-umidificador-ventisol-clin-16/p/MLB26208174?pdp_filters=deal%3AMLB1578289-1&extra_comm=false&brand_comm=false#polycard_client=affiliates&wid=MLB3948186299&sid=affiliates",
+              "target": "_blank",
+              "class": "poly-component__title"
+            }
+          }
+        ],
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_843341-MLA99946710327_112025-AB.webp",
+            "srcset": null,
+            "alt": "Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16",
+            "attributes": {
+              "class": "poly-component__picture",
+              "alt": "Climatizador Ar Frio Portátil Evaporativo 16 Litros Umidificador Ventisol Clin 16",
+              "aria-hidden": "true",
+              "data-testid": "picture",
+              "loading": "eager",
+              "data-id": "_r_f_",
+              "decoding": "sync",
+              "is": "n-img",
+              "src": "https://http2.mlstatic.com/D_Q_NP_2X_843341-MLA99946710327_112025-AB.webp"
+            }
+          }
+        ],
+        "buttons": [
+          {
+            "text": "Compartilhar",
+            "attributes": {
+              "type": "submit",
+              "class": "andes-button andes-button--medium andes-button--quiet",
+              "id": "_r_i_",
+              "data-andes-button": "true",
+              "data-andes-button-hierarchy": "quiet",
+              "data-andes-button-size": "medium"
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "value": "MLB3948186299",
+            "attributes": {
+              "data-testid": "form-data-id",
+              "type": "hidden",
+              "value": "MLB3948186299",
+              "name": "id"
+            }
+          }
+        ],
+        "share": {
+          "short_url": "https://meli.la/31h1y7d",
+          "long_url": "https://www.mercadolivre.com.br/social/decarvalhootavio?matt_word=decarvalhootavio&matt_tool=62361074&forceInApp=true&ref=BIy18BrfS4%2FXL3Zl%2BoQYLCcJUNZMnLiW0rDd%2FGNfpBzsfuNxMTiXojEHPfaCLOXrgW1sLammSTIRc31vhTvZ5hmwVLwkvOdTOH7depwF6ADdlg5vCgfUVhffMUQ0lbz3DYVlrnCIgtgv0uM9NNU2%2Bj0tEO49V54XFo8DzzqINycUTIzWED3KJfhMDmHQRZkcJhjrMNs%3D",
+          "text": "🔍 Cole este texto no buscador do Mercado Livre: 7CN46U-E1YY\n\n🔗 Ou acesse o link:\nhttps://meli.la/31h1y7d",
+          "type_url": "SOCIAL_PROFILE_ENCRYPTED",
+          "generated_date": "2026-09-29T12:47:39Z",
+          "origin_url": "https://www.mercadolivre.com.br/climatizador-ar-frio-portatil-evaporativo-16-litros-umidificador-ventisol-clin-16/p/MLB26208174"
+        }
+      }
+    },
+    {
+      "position": 4,
+      "productId": "MLB3915030699",
+      "title": "Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos",
+      "productUrl": "https://produto.mercadolivre.com.br/MLB-3915030699-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos-_JM?searchVariation=186149510717&extra_comm=false&brand_comm=false#polycard_client=affiliates&sid=affiliates",
+      "commissionedUrl": "https://meli.la/1ZWhv46",
+      "commissionedUrlStatus": "generated_from_page_state",
+      "commissionedUrlEvidence": "Captured createLink request and response for item MLB3915030699",
+      "visible": {
+        "prices": [
+          "Antes: 399 reais com 98 centavos",
+          "Agora: 159 reais com 99 centavos",
+          "15 reais com 81 centavos",
+          "R$ 399",
+          "R$ 159",
+          "R$ 15"
+        ],
+        "pricing": {
+          "currency": "BRL",
+          "currentAmount": 159.99,
+          "originalAmount": 399.98,
+          "discountPercent": 60,
+          "discountAmount": 239.99,
+          "discountAmountSource": "derived_from_visible_prices",
+          "discountLabel": "60% OFF",
+          "installment": {
+            "count": 12,
+            "amount": 15.81,
+            "currency": "BRL",
+            "interestFree": false,
+            "label": "12x R$ 15 , 81"
+          },
+          "alternativePayment": null
+        },
+        "commissionPercent": "12%",
+        "text": "MAIS VENDIDO Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos 4.4 | +5mil vendidos Classificação 4.4 de 5 estrelas. Mais de 5mil produtos vendidos. GANHOS 12% R$ 399 , 98 R$ 159 , 99 60% OFF 12x R$ 15 , 81 Compartilhar",
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_794536-MLB110707893332_052026-AB-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos.webp",
+            "alt": "Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos"
+          }
+        ]
+      },
+      "raw": {
+        "tagName": "LI",
+        "attributes": {
+          "class": "andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0",
+          "id": "_r_j_",
+          "data-andes-card": "true",
+          "data-andes-card-hierarchy": "primary"
+        },
+        "html": "<li class=\"andes-card poly-card poly-card--grid-card poly-card--large andes-card--flat andes-card--primary andes-card--padding-0\" id=\"_r_j_\" data-andes-card=\"true\" data-andes-card-hierarchy=\"primary\"><div class=\"poly-card__portada\"><span class=\"poly-component__image-overlay\"></span><img class=\"poly-component__picture\" alt=\"Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos\" aria-hidden=\"true\" data-testid=\"picture\" loading=\"eager\" data-id=\"_r_k_\" decoding=\"sync\" is=\"n-img\" src=\"https://http2.mlstatic.com/D_Q_NP_2X_794536-MLB110707893332_052026-AB-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos.webp\"></div><div class=\"poly-card__content\"><span style=\"color: rgb(255, 255, 255); background-color: rgb(255, 119, 51);\" class=\"poly-component__highlight\">MAIS VENDIDO</span><a href=\"https://produto.mercadolivre.com.br/MLB-3915030699-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos-_JM?searchVariation=186149510717&amp;extra_comm=false&amp;brand_comm=false#polycard_client=affiliates&amp;sid=affiliates\" target=\"_blank\" class=\"poly-component__title\">Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos</a><span class=\"poly-component__review-compacted\" aria-hidden=\"true\"><svg aria-hidden=\"true\" class=\"polylabel-icon\" width=\"10\" height=\"10\" viewBox=\"0 0 15 15\" style=\"--polylabel-icon-half-height: 5px;\"><use href=\"#poly_star_fill\"></use></svg> <span style=\"color: rgb(0, 0, 0);\" class=\"polylabel-label polylabel-fs-xs polylabel-fw-regular\">4.4</span> <span style=\"color: rgb(115, 115, 115);\" class=\"polylabel-label polylabel-fs-xs\">| +5mil vendidos</span></span><span class=\"andes-visually-hidden\">Classificação 4.4 de 5 estrelas. Mais de 5mil produtos vendidos.</span><div class=\"poly-component__chip poly-component__chip--composite\"><div class=\"poly-pill__wrapper\"><span style=\"background-color: rgb(227, 246, 245);\" class=\"poly-pill__pill polylabel-fw-semibold\">GANHOS 12%</span></div></div><div class=\"poly-component__price\"><s class=\"andes-money-amount poly-price__previous andes-money-amount--previous andes-money-amount--cents-comma\" style=\"font-size: 12px;\" role=\"img\" id=\"_r_l_\" aria-label=\"Antes: 399 reais com 98 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"12\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">399</span><span aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">98</span></s><div class=\"poly-price__current\"><span class=\"andes-money-amount poly-price__amount andes-money-amount--cents-superscript andes-money-amount--weight-semibold\" style=\"font-size: 18px;\" role=\"img\" id=\"_r_m_\" aria-label=\"Agora: 159 reais com 99 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"18\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">159</span><span class=\"andes-visually-hidden\" aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents andes-money-amount__cents--superscript-18\" style=\"font-size: 10px; margin-top: 3px;\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">99</span></span><span style=\"color: rgb(255, 255, 255); background-color: rgb(0, 166, 80);\" class=\"poly-price__disc-label andes-money-amount__discount poly-price__disc-label--pill\">60% OFF</span></div><span style=\"color: rgba(0, 0, 0, 0.9);\" class=\"poly-price__installments\">12x <span class=\"andes-money-amount polylabel-price andes-money-amount--cents-comma\" style=\"font-size: inherit;\" role=\"img\" id=\"_r_n_\" aria-label=\"15 reais com 81 centavos\" aria-roledescription=\"Valor\" data-andes-money-amount=\"true\" data-andes-money-amount-size=\"inherit\"><span class=\"andes-money-amount__currency\" aria-hidden=\"true\" data-andes-money-amount-currency=\"true\"><span class=\"andes-money-amount__currency-symbol\">R$</span></span><span class=\"andes-money-amount__fraction\" aria-hidden=\"true\" data-andes-money-amount-fraction=\"true\">15</span><span aria-hidden=\"true\">,</span><span class=\"andes-money-amount__cents\" aria-hidden=\"true\" data-andes-money-amount-cents=\"true\">81</span></span></span></div><div class=\"poly-action-links poly-component__action-links poly-component__action-links--buttons\"><div class=\"poly-action-links__action poly-action-links__action--button\"><div data-testid=\"form-action\" class=\"poly-action\"><input data-testid=\"form-data-id\" type=\"hidden\" value=\"MLB3915030699\" name=\"id\"><button type=\"submit\" class=\"andes-button andes-button--medium andes-button--quiet\" id=\"_r_o_\" data-andes-button=\"true\" data-andes-button-hierarchy=\"quiet\" data-andes-button-size=\"medium\"><span class=\"andes-button__content\" data-andes-button-content=\"true\"><span class=\"andes-button__text\" data-andes-button-text=\"true\">Compartilhar</span></span></button></div></div></div></div></li>",
+        "links": [
+          {
+            "text": "Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos",
+            "href": "https://produto.mercadolivre.com.br/MLB-3915030699-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos-_JM?searchVariation=186149510717&extra_comm=false&brand_comm=false#polycard_client=affiliates&sid=affiliates",
+            "attributes": {
+              "href": "https://produto.mercadolivre.com.br/MLB-3915030699-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos-_JM?searchVariation=186149510717&extra_comm=false&brand_comm=false#polycard_client=affiliates&sid=affiliates",
+              "target": "_blank",
+              "class": "poly-component__title"
+            }
+          }
+        ],
+        "images": [
+          {
+            "src": "https://http2.mlstatic.com/D_Q_NP_2X_794536-MLB110707893332_052026-AB-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos.webp",
+            "srcset": null,
+            "alt": "Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos",
+            "attributes": {
+              "class": "poly-component__picture",
+              "alt": "Tela Sombrite 90% 6x4m Bainha Reforçada Com Llhos Metálicos",
+              "aria-hidden": "true",
+              "data-testid": "picture",
+              "loading": "eager",
+              "data-id": "_r_k_",
+              "decoding": "sync",
+              "is": "n-img",
+              "src": "https://http2.mlstatic.com/D_Q_NP_2X_794536-MLB110707893332_052026-AB-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos.webp"
+            }
+          }
+        ],
+        "buttons": [
+          {
+            "text": "Compartilhar",
+            "attributes": {
+              "type": "submit",
+              "class": "andes-button andes-button--medium andes-button--quiet",
+              "id": "_r_o_",
+              "data-andes-button": "true",
+              "data-andes-button-hierarchy": "quiet",
+              "data-andes-button-size": "medium"
+            }
+          }
+        ],
+        "inputs": [
+          {
+            "value": "MLB3915030699",
+            "attributes": {
+              "data-testid": "form-data-id",
+              "type": "hidden",
+              "value": "MLB3915030699",
+              "name": "id"
+            }
+          }
+        ],
+        "share": {
+          "short_url": "https://meli.la/1ZWhv46",
+          "long_url": "https://www.mercadolivre.com.br/social/decarvalhootavio?matt_word=decarvalhootavio&matt_tool=62361074&forceInApp=true&ref=BHewFEqcoD%2FHj2T1CDEG95AjrNZhvKVTJBM9pZqpkbPRDDtpOUu8uCrb8oVXHG38ZXRZiGPsF3SxYPO6gPpa2cIp257QzHDXkon%2Fhmcf6%2F5L3RQ8cKH0Qsz9evSFLgEOKTGjrm2vqJ6LFlQMcRQZ2eblRn4JrW78Ae5IkzujXyPVC8ZzFV31iMY513uNo5gzilsQLQ%3D%3D",
+          "text": "🔍 Cole este texto no buscador do Mercado Livre: 7CN46U-VE7T\n\n🔗 Ou acesse o link:\nhttps://meli.la/1ZWhv46",
+          "type_url": "SOCIAL_PROFILE_ENCRYPTED",
+          "generated_date": "2026-09-29T12:47:39Z",
+          "origin_url": "https://produto.mercadolivre.com.br/MLB-3915030699-tela-sombrite-90-6x4m-bainha-reforcada-com-llhos-metalicos-_JM"
+        }
+      }
+    }
+  ]
+}

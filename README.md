@@ -28,7 +28,7 @@ achadinhos-project/
 
 ## Pré-requisitos
 
-- Node.js ≥ 20
+- Node.js ≥ 22 (AI SDK v7 e provedor OpenRouter)
 - Docker (para o Postgres local)
 - Um **UAZAPI_ADMIN_TOKEN** (para provisionar instâncias) e a base URL da UAZAPI
 
@@ -53,6 +53,7 @@ criado automaticamente. Alternativamente, o **primeiro** cadastro via
 - `UAZAPI_ADMIN_TOKEN` — token de administração do servidor UAZAPI (fica **só no backend**).
 - `UAZAPI_BASE_URL` — ex.: `https://free.uazapi.com` ou seu servidor dedicado.
 - `API_BASE_URL` — (opcional) URL pública deste backend para registrar webhooks.
+- `OPENROUTER_KEY` — chave do OpenRouter usada pelo Jev para avaliar a relação de cada produto com o tema doméstico. Necessária para importar produtos.
 
 Sem o admin token, tudo funciona exceto conectar um número (a UI mostra um
 aviso claro).
@@ -92,6 +93,24 @@ Os produtos são importados por **ingestores** — um por marketplace:
 
 Também há um caminho genérico (array plano com apelidos de campos) para importações
 manuais. A origem pode ser escolhida na UI ou detectada automaticamente.
+
+Ao importar, o backend envia apenas título e descrição ao Jev (`typesafe/jev-1.13`)
+pela API de avaliações do OpenRouter. O código combina a nota de relevância
+com o desconto e a comissão informados no JSON, atribui A, B, C ou D a cada
+produto e mostra as categorias na revisão. A indica alta relevância e boas
+condições comerciais; D indica baixa prioridade. Produtos sem desconto ou taxa
+de comissão informados recebem zero nesses critérios. Se o Jev estiver
+indisponível, a importação falha com uma mensagem para tentar novamente;
+nenhuma categoria é inventada. As categorias seguem com as ofertas salvas
+na campanha.
+Cada importação aceita até 100 produtos para limitar o tempo e o custo das
+avaliações pagas.
+
+A nota final pesa relevância (60%), desconto (25%, com teto em 50%) e comissão
+(15%, com teto em 20%). A exige relevância de pelo menos 75/100, desconto de
+15% e comissão de 10%, além de nota final de 75. B exige relevância de pelo
+menos 50/100 e nota final de 55. C exige nota final de 35. Relevância abaixo
+de 25/100 sempre resulta em D.
 
 ## Personalização da mensagem (templates)
 

@@ -57,6 +57,20 @@ function formatBRL(v?: number) {
   return v === undefined ? '—' : new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v)
 }
 
+const CATEGORY_TONES = { A: 'green', B: 'blue', C: 'amber', D: 'red' } as const
+
+function OfferCategoryBadge({ offer }: { offer: Offer }) {
+  if (!offer.category) return null
+  return (
+    <span
+      className="shrink-0"
+      title={typeof offer.relevanceScore === 'number' ? `Relevância ${offer.relevanceScore}/100` : undefined}
+    >
+      <Badge tone={CATEGORY_TONES[offer.category]}>Categoria {offer.category}</Badge>
+    </span>
+  )
+}
+
 export default function CampaignDetailPage() {
   const { id } = useParams()
   const campaignId = Number(id)
@@ -344,6 +358,7 @@ export default function CampaignDetailPage() {
                 <div key={i} className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-zinc-50">
                   {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
                   <span className="flex-1 truncate text-sm">{o.title}</span>
+                  <OfferCategoryBadge offer={o} />
                   <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
                   {o.commissioned === false && <Badge tone="amber">sem comissão</Badge>}
                   <button
@@ -480,6 +495,22 @@ export default function CampaignDetailPage() {
           </Card>
         </>
       ) : null}
+
+        {!editable && (
+          <Card>
+            <h2 className="mb-3 font-semibold">Produtos ({offers.length})</h2>
+            <div className="max-h-80 space-y-1 overflow-y-auto">
+              {offers.map((o, i) => (
+                <div key={i} className="flex items-center gap-3 rounded-lg px-2 py-1.5">
+                  {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
+                  <span className="flex-1 truncate text-sm">{o.title}</span>
+                  <OfferCategoryBadge offer={o} />
+                  <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
 
       {/* Logs (always) */}
       <Card>

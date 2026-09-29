@@ -12,6 +12,8 @@ export interface ImportResult {
   totalSeen: number
 }
 
+export const MAX_IMPORT_ITEMS = 100
+
 /**
  * Parses a batch of products into normalized offers.
  *
@@ -93,6 +95,10 @@ export class OfferImportService {
 
     const viaSource = this.ingestWithSource(value, source)
     const result = viaSource ?? this.ingestGeneric(value)
+
+    if (result.totalSeen > MAX_IMPORT_ITEMS) {
+      throw BadRequestError(`Importe no máximo ${MAX_IMPORT_ITEMS} produtos por vez.`)
+    }
 
     if (result.offers.length === 0) {
       const detail = result.errors.length
