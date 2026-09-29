@@ -4,13 +4,7 @@ import { sequelize } from '@/database'
 import { ProductGroup } from '@/database/models/ProductGroup'
 import { SavedProduct } from '@/database/models/SavedProduct'
 import { SavedProductGroupMembership } from '@/database/models/SavedProductGroupMembership'
-import { User } from '@/database/models/User'
-import {
-  BadRequestError,
-  ConflictError,
-  NotFoundError,
-  UnauthorizedError,
-} from '@/middleware/Error/AppError'
+import { BadRequestError, ConflictError, NotFoundError } from '@/middleware/Error/AppError'
 
 export const DEFAULT_PRODUCT_GROUP_NAME = 'Produtos existentes'
 
@@ -23,40 +17,17 @@ export interface ProductGroupResult {
   updatedAt: Date
 }
 
-export async function ensureDefaultProductGroup(
+/**
+ * Historically the app auto-created a catch-all "Produtos existentes" default
+ * group. The workflow is now one group per product batch, so we no longer
+ * create a default group. This remains a lookup for any legacy default group
+ * that still exists, but it never creates one.
+ */
+export async function findDefaultProductGroup(
   userId: number,
-  transaction: Transaction,
-): Promise<ProductGroup> {
-  const user = await User.findByPk(userId, { transaction, lock: transaction.LOCK.UPDATE })
-  if (!user) throw UnauthorizedError('Usuário não encontrado')
-
-  let group = await ProductGroup.findOne({
-    where: { userId, isDefault: true },
-    transaction,
-    lock: transaction.LOCK.UPDATE,
-  })
-  if (group) return group
-
-  group = await ProductGroup.create(
-    { userId, name: DEFAULT_PRODUCT_GROUP_NAME, isDefault: true },
-    { transaction },
-  )
-  const existingProducts = await SavedProduct.findAll({
-    attributes: ['id'],
-    where: { userId },
-    transaction,
-    lock: transaction.LOCK.UPDATE,
-  })
-  if (existingProducts.length) {
-    await SavedProductGroupMembership.bulkCreate(
-      existingProducts.map((product) => ({
-        productGroupId: group!.id,
-        savedProductId: product.id,
-      })),
-      { transaction, ignoreDuplicates: true },
-    )
-  }
-  return group
+  transaction?: Transaction,
+): Promise<ProductGroup | null> {
+  return ProductGroup.findOne({ where: { userId, isDefault: true }, transaction })
 }
 
 async function serializeGroups(
@@ -90,7 +61,6 @@ async function serializeGroups(
 export class ProductGroupService {
   async list(userId: number): Promise<{ items: ProductGroupResult[] }> {
     return sequelize.transaction(async (transaction) => {
-      await ensureDefaultProductGroup(userId, transaction)
       const groups = await ProductGroup.findAll({
         where: { userId },
         order: [
@@ -106,7 +76,6 @@ export class ProductGroupService {
 
   async create(userId: number, name: string): Promise<ProductGroupResult> {
     return sequelize.transaction(async (transaction) => {
-      await ensureDefaultProductGroup(userId, transaction)
       const duplicate = await ProductGroup.findOne({
         where: {
           userId,
@@ -122,7 +91,6 @@ export class ProductGroupService {
 
   async update(userId: number, id: number, name: string): Promise<ProductGroupResult> {
     return sequelize.transaction(async (transaction) => {
-      await ensureDefaultProductGroup(userId, transaction)
       const group = await ProductGroup.findOne({
         where: { id, userId },
         transaction,
@@ -146,14 +114,12 @@ export class ProductGroupService {
 
   async remove(userId: number, id: number): Promise<void> {
     await sequelize.transaction(async (transaction) => {
-      await ensureDefaultProductGroup(userId, transaction)
       const group = await ProductGroup.findOne({
         where: { id, userId },
         transaction,
         lock: transaction.LOCK.UPDATE,
       })
       if (!group) throw NotFoundError('Grupo de produtos não encontrado')
-      if (group.isDefault) throw BadRequestError('O grupo padrão não pode ser removido')
       await group.destroy({ transaction })
     })
   }
@@ -165,7 +131,6 @@ export class ProductGroupService {
     mode: 'add' | 'remove' | 'set',
   ) {
     return sequelize.transaction(async (transaction) => {
-      await ensureDefaultProductGroup(userId, transaction)
       const uniqueProductIds = [...new Set(productIds)]
       const uniqueGroupIds = [...new Set(groupIds)]
       if (mode !== 'set' && !uniqueGroupIds.length) {

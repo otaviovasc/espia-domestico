@@ -285,6 +285,25 @@ export class CampaignController {
     res.json({ success: true, data: logs })
   }
 
+  /** GET /campaigns/:id/progress — live progress + next-send ETA. */
+  async progress(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const data = await this.campaignService.getProgress(this.userId(req), id)
+    res.json({ success: true, data })
+  }
+
+  /** DELETE /campaigns/:id/offers — remove one product from the campaign. */
+  async removeOffer(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const affiliateUrl =
+      typeof req.body?.affiliateUrl === 'string' ? req.body.affiliateUrl.trim() : ''
+    if (!affiliateUrl) throw BadRequestError('Link do produto é obrigatório')
+    const campaign = await this.campaignService.removeOffer(this.userId(req), id, affiliateUrl)
+    res.json({ success: true, data: serializeCampaign(campaign) })
+  }
+
   /** POST /campaigns/:id/cancel */
   async cancel(req: Request, res: Response): Promise<void> {
     const id = Number(req.params.id)

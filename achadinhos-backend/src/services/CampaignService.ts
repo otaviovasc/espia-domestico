@@ -374,6 +374,80 @@ export class CampaignService {
   }
 
   /**
+   * Live progress for a campaign, including a next-send ETA window derived from
+   * the pacing. For a RUNNING campaign we estimate when the next message goes
+   * out (last successful send + min/max delay) and a rough completion time for
+   * the remaining pairs. Times are only estimates — pacing has jitter, warmup
+   * pauses and an hourly cap.
+   */
+  async getProgress(
+    userId: number,
+    campaignId: number,
+  ): Promise<{
+    status: CAMPAIGN_STATUS_ENUM
+    totalPlanned: number
+    sent: number
+    failed: number
+    skipped: number
+    remaining: number
+    lastSentAt: string | null
+    nextSendEtaMinAt: string | null
+    nextSendEtaMaxAt: string | null
+    estimatedCompletionAt: string | null
+    stalled: boolean
+    avgIntervalSeconds: number
+  }> {
+    const campaign = await this.getForUser(userId, campaignId)
+    const safety = campaign.safety
+    const totalPlanned = campaign.offers.length * campaign.groups.length
+    const sent = campaign.totalSent ?? 0
+    const failed = campaign.totalFailed ?? 0
+    const skipped = campaign.totalSkipped ?? 0
+    const remaining = Math.max(0, totalPlanned - sent - failed - skipped)
+
+    // Last successful send timestamp (drives the next-send estimate).
+    const lastLog = await CampaignLog.findOne({
+      where: { campaignId, success: true },
+      order: [['sentAt', 'DESC']],
+      attributes: ['sentAt'],
+    })
+    const lastSentAt = lastLog?.sentAt ?? null
+
+    const minMs = Math.max(0, safety.minDelaySeconds) * 1000
+    const maxMs = Math.max(0, safety.maxDelaySeconds) * 1000
+    const avgMs = (minMs + maxMs) / 2 || 0
+
+    const isRunning = campaign.status === CAMPAIGN_STATUS_ENUM.RUNNING
+    let nextMin: Date | null = null
+    let nextMax: Date | null = null
+    let completion: Date | null = null
+
+    if (isRunning && remaining > 0) {
+      const base = lastSentAt ? lastSentAt.getTime() : Date.now()
+      nextMin = new Date(Math.max(Date.now(), base + minMs))
+      nextMax = new Date(Math.max(Date.now(), base + maxMs))
+      // Rough completion: remaining sends × average interval, from the next send.
+      // (Warmup/hourly-cap pauses can push this out; treated as a floor estimate.)
+      completion = new Date(nextMin.getTime() + Math.max(0, remaining - 1) * avgMs)
+    }
+
+    return {
+      status: campaign.status,
+      totalPlanned,
+      sent,
+      failed,
+      skipped,
+      remaining,
+      lastSentAt: lastSentAt ? lastSentAt.toISOString() : null,
+      nextSendEtaMinAt: nextMin ? nextMin.toISOString() : null,
+      nextSendEtaMaxAt: nextMax ? nextMax.toISOString() : null,
+      estimatedCompletionAt: completion ? completion.toISOString() : null,
+      stalled: this.isStalledRunning(campaign),
+      avgIntervalSeconds: Math.round(avgMs / 1000),
+    }
+  }
+
+  /**
    * Resolve a crash-ambiguous SENDING claim after the operator checks WhatsApp.
    * `sent` keeps the pair blocked; `retry` releases it for a future campaign run.
    */
@@ -557,6 +631,33 @@ export class CampaignService {
       }
     }
 
+    await campaign.save()
+    return campaign
+  }
+
+  /**
+   * Remove a single offer (product) from a campaign by its affiliate URL
+   * (unique per offer). Allowed while the campaign is not finished. For a
+   * RUNNING campaign this drops the product's still-pending sends — the live
+   * loop skips removed offers, and already-sent pairs are untouched.
+   */
+  async removeOffer(userId: number, campaignId: number, affiliateUrl: string): Promise<Campaign> {
+    const campaign = await this.getForUser(userId, campaignId)
+    if (
+      campaign.status === CAMPAIGN_STATUS_ENUM.COMPLETED ||
+      campaign.status === CAMPAIGN_STATUS_ENUM.CANCELLED
+    ) {
+      throw BadRequestError('Não é possível alterar os produtos de uma campanha finalizada')
+    }
+    const target = affiliateUrl.trim()
+    const nextOffers = campaign.offers.filter((o) => o.affiliateUrl.trim() !== target)
+    if (nextOffers.length === campaign.offers.length) {
+      throw NotFoundError('Produto não encontrado na campanha')
+    }
+    if (nextOffers.length === 0) {
+      throw BadRequestError('A campanha precisa ter ao menos um produto')
+    }
+    campaign.offers = nextOffers
     await campaign.save()
     return campaign
   }
@@ -854,6 +955,15 @@ export class CampaignService {
           return connectionChanged
         },
         async (task) => {
+          // Honor mid-run removals: if the offer was removed from the campaign,
+          // skip it (its pending sends are dropped). Cheap re-read; sends are
+          // seconds/minutes apart.
+          const fresh = await Campaign.findByPk(campaign.id, { attributes: ['offers'] })
+          const stillPresent = (fresh?.offers ?? []).some(
+            (o) => offerIdentity(o as CampaignOffer) === offerIdentity(task.offer),
+          )
+          if (!stillPresent) return false
+
           const claim = await this.claimDelivery(
             userId,
             context.scope,

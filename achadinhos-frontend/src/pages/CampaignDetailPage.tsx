@@ -15,6 +15,7 @@ import {
   ImageOff,
   Search,
   RotateCcw,
+  ExternalLink,
 } from 'lucide-react'
 import {
   campaignApi,
@@ -28,6 +29,7 @@ import {
 import { Button, Card, Badge, Spinner, Input, Label } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
 import { SafetyControls } from '@/components/SafetyControls'
+import { CampaignProgressCard } from '@/components/CampaignProgressCard'
 import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const ACTIVE: Campaign['status'][] = ['RUNNING', 'SCHEDULED']
@@ -89,6 +91,12 @@ export default function CampaignDetailPage() {
     queryFn: () => campaignApi.logs(campaignId),
     refetchInterval: () =>
       ACTIVE.includes(campaignQuery.data?.status as Campaign['status']) ? 2500 : false,
+  })
+  const progressQuery = useQuery({
+    queryKey: ['campaign-progress', campaignId],
+    queryFn: () => campaignApi.progress(campaignId),
+    refetchInterval: () =>
+      ACTIVE.includes(campaignQuery.data?.status as Campaign['status']) ? 3000 : false,
   })
   const metaQuery = useQuery({ queryKey: ['campaign-meta'], queryFn: campaignApi.meta })
 
@@ -165,6 +173,17 @@ export default function CampaignDetailPage() {
   const resumeM = useMutationAction(() => campaignApi.resume(campaignId), qc, campaignId, setError)
   const cancelM = useMutationAction(() => campaignApi.cancel(campaignId), qc, campaignId, setError)
 
+  const removeOfferM = useMutation({
+    mutationFn: (affiliateUrl: string) => campaignApi.removeOffer(campaignId, affiliateUrl),
+    onSuccess: (updated) => {
+      qc.setQueryData(['campaign', campaignId], updated)
+      qc.invalidateQueries({ queryKey: ['campaign-progress', campaignId] })
+      qc.invalidateQueries({ queryKey: ['offer-group-delivery'] })
+      setError(null)
+    },
+    onError: (e) => setError(apiErrorMessage(e)),
+  })
+
   const filteredGroups = useMemo(() => {
     const list = groupsQuery.data ?? []
     if (!groupSearch.trim()) return list
@@ -213,9 +232,6 @@ export default function CampaignDetailPage() {
   }
 
   const editable = c.editable
-  const totalPlanned = offers.length * groups.length
-  const done = Math.min(totalPlanned, c.totalSent + c.totalFailed + (c.totalSkipped ?? 0))
-  const pct = totalPlanned > 0 ? Math.round((done / totalPlanned) * 100) : 0
   const canRun = !runM.isPending
     && !deliveryQuery.isPending
     && !deliveryQuery.isError
@@ -337,23 +353,8 @@ export default function CampaignDetailPage() {
         </Card>
       )}
 
-      {!editable && (
-        <Card>
-          <div className="mb-2 flex items-center justify-between text-sm">
-            <span className="font-medium">Progresso</span>
-            <span className="text-zinc-500">
-              {done} / {totalPlanned} ({pct}%)
-            </span>
-          </div>
-          <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-100">
-            <div className="brand-gradient h-full transition-all" style={{ width: `${pct}%` }} />
-          </div>
-          <div className="mt-3 flex gap-4 text-sm">
-            <span className="text-green-600">{c.totalSent} enviadas</span>
-            <span className="text-red-600">{c.totalFailed} falhas</span>
-            <span className="text-zinc-500">{c.totalSkipped ?? 0} ignoradas por histórico</span>
-          </div>
-        </Card>
+      {!editable && progressQuery.data && (
+        <CampaignProgressCard progress={progressQuery.data} />
       )}
 
       {editable ? (
@@ -453,6 +454,15 @@ export default function CampaignDetailPage() {
                   >
                     <Trash2 size={16} />
                   </button>
+                  <a
+                    href={o.affiliateUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-zinc-400 hover:text-violet-600"
+                    title="Abrir link do produto"
+                  >
+                    <ExternalLink size={16} />
+                  </a>
                 </div>
               ))}
               {offers.length === 0 && (
@@ -540,15 +550,50 @@ export default function CampaignDetailPage() {
           <Card>
             <h2 className="mb-3 font-semibold">Produtos ({offers.length})</h2>
             <div className="max-h-80 space-y-1 overflow-y-auto">
-              {offers.map((o, i) => (
-                <div key={i} className="grid gap-2 rounded-lg px-2 py-2 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)] md:items-start">
-                  {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
-                  <span className="min-w-0 truncate text-sm">{o.title}</span>
-                  <OfferCategoryBadge offer={o} />
-                  <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
-                  <ProductDeliveryStatus groups={deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} compact={groups.length > 4} />
-                </div>
-              ))}
+              {offers.map((o, i) => {
+                const offerGroups = deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []
+                const hasUnsent =
+                  offerGroups.length === 0 || offerGroups.some((g) => g.status !== 'sent')
+                const canRemove =
+                  hasUnsent && c.status !== 'COMPLETED' && c.status !== 'CANCELLED'
+                return (
+                  <div key={i} className="grid gap-2 rounded-lg px-2 py-2 hover:bg-zinc-50 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)_auto] md:items-start">
+                    {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
+                    <span className="min-w-0 truncate text-sm">{o.title}</span>
+                    <OfferCategoryBadge offer={o} />
+                    <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
+                    <ProductDeliveryStatus groups={offerGroups} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} compact={groups.length > 4} />
+                    <div className="flex items-center gap-1">
+                      <a
+                        href={o.affiliateUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-violet-600"
+                        title="Abrir link do produto"
+                      >
+                        <ExternalLink size={16} />
+                      </a>
+                      {canRemove && (
+                        <button
+                          onClick={() => {
+                            if (
+                              confirm(
+                                `Remover "${o.title}" desta campanha? Os envios ainda não realizados deste produto não serão enviados.`,
+                              )
+                            )
+                              removeOfferM.mutate(o.affiliateUrl)
+                          }}
+                          disabled={removeOfferM.isPending}
+                          className="rounded p-1 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                          title="Remover produto (ainda não enviado)"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
           </Card>
         )}

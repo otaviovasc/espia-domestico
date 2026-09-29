@@ -15,7 +15,6 @@ import type {
   SavedProductOfferPatch,
 } from '@/dtos/savedProduct'
 import { ConflictError, NotFoundError, UnauthorizedError } from '@/middleware/Error/AppError'
-import { ensureDefaultProductGroup } from '@/services/ProductGroupService'
 import { offerIdentity } from '@/utils/offerIdentity'
 
 export interface SavedProductResult {
@@ -140,7 +139,6 @@ export class SavedProductService {
       // the same product. The unique indexes remain the database backstop.
       const user = await User.findByPk(userId, { transaction, lock: transaction.LOCK.UPDATE })
       if (!user) throw UnauthorizedError('Usuário não encontrado')
-      const defaultGroup = await ensureDefaultProductGroup(userId, transaction)
       const saved: SavedProductResult[] = []
       const savedModels: SavedProduct[] = []
       let created = 0
@@ -242,10 +240,6 @@ export class SavedProductService {
             },
             { transaction },
           )
-          await SavedProductGroupMembership.create(
-            { savedProductId: product.id, productGroupId: defaultGroup.id },
-            { transaction },
-          )
           created++
         }
         savedModels.push(product)
@@ -258,7 +252,6 @@ export class SavedProductService {
 
   async list(userId: number, limit: number, offset: number, groupId?: number) {
     return sequelize.transaction(async (transaction) => {
-      await ensureDefaultProductGroup(userId, transaction)
       let memberProductIds: number[] | undefined
       if (groupId !== undefined) {
         const group = await ProductGroup.findOne({ where: { id: groupId, userId }, transaction })

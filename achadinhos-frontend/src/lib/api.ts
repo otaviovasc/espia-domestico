@@ -253,6 +253,21 @@ export interface Campaign {
   stalled?: boolean
 }
 
+export interface CampaignProgress {
+  status: CampaignStatus
+  totalPlanned: number
+  sent: number
+  failed: number
+  skipped: number
+  remaining: number
+  lastSentAt: string | null
+  nextSendEtaMinAt: string | null
+  nextSendEtaMaxAt: string | null
+  estimatedCompletionAt: string | null
+  stalled: boolean
+  avgIntervalSeconds: number
+}
+
 export interface CampaignLog {
   id: number
   campaignId: number
@@ -485,6 +500,12 @@ export const campaignApi = {
   },
   async logs(id: number): Promise<CampaignLog[]> {
     return unwrap<CampaignLog[]>(await api.get(`/campaigns/${id}/logs`))
+  },
+  async progress(id: number): Promise<CampaignProgress> {
+    return unwrap<CampaignProgress>(await api.get(`/campaigns/${id}/progress`))
+  },
+  async removeOffer(id: number, affiliateUrl: string): Promise<Campaign> {
+    return unwrap<Campaign>(await api.delete(`/campaigns/${id}/offers`, { data: { affiliateUrl } }))
   },
 }
 
