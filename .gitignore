@@ -1,0 +1,24 @@
+# Deps
+node_modules/
+.pnp/
+.pnp.js
+
+# Builds
+dist/
+build/
+*.tsbuildinfo
+
+# Env / secrets — never commit
+.env
+.env.*
+!.env.example
+*.local
+
+# Logs / OS
+*.log
+npm-debug.log*
+.DS_Store
+coverage/
+
+# Railway
+.railway/

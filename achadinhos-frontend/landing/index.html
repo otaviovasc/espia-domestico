@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#F7F1E8" />
+    <meta name="description" content="Inspirações, utilidades e achados especiais para deixar sua casa mais bonita, prática e acolhedora. Entre no grupo Espia Doméstico pelo WhatsApp." />
+    <title>Espia Doméstico — achados para sua casa</title>
+    <link rel="icon" type="image/png" href="./assets/logo-espiadomestico.png" />
+    <link rel="apple-touch-icon" href="./assets/logo-espiadomestico.png" />
+    <meta property="og:title" content="Espia Doméstico — achados para sua casa" />
+    <meta property="og:description" content="Descontos em decoração, utilidades e muito mais. Entre no grupo gratuito do WhatsApp." />
+    <meta property="og:image" content="./assets/logo-espiadomestico.png" />
+    <meta property="og:type" content="website" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style type="text/tailwindcss">
+      @theme {
+        --color-ivory: #F7F1E8;
+        --color-sand: #E7D2B8;
+        --color-rose: #C98268;
+        --color-clay: #B96F55;
+        --color-honey: #B9854D;
+        --color-cocoa: #765337;
+        --color-olive: #5C5A32;
+        --color-olive-deep: #434426;
+        --font-sans: "DM Sans", sans-serif;
+        --font-display: "Playfair Display", serif;
+      }
+    </style>
+    <style>
+      html { scroll-behavior: smooth; }
+      body {
+        background-color: #F7F1E8;
+        background-image:
+          radial-gradient(ellipse at 12% 12%, rgba(201, 130, 104, .13), transparent 28rem),
+          radial-gradient(ellipse at 90% 31%, rgba(185, 133, 77, .10), transparent 28rem);
+      }
+      .paper-grain {
+        background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.15'/%3E%3C/svg%3E");
+        opacity: .13;
+        pointer-events: none;
+      }
+      .orbit-carousel {
+        --orbit-distance: clamp(140px, 44vw, 190px);
+        --orbit-card-width: min(calc(100% - 40px), 560px);
+        --orbit-duration: 650ms;
+        width: 100%;
+        touch-action: pan-y;
+        user-select: none;
+      }
+      .orbit-stage {
+        position: relative;
+        width: calc(100% + 40px);
+        margin-left: -20px;
+        height: clamp(240px, 76vw, 340px);
+        overflow: hidden;
+        perspective: 1000px;
+        transform-style: preserve-3d;
+      }
+      .orbit-card {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: var(--orbit-card-width);
+        height: auto;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid rgba(118, 83, 55, .2);
+        border-radius: 22px;
+        background: #fffaf4;
+        box-shadow: 0 12px 28px rgba(85, 62, 42, .13);
+        color: #49392d;
+        text-align: left;
+        transform-style: preserve-3d;
+        transform-origin: center;
+        transition:
+          transform var(--orbit-duration) cubic-bezier(.22, .72, .22, 1),
+          opacity var(--orbit-duration) cubic-bezier(.22, .72, .22, 1),
+          filter var(--orbit-duration) cubic-bezier(.22, .72, .22, 1),
+          box-shadow var(--orbit-duration) cubic-bezier(.22, .72, .22, 1);
+        -webkit-tap-highlight-color: transparent;
+      }
+      .orbit-card[data-position="active"],
+      .orbit-card[data-position="left"],
+      .orbit-card[data-position="right"] { will-change: transform, opacity; }
+      .orbit-card::after {
+        position: absolute;
+        z-index: 1;
+        inset: 0;
+        border-radius: inherit;
+        background: rgba(67, 68, 38, .25);
+        content: "";
+        opacity: 1;
+        pointer-events: none;
+        transition: opacity var(--orbit-duration) cubic-bezier(.22, .72, .22, 1);
+      }
+      .orbit-card[data-position="active"] {
+        z-index: 3;
+        opacity: 1;
+        filter: none;
+        transform: translate3d(-50%, -50%, 0) scale(1) rotateY(0) rotateZ(0);
+      }
+      .orbit-card[data-position="active"]::after { opacity: 0; }
+      .orbit-card[data-position="left"] {
+        z-index: 2;
+        opacity: .86;
+        filter: saturate(.78);
+        transform: translate3d(calc(-50% - var(--orbit-distance)), -50%, -72px) scale(.79) rotateY(14deg) rotateZ(-3deg);
+      }
+      .orbit-card[data-position="right"] {
+        z-index: 2;
+        opacity: .86;
+        filter: saturate(.78);
+        transform: translate3d(calc(-50% + var(--orbit-distance)), -50%, -72px) scale(.79) rotateY(-14deg) rotateZ(3deg);
+      }
+      .orbit-card[data-position="hidden-left"] {
+        z-index: 0;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate3d(calc(-50% - var(--orbit-distance) - 84px), calc(-50% + 18px), -160px) scale(.58) rotateY(25deg) rotateZ(-7deg);
+      }
+      .orbit-card[data-position="hidden-right"] {
+        z-index: 0;
+        opacity: 0;
+        pointer-events: none;
+        transform: translate3d(calc(-50% + var(--orbit-distance) + 84px), calc(-50% + 18px), -160px) scale(.58) rotateY(-25deg) rotateZ(7deg);
+      }
+      .orbit-review-image { display: block; width: 100%; height: clamp(220px, 60vw, 320px); object-fit: cover; border-radius: inherit; background: #efe6d8; }
+      @media (min-width: 640px) {
+        .orbit-review-image { height: clamp(320px, 32vw, 380px); }
+      }
+      .orbit-review-placeholder { display: grid; min-height: 180px; place-items: center; padding: 20px; color: #765F4D; font-size: 13px; text-align: center; }
+      .orbit-comment {
+        min-height: 42px;
+        max-width: 560px;
+        margin: 12px auto 0;
+        padding: 0 12px;
+        color: #765F4D;
+        font-size: 13px;
+        line-height: 1.55;
+        text-align: center;
+        transition: opacity 220ms ease;
+      }
+      .orbit-pagination {
+        display: flex;
+        min-height: 24px;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding-top: 2px;
+      }
+      .orbit-dot {
+        display: grid;
+        width: 22px;
+        height: 22px;
+        place-items: center;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .orbit-dot::after {
+        width: 6px;
+        height: 6px;
+        border-radius: 999px;
+        background: rgba(118, 83, 55, .28);
+        content: "";
+        transition: width 220ms ease, background-color 220ms ease;
+      }
+      .orbit-dot[aria-current="true"]::after { width: 18px; background: #B96F55; }
+      .orbit-dot:focus-visible, .orbit-card:focus-visible {
+        outline: 2px solid #765337;
+        outline-offset: 3px;
+      }
+      @media (min-width: 640px) {
+        .orbit-carousel { --orbit-distance: clamp(164px, 28vw, 250px); --orbit-card-width: min(calc(100% - 160px), 560px); }
+        .orbit-stage { width: 100%; margin-left: 0; height: clamp(360px, 45vw, 420px); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html { scroll-behavior: auto; }
+        *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+        .orbit-card, .orbit-card::after, .orbit-dot::after { transition: none !important; }
+      }
+    </style>
+  </head>
+  <body class="min-h-screen overflow-x-hidden font-sans text-[#49392D] antialiased selection:bg-[#C98268]/30">
+    <div class="paper-grain fixed inset-0 z-0" aria-hidden="true"></div>
+
+    <header class="relative z-10 mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-3 sm:px-8 sm:py-5">
+      <a href="#inicio" class="group flex items-center gap-3" aria-label="Espia Doméstico — início">
+        <span class="grid h-[62px] w-[62px] shrink-0 place-items-center overflow-hidden rounded-full bg-white/80 p-0.5 shadow-[0_5px_18px_rgba(90,64,42,.10)] ring-1 ring-[#B96F55]/15 sm:h-[72px] sm:w-[72px]">
+          <img src="assets/logo-espiadomestico-256.png" srcset="assets/logo-espiadomestico-256.png 1x, assets/logo-espiadomestico.png 2x" alt="Espia Doméstico" width="72" height="72" fetchpriority="high" class="h-full w-full rounded-full object-contain" />
+        </span>
+        <span class="leading-tight">
+          <span class="block font-display text-[19px] font-semibold tracking-[-.04em] text-[#765337] sm:text-[22px]">espiadomestico</span>
+          <span class="mt-1 hidden text-[9px] font-semibold uppercase tracking-[.19em] text-[#8D735B] sm:block sm:text-[10px]">achados para o seu lar</span>
+        </span>
+      </a>
+      <div class="hidden items-center gap-2 rounded-full border border-[#765337]/10 bg-white/45 px-4 py-2 text-[11px] font-medium tracking-wide text-[#765337] sm:flex">
+        <span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#5C5A32] opacity-30"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-[#5C5A32]"></span></span>
+        UM GRUPO GRATUITO NO WHATSAPP
+      </div>
+    </header>
+
+    <main id="inicio" class="relative z-10 mx-auto w-full max-w-6xl px-5 sm:px-8">
+      <section class="flex flex-col items-center pb-10 pt-1 text-center sm:pb-16 sm:pt-8">
+        <p class="mb-2 text-[10px] font-bold uppercase tracking-[.2em] text-[#B96F55] sm:mb-3 sm:text-xs">promoções para sua casa</p>
+        <h1 class="max-w-[760px] font-display text-[39px] font-semibold leading-[1.04] tracking-[-.045em] text-[#49392D] sm:text-[64px] sm:leading-[1.06] md:text-[72px]">
+          Sua casa linda.<br />
+          <span class="text-[#B96F55]">Pagando menos.</span>
+        </h1>
+        <p class="mt-3 max-w-[520px] text-[14px] leading-6 text-[#765F4D] sm:mt-4 sm:text-[17px] sm:leading-7">
+          Descontos em decoração, utilidades e muito mais.
+        </p>
+
+        <div id="reviews-carousel" class="orbit-carousel mt-5 max-w-[720px] sm:mt-8" role="region" aria-roledescription="carrossel" aria-label="Avaliações de clientes" tabindex="0">
+          <div id="reviews-stage" class="orbit-stage"></div>
+          <p id="review-comment" class="orbit-comment" aria-label="Comentário da avaliação"></p>
+          <div id="reviews-pagination" class="orbit-pagination" role="group" aria-label="Escolher avaliação"></div>
+          <p id="reviews-status" class="sr-only" aria-live="polite" aria-atomic="true"></p>
+        </div>
+
+        <a href="https://chat.whatsapp.com/COLE_O_LINK_DO_GRUPO_AQUI" class="group mt-5 inline-flex min-h-[62px] w-full max-w-[440px] items-center justify-center gap-3 rounded-full bg-[#075E54] px-6 py-4 text-[13px] font-bold uppercase tracking-[.08em] text-white shadow-[0_10px_24px_rgba(7,94,84,.24)] transition duration-200 hover:-translate-y-0.5 hover:bg-[#064E46] hover:shadow-[0_14px_30px_rgba(7,94,84,.3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#075E54] sm:mt-7 sm:min-h-[58px] sm:w-auto sm:px-9 sm:text-sm">
+          <svg class="h-6 w-6 shrink-0 transition-transform group-hover:scale-110" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.5 11.7a8.3 8.3 0 0 1-12.3 7.2l-4.2 1.1 1.1-4.1a8.3 8.3 0 1 1 15.4-4.2Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 8.5c.2-.4.4-.4.7-.4h.3c.2 0 .4.1.5.4l.8 1.8c.1.2.1.4-.1.6l-.5.6c-.2.2-.2.4 0 .6.6 1 1.4 1.7 2.4 2.2.2.1.4.1.6-.1l.7-.8c.2-.2.4-.3.6-.2l1.7.8c.3.1.4.3.4.5 0 .3-.1 1-.6 1.4-.5.5-1.1.7-1.8.7-.8 0-2.1-.3-3.7-1.6-1.5-1.2-2.6-2.9-2.9-3.7-.3-.8-.1-1.6.2-2.1.3-.5.6-.7.7-.7Z" fill="currentColor"/></svg>
+          <span>Ver ofertas no WhatsApp</span>
+        </a>
+      </section>
+    </main>
+
+    <footer class="relative z-10 border-t border-[#765337]/10 px-5 py-5 text-center sm:px-8">
+      <p class="text-[10px] tracking-wide text-[#907A66]">© <span id="year"></span> espiadomestico</p>
+    </footer>
+
+    <script>
+      // Fotos reais dos produtos + comentário das avaliações 5★.
+      // `image` = foto real (depo). `fallback` = print da avaliação original.
+      const reviews = [
+        {
+          image: "./assets/depo/depo-tela-sombreamento.webp",
+          fallback: "./assets/reviews/review-print-01.png",
+          alt: "Foto real de cliente: tela de sombreamento bege instalada sobre carro branco no quintal",
+          comment: "Muito satisfeito com o produto.",
+        },
+        {
+          image: "./assets/depo/depo-panelas.webp",
+          fallback: "./assets/reviews/review-print-02.png",
+          alt: "Foto real de cliente: conjunto de panelas claras antiaderentes sobre o fogão",
+          comment: "Material: acabamento perfeito. Limpeza: fácil de lavar. Lindas! Comprei e aprovei.",
+        },
+        {
+          image: "./assets/depo/depo-cesto-bambu.webp",
+          fallback: "./assets/reviews/review-print-03.png",
+          alt: "Foto real de cliente: cesto organizador de bambu com tampa no canto do quarto",
+          comment: "Cesto lindo, muito bom e fácil de montar. Prático para o dia a dia, com entrega rápida. Adorei.",
+        },
+        {
+          image: "./assets/depo/depo-suporte-doces.webp",
+          fallback: "./assets/reviews/review-print-04.png",
+          alt: "Foto real de cliente: kit suporte para doces com bases de madeira e aramados dourados",
+          comment: "Os compradores elogiam a qualidade do material, o design atraente e a facilidade de montagem.",
+        },
+      ];
+
+      // Ajustes rápidos do carrossel, em milissegundos e pixels.
+      const carouselConfig = {
+        autoplayDelay: 2500,
+        transitionDuration: 500,
+        swipeThreshold: 42,
+      };
+
+      // Substitua o endereço marcador pelo link de convite do grupo do WhatsApp.
+      document.getElementById('year').textContent = new Date().getFullYear();
+
+      const carousel = document.getElementById('reviews-carousel');
+      const stage = document.getElementById('reviews-stage');
+      const pagination = document.getElementById('reviews-pagination');
+      const status = document.getElementById('reviews-status');
+      const reviewComment = document.getElementById('review-comment');
+      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+      const cards = [];
+      const dots = [];
+      let currentIndex = 0;
+      let isAnimating = false;
+      let autoplayTimer = null;
+      let animationTimer = null;
+      let pointerStart = null;
+      let ignoreClickUntil = 0;
+
+      carousel.style.setProperty('--orbit-duration', `${carouselConfig.transitionDuration}ms`);
+
+      function createCard(review, index) {
+        const card = document.createElement('button');
+        card.type = 'button';
+        card.className = 'orbit-card';
+        card.dataset.index = String(index);
+
+        if (review.image) {
+          const image = document.createElement('img');
+          image.className = 'orbit-review-image';
+          image.dataset.src = review.image;
+          if (review.fallback) image.dataset.fallback = review.fallback;
+          image.alt = review.alt || `Foto do produto da avaliação ${index + 1}`;
+          image.loading = 'eager';
+          image.decoding = 'async';
+          image.draggable = false;
+          image.onerror = () => {
+            const fb = image.dataset.fallback;
+            if (fb && image.getAttribute('src') !== fb) image.src = fb;
+          };
+          card.append(image);
+        } else {
+          const placeholder = document.createElement('span');
+          placeholder.className = 'orbit-review-placeholder';
+          placeholder.textContent = 'Adicione aqui o print da avaliação.';
+          card.append(placeholder);
+        }
+
+        card.addEventListener('click', () => {
+          if (Date.now() < ignoreClickUntil || isAnimating) return;
+          const position = card.dataset.position;
+          if (position === 'left') goTo(currentIndex - 1, true);
+          else goTo(currentIndex + 1, true);
+        });
+
+        stage.append(card);
+        cards.push(card);
+      }
+
+      function createDots() {
+        reviews.forEach((_, index) => {
+          const dot = document.createElement('button');
+          dot.type = 'button';
+          dot.className = 'orbit-dot';
+          dot.setAttribute('aria-label', `Ir para avaliação ${index + 1} de ${reviews.length}`);
+          dot.addEventListener('click', () => goTo(index, true));
+          pagination.append(dot);
+          dots.push(dot);
+        });
+      }
+
+      function positionFor(index) {
+        const count = reviews.length;
+        if (count === 1) return 'active';
+        const distance = (index - currentIndex + count) % count;
+        if (distance === 0) return 'active';
+        if (count === 2) return 'right';
+        if (distance === 1) return 'right';
+        if (distance === count - 1) return 'left';
+        return distance < count / 2 ? 'hidden-right' : 'hidden-left';
+      }
+
+      function renderPositions() {
+        cards.forEach((card, index) => {
+          const position = positionFor(index);
+          card.dataset.position = position;
+          const isVisible = position === 'active' || position === 'left' || position === 'right';
+          card.setAttribute('aria-hidden', String(!isVisible));
+          card.tabIndex = isVisible ? 0 : -1;
+          const image = card.querySelector('img');
+          if (isVisible && image?.dataset.src) {
+            image.src = image.dataset.src;
+            delete image.dataset.src;
+          }
+
+          if (position === 'active') {
+            const review = reviews[index];
+            card.setAttribute('aria-label', `Avaliação ${index + 1} de ${reviews.length}. ${review.comment} ${review.alt}. Toque para ver a próxima.`);
+          } else if (position === 'left') {
+            card.setAttribute('aria-label', 'Mostrar avaliação anterior');
+          } else if (position === 'right') {
+            card.setAttribute('aria-label', 'Mostrar próxima avaliação');
+          } else {
+            card.setAttribute('aria-label', '');
+          }
+        });
+
+        reviewComment.textContent = reviews[currentIndex]?.comment || 'Adicione o comentário que acompanha esta avaliação.';
+        dots.forEach((dot, index) => {
+          if (index === currentIndex) dot.setAttribute('aria-current', 'true');
+          else dot.removeAttribute('aria-current');
+        });
+        status.textContent = `Avaliação ${currentIndex + 1} de ${reviews.length}`;
+      }
+
+      function clearAutoplay() {
+        window.clearTimeout(autoplayTimer);
+        autoplayTimer = null;
+      }
+
+      function scheduleAutoplay() {
+        clearAutoplay();
+        if (reviews.length < 2 || reducedMotion.matches || document.hidden) return;
+        autoplayTimer = window.setTimeout(() => goTo(currentIndex + 1, false), carouselConfig.autoplayDelay);
+      }
+
+      function goTo(nextIndex, isManual) {
+        if (isManual) clearAutoplay();
+        if (reviews.length < 2) return;
+        if (isAnimating) return;
+
+        const normalizedIndex = (nextIndex + reviews.length) % reviews.length;
+        if (normalizedIndex === currentIndex) {
+          if (isManual) scheduleAutoplay();
+          return;
+        }
+
+        currentIndex = normalizedIndex;
+        isAnimating = true;
+        reviewComment.style.opacity = '0';
+        renderPositions();
+        window.requestAnimationFrame(() => { reviewComment.style.opacity = '1'; });
+
+        animationTimer = window.setTimeout(() => {
+          isAnimating = false;
+          scheduleAutoplay();
+        }, reducedMotion.matches ? 0 : carouselConfig.transitionDuration + 40);
+      }
+
+      reviews.forEach(createCard);
+      createDots();
+      renderPositions();
+
+      if (reviews.length === 0) {
+        const emptyState = document.createElement('p');
+        emptyState.className = 'orbit-comment';
+        emptyState.textContent = 'Adicione avaliações no array reviews para exibir os cards.';
+        stage.append(emptyState);
+      }
+
+      carousel.addEventListener('keydown', (event) => {
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          goTo(currentIndex - 1, true);
+        } else if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          goTo(currentIndex + 1, true);
+        } else if (event.key === 'Home') {
+          event.preventDefault();
+          goTo(0, true);
+        } else if (event.key === 'End') {
+          event.preventDefault();
+          goTo(reviews.length - 1, true);
+        }
+      });
+
+      carousel.addEventListener('pointerdown', (event) => {
+        if (event.pointerType === 'mouse') return;
+        pointerStart = { x: event.clientX, y: event.clientY };
+      });
+      carousel.addEventListener('pointerup', (event) => {
+        if (!pointerStart) return;
+        const deltaX = event.clientX - pointerStart.x;
+        const deltaY = event.clientY - pointerStart.y;
+        pointerStart = null;
+        if (Math.abs(deltaX) < carouselConfig.swipeThreshold || Math.abs(deltaX) < Math.abs(deltaY)) return;
+        ignoreClickUntil = Date.now() + 350;
+        goTo(currentIndex + (deltaX < 0 ? 1 : -1), true);
+      });
+      carousel.addEventListener('pointercancel', () => { pointerStart = null; });
+
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) clearAutoplay();
+        else scheduleAutoplay();
+      });
+      reducedMotion.addEventListener?.('change', scheduleAutoplay);
+      scheduleAutoplay();
+    </script>
+  </body>
+</html>

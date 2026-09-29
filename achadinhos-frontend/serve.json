@@ -1,0 +1,15 @@
+{
+  "trailingSlash": false,
+  "directoryListing": false,
+  "rewrites": [
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/painel", "destination": "/painel/index.html" },
+    { "source": "/painel/**", "destination": "/painel/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "**/*",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+    }
+  ]
+}

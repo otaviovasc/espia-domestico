@@ -1,0 +1,175 @@
+# Achadinhos 🛍️
+
+Ferramenta interna para o time de suporte/desenvolvimento enviar **ofertas de
+produtos** (com link de afiliado) para grupos do WhatsApp, usando a **UAZAPI**
+como provedor.
+
+Cada membro do time tem seu próprio login e sua própria conexão do WhatsApp
+(um número por usuário). O fluxo principal é:
+
+1. **Login** → cada suporte entra com e-mail e senha.
+2. **Conexão** → conecta seu número lendo o QR Code (ou por código de pareamento).
+3. **Grupos** → lista os grupos do número conectado e seleciona os alvos.
+4. **Produtos** → importa um lote de produtos via **JSON** (batching inteligente).
+5. **Segurança** → define intervalo entre mensagens, limite por hora, aquecimento e embaralhamento.
+6. **Enviar / Agendar** → dispara na hora ou agenda; acompanha o progresso e os logs.
+
+Construído reaproveitando a base sólida do projeto `repasses` (UazapiClient,
+padrões de erro, lifecycle de conexão, stack de frontend), porém **enxuto e
+focado apenas em UAZAPI** — sem Z-API, sem CRM, sem veículos.
+
+## Estrutura
+
+```
+achadinhos-project/
+├── achadinhos-backend/    # Express + TS + Sequelize/Postgres + tsyringe
+└── achadinhos-frontend/   # React 19 + Vite + Tailwind + TanStack Query
+```
+
+## Pré-requisitos
+
+- Node.js ≥ 20
+- Docker (para o Postgres local)
+- Um **UAZAPI_ADMIN_TOKEN** (para provisionar instâncias) e a base URL da UAZAPI
+
+## Subindo o backend
+
+```bash
+cd achadinhos-backend
+cp env.example .env          # ajuste JWT_SECRET, UAZAPI_ADMIN_TOKEN, etc.
+npm install
+npm run docker:up            # sobe o Postgres em localhost:5433
+npm run migrate              # cria as tabelas
+npm run dev                  # http://localhost:3100/api/v1
+```
+
+Na primeira subida, se `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD`
+estiverem definidos e a tabela de usuários estiver vazia, um usuário **ADMIN** é
+criado automaticamente. Alternativamente, o **primeiro** cadastro via
+`POST /auth/register` (quando não há nenhum usuário) vira ADMIN.
+
+### Configuração UAZAPI
+
+- `UAZAPI_ADMIN_TOKEN` — token de administração do servidor UAZAPI (fica **só no backend**).
+- `UAZAPI_BASE_URL` — ex.: `https://free.uazapi.com` ou seu servidor dedicado.
+- `API_BASE_URL` — (opcional) URL pública deste backend para registrar webhooks.
+
+Sem o admin token, tudo funciona exceto conectar um número (a UI mostra um
+aviso claro).
+
+## Subindo o frontend
+
+```bash
+cd achadinhos-frontend
+npm install
+npm run dev                  # http://localhost:5273
+```
+
+- **`/`** → página pública (landing "Espia Doméstico"), convite para os grupos.
+- **`/painel`** → ferramenta interna do time (login obrigatório). A UI de suporte
+  fica sob esse caminho, separada da página pública.
+
+Em produção: `npm run build` gera `dist/index.html` (LP) e `dist/painel/index.html`
+(app), com `serve.json` para as rotas SPA de `/painel`. Sirva com `npm start`
+(usa o pacote `serve`).
+
+A landing page fica em `achadinhos-frontend/landing/index.html` — edite os links
+`https://chat.whatsapp.com/...` para apontar aos seus grupos.
+
+Em desenvolvimento o Vite faz proxy de `/api` para o backend, então o cookie de
+sessão (httpOnly) funciona no mesmo domínio, sem dor de cabeça de CORS.
+
+## Importação de produtos (ingestores por marketplace)
+
+Os produtos são importados por **ingestores** — um por marketplace:
+
+- **Mercado Livre** (`mercadolivre`): cole o JSON exportado do hub de afiliados.
+  O ingestor lê `cards[]`, usa `commissionedUrl` (link afiliado) quando existe e
+  cai para `productUrl` com um aviso quando não há; captura preço atual/original,
+  desconto %, parcelamento, comissão % e imagem.
+- **Amazon**: planejado (a arquitetura de ingestores já suporta; basta somar a
+  implementação em `src/ingestors/`).
+
+Também há um caminho genérico (array plano com apelidos de campos) para importações
+manuais. A origem pode ser escolhida na UI ou detectada automaticamente.
+
+## Personalização da mensagem (templates)
+
+Cada campanha tem um **modelo de mensagem** com `{placeholders}` e blocos
+condicionais `{?campo}…{/campo}` que somem quando o campo está vazio:
+
+Placeholders: `{title}`, `{price}`, `{original}`, `{discount}`, `{installment}`,
+`{commission}`, `{coupon}`, `{url}`. O editor tem prévia ao vivo estilo WhatsApp.
+
+## Formato do JSON de produtos
+
+Cole um **array** de produtos. Os campos aceitam apelidos comuns e preços como
+texto (`"R$ 99,90"`):
+
+```json
+[
+  {
+    "title": "Fone Bluetooth XYZ",
+    "original_price": 199.90,
+    "discounted_price": 99.90,
+    "description": "Bateria de 30h, cancelamento de ruído",
+    "affiliateUrl": "https://amzn.to/xxxx",
+    "imageUrl": "https://.../fone.jpg",
+    "coupon": "ACHOU10"
+  }
+]
+```
+
+Apelidos reconhecidos: `nome`/`name`/`titulo`, `de`/`original_price`,
+`por`/`price`/`discounted_price`, `link`/`url`/`affiliateUrl`,
+`imagem`/`image`/`imageUrl`, `cupom`/`coupon`, `descricao`/`description`.
+
+Cada produto vira uma mensagem formatada:
+
+```
+🔥 *Fone Bluetooth XYZ*
+~R$ 199,90~ ➡️ *R$ 99,90*  (50% OFF 🤑)
+
+Bateria de 30h, cancelamento de ruído
+
+🎟️ Cupom: *ACHOU10*
+
+👉 https://amzn.to/xxxx
+```
+
+## Segurança de envio (anti-bloqueio)
+
+- **Jitter**: cada mensagem espera um tempo aleatório entre `minDelaySeconds` e `maxDelaySeconds`.
+- **Limite por hora** (`maxPerHour`): pausa ao atingir o teto na janela de 1h.
+- **Aquecimento** (`warmupBatchSize` + `warmupPauseFactor`): pausas mais longas a cada N mensagens.
+- **Embaralhar grupos** (`shuffleGroups`): não envia sempre na mesma ordem.
+- Os envios usam a fila assíncrona da própria UAZAPI (`async: true`).
+
+## API (resumo)
+
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/api/v1/auth/register` | Cria usuário (1º vira ADMIN; depois só ADMIN cria) |
+| POST | `/api/v1/auth/login` | Login → cookie httpOnly |
+| POST | `/api/v1/auth/logout` | Logout |
+| GET | `/api/v1/auth/me` | Usuário atual |
+| GET | `/api/v1/connection` | Status da conexão |
+| POST | `/api/v1/connection/connect` | Provisiona + inicia QR/pareamento |
+| POST | `/api/v1/connection/disconnect` | Desconecta |
+| GET | `/api/v1/groups?search=` | Lista grupos do número conectado |
+| POST | `/api/v1/campaigns/import-offers` | Valida um lote JSON de produtos + prévia |
+| POST | `/api/v1/campaigns/preview` | Prévia das mensagens |
+| POST | `/api/v1/campaigns` | Cria campanha (rascunho ou agendada) |
+| POST | `/api/v1/campaigns/:id/run` | Dispara agora |
+| POST | `/api/v1/campaigns/:id/cancel` | Cancela |
+| GET | `/api/v1/campaigns` | Lista campanhas |
+| GET | `/api/v1/campaigns/:id` | Detalhe + progresso |
+| GET | `/api/v1/campaigns/:id/logs` | Logs de envio |
+
+## Segurança
+
+- Senhas com bcrypt (12 rounds), comparação em tempo constante.
+- JWT em cookie **httpOnly**, `sameSite=lax`, `secure` em produção.
+- `helmet`, `hpp`, rate-limit global + rate-limit específico no login.
+- Token de instância UAZAPI nunca é logado nem enviado ao frontend.
+- Validação de entrada com Zod em todas as rotas.

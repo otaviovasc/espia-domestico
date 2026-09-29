@@ -1,0 +1,204 @@
+import { Request, Response } from 'express'
+import { injectable, inject } from 'tsyringe'
+import { z } from 'zod'
+import { CampaignService } from '@/services/CampaignService'
+import { OfferImportService } from '@/services/OfferImportService'
+import { CreateCampaignSchema, UpdateCampaignSchema, OfferSchema } from '@/dtos/campaign'
+import { renderOfferMessage, DEFAULT_TEMPLATE, TEMPLATE_PLACEHOLDERS } from '@/utils/messageTemplate'
+import { listIngestors } from '@/ingestors/registry'
+import { Campaign } from '@/database/models/Campaign'
+import { BadRequestError, UnauthorizedError } from '@/middleware/Error/AppError'
+
+const ImportSchema = z.object({
+  // Either a JSON string or an already-parsed array/object.
+  json: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]),
+  // Optional explicit marketplace id (e.g. 'mercadolivre'); auto-detected if omitted.
+  source: z.string().max(40).optional(),
+})
+
+function serializeCampaign(c: Campaign) {
+  const editable =
+    c.status === 'DRAFT' ||
+    c.status === 'SCHEDULED' ||
+    c.status === 'PAUSED' ||
+    c.status === 'FAILED'
+  return {
+    id: c.id,
+    uuid: c.uuid,
+    name: c.name,
+    offers: c.offers,
+    groups: c.groups,
+    safety: c.safety,
+    messageTemplate: c.messageTemplate,
+    sendImages: c.sendImages,
+    status: c.status,
+    scheduledAt: c.scheduledAt,
+    startedAt: c.startedAt,
+    completedAt: c.completedAt,
+    totalSent: c.totalSent,
+    totalFailed: c.totalFailed,
+    createdAt: c.createdAt,
+    editable,
+  }
+}
+
+@injectable()
+export class CampaignController {
+  constructor(
+    @inject(CampaignService) private campaignService: CampaignService,
+    @inject(OfferImportService) private offerImportService: OfferImportService,
+  ) {}
+
+  private userId(req: Request): number {
+    if (!req.user) throw UnauthorizedError('Não autenticado')
+    return req.user.userId
+  }
+
+  /** GET /campaigns/meta — ingestors, placeholders, default template for the UI. */
+  async meta(_req: Request, res: Response): Promise<void> {
+    res.json({
+      success: true,
+      data: {
+        ingestors: listIngestors(),
+        placeholders: TEMPLATE_PLACEHOLDERS,
+        defaultTemplate: DEFAULT_TEMPLATE,
+      },
+    })
+  }
+
+  /** POST /campaigns/import-offers — parse+validate a product batch (ingestor or generic). */
+  async importOffers(req: Request, res: Response): Promise<void> {
+    this.userId(req)
+    const parsed = ImportSchema.safeParse(req.body)
+    if (!parsed.success) throw BadRequestError('Envie o campo "json" com os produtos')
+    const result = this.offerImportService.parse(parsed.data.json, parsed.data.source)
+    const template = typeof req.body?.template === 'string' ? req.body.template : undefined
+    res.json({
+      success: true,
+      data: {
+        source: result.source,
+        totalSeen: result.totalSeen,
+        offers: result.offers,
+        errors: result.errors,
+        previews: result.offers.map((offer) => ({
+          title: offer.title,
+          message: renderOfferMessage(offer, template),
+        })),
+      },
+    })
+  }
+
+  /** POST /campaigns/preview — preview formatted messages for offers + optional template. */
+  async preview(req: Request, res: Response): Promise<void> {
+    this.userId(req)
+    const schema = z.object({
+      offers: z.array(OfferSchema).min(1),
+      template: z.string().max(4000).optional(),
+    })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) {
+      throw BadRequestError(parsed.error.errors.map((e) => e.message).join(', '))
+    }
+    res.json({
+      success: true,
+      data: parsed.data.offers.map((offer) => ({
+        title: offer.title,
+        message: renderOfferMessage(offer, parsed.data.template),
+      })),
+    })
+  }
+
+  /** POST /campaigns/check-offers — flag offers already sent / in active campaigns. */
+  async checkOffers(req: Request, res: Response): Promise<void> {
+    const userId = this.userId(req)
+    const schema = z.object({
+      offers: z
+        .array(z.object({ productId: z.string().optional(), affiliateUrl: z.string().url() }))
+        .min(1),
+    })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) {
+      throw BadRequestError(parsed.error.errors.map((e) => e.message).join(', '))
+    }
+    const flags = await this.campaignService.checkOffers(userId, parsed.data.offers)
+    res.json({ success: true, data: flags })
+  }
+
+  /** POST /campaigns — create a campaign (draft or scheduled). */
+  async create(req: Request, res: Response): Promise<void> {
+    const parsed = CreateCampaignSchema.safeParse(req.body)
+    if (!parsed.success) {
+      throw BadRequestError(parsed.error.errors.map((e) => e.message).join(', '))
+    }
+    const campaign = await this.campaignService.create(this.userId(req), parsed.data)
+    res.status(201).json({ success: true, data: serializeCampaign(campaign) })
+  }
+
+  /** POST /campaigns/:id/run — start sending now. */
+  async run(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const campaign = await this.campaignService.runNow(this.userId(req), id)
+    res.json({ success: true, data: serializeCampaign(campaign) })
+  }
+
+  /** GET /campaigns */
+  async list(req: Request, res: Response): Promise<void> {
+    const limit = req.query.limit ? Number(req.query.limit) : 50
+    const offset = req.query.offset ? Number(req.query.offset) : 0
+    const { rows, count } = await this.campaignService.listForUser(this.userId(req), limit, offset)
+    res.json({ success: true, data: rows.map(serializeCampaign), total: count })
+  }
+
+  /** GET /campaigns/:id */
+  async get(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const campaign = await this.campaignService.getForUser(this.userId(req), id)
+    res.json({ success: true, data: serializeCampaign(campaign) })
+  }
+
+  /** PATCH /campaigns/:id — edit an editable campaign. */
+  async update(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const parsed = UpdateCampaignSchema.safeParse(req.body)
+    if (!parsed.success) {
+      throw BadRequestError(parsed.error.errors.map((e) => e.message).join(', '))
+    }
+    const campaign = await this.campaignService.update(this.userId(req), id, parsed.data)
+    res.json({ success: true, data: serializeCampaign(campaign) })
+  }
+
+  /** POST /campaigns/:id/pause */
+  async pause(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const campaign = await this.campaignService.pause(this.userId(req), id)
+    res.json({ success: true, data: serializeCampaign(campaign) })
+  }
+
+  /** POST /campaigns/:id/resume */
+  async resume(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const campaign = await this.campaignService.resume(this.userId(req), id)
+    res.json({ success: true, data: serializeCampaign(campaign) })
+  }
+
+  /** GET /campaigns/:id/logs */
+  async logs(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const logs = await this.campaignService.getLogs(this.userId(req), id)
+    res.json({ success: true, data: logs })
+  }
+
+  /** POST /campaigns/:id/cancel */
+  async cancel(req: Request, res: Response): Promise<void> {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id)) throw BadRequestError('ID inválido')
+    const campaign = await this.campaignService.cancel(this.userId(req), id)
+    res.json({ success: true, data: serializeCampaign(campaign) })
+  }
+}

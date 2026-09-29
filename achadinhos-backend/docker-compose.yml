@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: achadinhos-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: achadinhos
+      POSTGRES_PASSWORD: achadinhos_dev
+      POSTGRES_DB: achadinhos
+    ports:
+      - '5433:5432'
+    volumes:
+      - achadinhos_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U achadinhos -d achadinhos']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  achadinhos_pgdata:
