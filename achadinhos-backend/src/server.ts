@@ -7,7 +7,9 @@ import { logger } from '@/utils/logger'
 import { assertDatabaseConnection } from '@/database'
 import { registerAssociations, User } from '@/database/models'
 import { USER_ROLE_ENUM } from '@/database/models/User'
-import { startScheduler } from '@/jobs/scheduler'
+import { startScheduler, stopScheduler } from '@/jobs/scheduler'
+import { ensureAdMediaDirectories } from '@/services/AdMediaService'
+import { startAdRenderQueue, stopAdRenderQueue } from '@/services/AdRenderQueue'
 
 /**
  * Optionally create the first admin from env if the users table is empty.
@@ -33,6 +35,8 @@ async function main(): Promise<void> {
   registerAssociations()
   await assertDatabaseConnection()
   await bootstrapAdmin()
+  await ensureAdMediaDirectories()
+  await startAdRenderQueue()
 
   startScheduler()
 
@@ -41,12 +45,20 @@ async function main(): Promise<void> {
     logger.info(`achadinhos-backend listening on http://localhost:${env.PORT}${env.API_PREFIX}`)
   })
 
-  const shutdown = (signal: string): void => {
+  let shuttingDown = false
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return
+    shuttingDown = true
     logger.info({ signal }, 'Shutting down')
-    server.close(() => process.exit(0))
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+    server.closeIdleConnections()
+    stopScheduler()
+    await stopAdRenderQueue()
+    await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, 5_000))])
+    process.exit(0)
   }
-  process.on('SIGINT', () => shutdown('SIGINT'))
-  process.on('SIGTERM', () => shutdown('SIGTERM'))
+  process.on('SIGINT', () => void shutdown('SIGINT'))
+  process.on('SIGTERM', () => void shutdown('SIGTERM'))
 }
 
 main().catch((error) => {

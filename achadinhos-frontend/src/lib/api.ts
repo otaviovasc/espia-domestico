@@ -310,6 +310,101 @@ export interface ImportResult {
   }
 }
 
+export type AdTimingMode = 'fixed' | 'beat'
+export type AdColorPreset = 'natural' | 'vibrant' | 'warm' | 'cool' | 'none'
+export type AdFramingMode = 'cover' | 'contain-blur' | 'contain-solid'
+export type AdAssetKind = 'clip' | 'music'
+export type AdRenderStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+
+export interface AdProjectConfig {
+  variationCount: number
+  texts: string[]
+  selectedClipIds: number[]
+  musicAssetId: number | null
+  timing: { mode: 'fixed'; seconds: number } | { mode: 'beat' }
+  output: {
+    width: number
+    height: number
+    durationSeconds: number
+    fps: 24 | 25 | 30
+  }
+  framing: {
+    mode: AdFramingMode
+    focusX: number
+    focusY: number
+    backgroundColor: string
+  }
+  colorPreset: AdColorPreset
+  textStyle: {
+    fontSize: number
+    positionY: number
+    fontColor: string
+    borderColor: string
+    borderWidth: number
+  }
+}
+
+export interface AdAsset {
+  id: number
+  kind: AdAssetKind
+  originalName: string
+  mimeType: string
+  sizeBytes: number
+  durationSeconds: number
+  width: number | null
+  height: number | null
+  contentUrl: string
+  createdAt: string
+}
+
+export interface AdRenderOutput {
+  index: number
+  fileName: string
+  sizeBytes: number
+  durationSeconds: number
+  seed: string
+  cutTimes: number[]
+  clipAssetIds: number[]
+  textOrder: string[]
+  downloadUrl: string
+  /** Missing on renders created before timing provenance was recorded. */
+  timingSource?: 'beat' | 'fixed' | 'fallback'
+}
+
+export interface AdRenderJob {
+  id: number
+  projectId: number
+  status: AdRenderStatus
+  progress: number
+  error: string | null
+  config: AdProjectConfig
+  outputs: AdRenderOutput[]
+  createdAt: string
+  startedAt: string | null
+  finishedAt: string | null
+  updatedAt: string
+}
+
+interface AdProjectBase {
+  id: number
+  name: string
+  config: AdProjectConfig
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AdProjectSummary extends AdProjectBase {
+  assetCount: number
+  latestJob: AdRenderJob | null
+}
+
+export interface AdProject extends AdProjectBase {
+  assets: AdAsset[]
+  latestJobs: AdRenderJob[]
+}
+
+export type AdProjectInput = Pick<AdProject, 'name' | 'config'>
+
 // ── Envelope helpers ────────────────────────────────
 interface Envelope<T> {
   success: boolean
@@ -522,5 +617,72 @@ export const savedProductApi = {
   },
   async remove(id: number): Promise<void> {
     await api.delete(`/saved-products/${id}`)
+  },
+}
+
+function adMediaUrl(path: string): string {
+  const base = baseURL.replace(/\/$/, '')
+  return `${base}${path}`
+}
+
+export const adProjectApi = {
+  async list(): Promise<AdProjectSummary[]> {
+    return unwrap<AdProjectSummary[]>(await api.get('/ad-projects'))
+  },
+  async create(input: AdProjectInput): Promise<AdProject> {
+    return unwrap<AdProject>(await api.post('/ad-projects', input))
+  },
+  async get(id: number): Promise<AdProject> {
+    return unwrap<AdProject>(await api.get(`/ad-projects/${encodeURIComponent(id)}`))
+  },
+  async update(id: number, input: Partial<AdProjectInput>): Promise<AdProject> {
+    return unwrap<AdProject>(await api.patch(`/ad-projects/${encodeURIComponent(id)}`, input))
+  },
+  async remove(id: number): Promise<void> {
+    await api.delete(`/ad-projects/${encodeURIComponent(id)}`)
+  },
+  async duplicate(id: number): Promise<AdProject> {
+    return unwrap<AdProject>(await api.post(`/ad-projects/${encodeURIComponent(id)}/duplicate`))
+  },
+  async uploadAssets(id: number, kind: AdAssetKind, files: File[]): Promise<AdAsset[]> {
+    const body = new FormData()
+    body.append('kind', kind)
+    for (const file of files) body.append('files', file)
+    return unwrap<AdAsset[]>(await api.post(`/ad-projects/${encodeURIComponent(id)}/assets`, body))
+  },
+  async removeAsset(projectId: number, assetId: number): Promise<void> {
+    await api.delete(`/ad-projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}`)
+  },
+  assetContentUrl(projectId: number, assetId: number): string {
+    return adMediaUrl(`/ad-projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/content`)
+  },
+  async assetContent(projectId: number, assetId: number): Promise<Blob> {
+    const response = await api.get(
+      `/ad-projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/content`,
+      { responseType: 'blob' },
+    )
+    return response.data as Blob
+  },
+  async listJobs(projectId: number): Promise<AdRenderJob[]> {
+    return unwrap<AdRenderJob[]>(await api.get(`/ad-projects/${encodeURIComponent(projectId)}/render-jobs`))
+  },
+  async render(projectId: number, config?: AdProjectConfig): Promise<AdRenderJob> {
+    return unwrap<AdRenderJob>(await api.post(`/ad-projects/${encodeURIComponent(projectId)}/render-jobs`, config ? { config } : {}))
+  },
+  async getJob(projectId: number, jobId: number): Promise<AdRenderJob> {
+    return unwrap<AdRenderJob>(await api.get(`/ad-projects/${encodeURIComponent(projectId)}/render-jobs/${encodeURIComponent(jobId)}`))
+  },
+  async cancelJob(projectId: number, jobId: number): Promise<AdRenderJob> {
+    return unwrap<AdRenderJob>(await api.post(`/ad-projects/${encodeURIComponent(projectId)}/render-jobs/${encodeURIComponent(jobId)}/cancel`))
+  },
+  outputUrl(projectId: number, jobId: number, outputIndex: number): string {
+    return adMediaUrl(`/ad-projects/${encodeURIComponent(projectId)}/render-jobs/${encodeURIComponent(jobId)}/outputs/${outputIndex}`)
+  },
+  async outputContent(projectId: number, jobId: number, outputIndex: number): Promise<Blob> {
+    const response = await api.get(
+      `/ad-projects/${encodeURIComponent(projectId)}/render-jobs/${encodeURIComponent(jobId)}/outputs/${outputIndex}`,
+      { responseType: 'blob' },
+    )
+    return response.data as Blob
   },
 }
