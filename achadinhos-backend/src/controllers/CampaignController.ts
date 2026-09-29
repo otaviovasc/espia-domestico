@@ -13,14 +13,17 @@ import { listIngestors } from '@/ingestors/registry'
 import { Campaign } from '@/database/models/Campaign'
 import { BadRequestError, UnauthorizedError } from '@/middleware/Error/AppError'
 import { AppError } from '@/middleware/Error/AppError'
-import { categorizeOffers } from '@/services/OfferCategorizationService'
+import { categorizeOffers, OfferCategorizationService } from '@/services/OfferCategorizationService'
 import { logger } from '@/utils/logger'
+import { ClassificationProfileService } from '@/services/ClassificationProfileService'
+import { ClassificationProfileIdSchema } from '@/dtos/classificationProfile'
 
 const ImportSchema = z.object({
   // Either a JSON string or an already-parsed array/object.
   json: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]),
   // Optional explicit marketplace id (e.g. 'mercadolivre'); auto-detected if omitted.
   source: z.string().max(40).optional(),
+  classificationProfileId: ClassificationProfileIdSchema.default('default'),
 })
 
 function serializeCampaign(c: Campaign) {
@@ -55,6 +58,10 @@ export class CampaignController {
   constructor(
     @inject(CampaignService) private campaignService: CampaignService,
     @inject(OfferImportService) private offerImportService: OfferImportService,
+    @inject(ClassificationProfileService)
+    private classificationProfileService: ClassificationProfileService,
+    @inject(OfferCategorizationService)
+    private offerCategorizationService: OfferCategorizationService,
   ) {}
 
   private userId(req: Request): number {
@@ -76,13 +83,19 @@ export class CampaignController {
 
   /** POST /campaigns/import-offers — parse+validate a product batch (ingestor or generic). */
   async importOffers(req: Request, res: Response): Promise<void> {
-    this.userId(req)
+    const userId = this.userId(req)
     const parsed = ImportSchema.safeParse(req.body)
-    if (!parsed.success) throw BadRequestError('Envie o campo "json" com os produtos')
+    if (!parsed.success) {
+      throw BadRequestError(parsed.error.errors.map((error) => error.message).join(', '))
+    }
+    const profile = await this.classificationProfileService.getForUser(
+      userId,
+      parsed.data.classificationProfileId,
+    )
     const result = this.offerImportService.parse(parsed.data.json, parsed.data.source)
     let categorized: Awaited<ReturnType<typeof categorizeOffers>>
     try {
-      categorized = await categorizeOffers(result.offers)
+      categorized = await this.offerCategorizationService.categorize(result.offers, profile)
     } catch (error) {
       if (error instanceof AppError) throw error
       logger.warn(
@@ -103,7 +116,11 @@ export class CampaignController {
         totalSeen: result.totalSeen,
         offers: categorized.offers,
         errors: result.errors,
-        categorization: { method: 'jev', counts: categorized.counts },
+        categorization: {
+          method: 'jev',
+          counts: categorized.counts,
+          profile: { id: profile.id, name: profile.name },
+        },
         previews: categorized.offers.map((offer) => ({
           title: offer.title,
           message: renderOfferMessage(offer, template),

@@ -24,3 +24,22 @@ export const SavedProductOfferPatchSchema = z
   .refine((value) => Object.keys(value).length > 0, 'Informe ao menos um campo para editar')
 
 export type SavedProductOfferPatch = z.infer<typeof SavedProductOfferPatchSchema>
+
+export interface SavedProductClassification {
+  category: 'A' | 'B' | 'C' | 'D'
+  relevanceScore?: number
+  profileName: string
+  discountPercent?: number
+  commissionRate?: number
+  classifiedAt: string
+}
+
+export type SavedProductClassifications = Record<string, SavedProductClassification>
+
+export const SavedProductMembershipUpdateSchema = z
+  .object({
+    productIds: z.array(z.number().int().positive()).min(1).max(500),
+    groupIds: z.array(z.number().int().positive()).max(100),
+    mode: z.enum(['add', 'remove', 'set']),
+  })
+  .strict()

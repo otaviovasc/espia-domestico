@@ -20,7 +20,8 @@
     "validate": "npm run type-check && npm run lint",
     "test": "npm run build && node --test test/*.test.cjs",
     "test:catalog:integration": "npm run build && node --test test/saved-products.integration.cjs",
-    "test:delivery:integration": "npm run build && node --test test/campaign-group-delivery.integration.cjs"
+    "test:delivery:integration": "npm run build && node --test test/campaign-group-delivery.integration.cjs",
+    "test:profiles:integration": "npm run build && node --test test/classification-profiles.integration.cjs"
   },
   "keywords": [
     "whatsapp",

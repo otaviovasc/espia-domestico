@@ -95,17 +95,23 @@ Os produtos são importados por **ingestores** — um por marketplace:
   implementação em `src/ingestors/`).
 
 Também há um caminho genérico (array plano com apelidos de campos) para importações
-manuais. A origem pode ser escolhida na UI ou detectada automaticamente.
+manuais. Na página de produtos, a origem é detectada automaticamente.
 
-Ao importar, o backend envia apenas título e descrição ao Jev (`typesafe/jev-1.13`)
-pela API de avaliações do OpenRouter. O código combina a nota de relevância
+Antes de importar, selecione o perfil de classificação. O perfil padrão é
+**Doméstico**; cada usuário pode criar, duplicar, editar e remover perfis para
+outros nichos. Um perfil define o público, as instruções de relevância, os pesos
+de afinidade/desconto/comissão, os tetos comerciais e os limites de A/B/C/D.
+Ao importar, o backend envia apenas título e descrição do produto ao Jev
+(`typesafe/jev-1.13`) pela API de avaliações do OpenRouter, junto com os critérios
+do perfil escolhido. O código combina a nota de relevância
 com o desconto e a comissão informados no JSON, atribui A, B, C ou D a cada
 produto e mostra as categorias na revisão. A indica alta relevância e boas
 condições comerciais; D indica baixa prioridade. Produtos sem desconto ou taxa
 de comissão informados recebem zero nesses critérios. Se o Jev estiver
 indisponível, a importação falha com uma mensagem para tentar novamente;
-nenhuma categoria é inventada. As categorias seguem com as ofertas salvas
-no catálogo e na campanha.
+nenhuma categoria é inventada. O catálogo mantém uma classificação separada
+para cada perfil usado no mesmo produto, inclusive após a remoção de um perfil.
+Ao criar uma campanha, escolha qual classificação do nicho usar.
 
 Cada importação aceita até 100 produtos para limitar o tempo e o custo das
 avaliações pagas. As avaliações Jev são iniciadas em paralelo, até o limite
@@ -113,11 +119,20 @@ de 100 produtos por importação.
 
 Na página de produtos, escolha quais resultados quer salvar. O catálogo pertence
 ao usuário logado; salvar novamente o mesmo produto atualiza seus dados e sua
-categoria. A página de campanha lê esse catálogo para montar um disparo posterior.
+categoria do nicho escolhido sem apagar as classificações dos outros nichos.
+A página de campanha lê esse catálogo para montar um disparo posterior.
 No catálogo, é possível buscar entre os produtos carregados, filtrar por
 categoria, editar título, preço, comissão, link e outros campos, ou remover um
 produto. Campos alterados manualmente são preservados quando o mesmo produto é
 importado novamente. A origem e o ID do marketplace não podem ser editados.
+
+Produtos salvos podem pertencer a vários grupos de produtos. Na página de
+produtos, crie ou renomeie grupos e adicione ou remova produtos em lote. Os
+produtos já salvos antes desta atualização entram no grupo **Produtos existentes**
+pela migração do banco. Na criação de campanhas, selecione um ou mais grupos
+de produtos para filtrar o catálogo; o mesmo produto aparece uma vez mesmo
+quando pertence a vários grupos selecionados. Esses grupos organizam o catálogo
+e são diferentes dos grupos de destino do WhatsApp.
 
 O histórico mostra cada produto por grupo da conexão WhatsApp atual. Ao criar
 uma campanha, a interface informa quais combinações de produto e grupo ainda
@@ -136,10 +151,10 @@ A migração `20260929000009` mantém o endereço do servidor na identidade da
 conexão. Ela não pode ser revertida para código anterior sem ocultar o histórico
 de envios e criar risco de disparos repetidos; seu rollback falha explicitamente.
 
-A nota final pesa relevância (60%), desconto (25%, com teto em 50%) e comissão
-(15%, com teto em 20%). A exige relevância de pelo menos 75/100, desconto de
-15% e comissão de 10%, além de nota final de 75. B exige relevância de pelo
-menos 50/100 e nota final de 55. C exige nota final de 35. Relevância abaixo
+No perfil padrão, a nota final pesa relevância (60%), desconto (25%, com teto
+em 50%) e comissão (15%, com teto em 20%). A exige relevância de pelo menos
+75/100, desconto de 15% e comissão de 10%, além de nota final de 75. B exige
+relevância de pelo menos 50/100 e nota final de 55. C exige nota final de 35. Relevância abaixo
 de 25/100 sempre resulta em D.
 
 ## Personalização da mensagem (templates)
@@ -206,10 +221,13 @@ Bateria de 30h, cancelamento de ruído
 | POST | `/api/v1/connection/connect` | Provisiona + inicia QR/pareamento |
 | POST | `/api/v1/connection/disconnect` | Desconecta |
 | GET | `/api/v1/groups?search=` | Lista grupos do número conectado |
-| POST | `/api/v1/campaigns/import-offers` | Classifica um lote JSON com Jev e retorna A/B/C/D |
+| POST | `/api/v1/campaigns/import-offers` | Classifica um lote JSON com Jev e o perfil selecionado |
+| GET/POST/PUT/DELETE | `/api/v1/classification-profiles` | Gerencia perfis de nicho do usuário |
 | POST | `/api/v1/saved-products` | Salva ou atualiza produtos classificados do usuário |
-| GET | `/api/v1/saved-products?limit=100&offset=0` | Lista o catálogo pessoal |
+| GET | `/api/v1/saved-products?limit=100&offset=0&groupId=` | Lista o catálogo pessoal e suas classificações por nicho |
+| PUT | `/api/v1/saved-products/groups` | Adiciona ou remove produtos de grupos em lote |
 | DELETE | `/api/v1/saved-products/:id` | Remove um produto do catálogo pessoal |
+| GET/POST/PATCH/DELETE | `/api/v1/product-groups` | Gerencia grupos de produtos do usuário |
 | POST | `/api/v1/campaigns/preview` | Prévia das mensagens |
 | POST | `/api/v1/campaigns` | Cria campanha (rascunho ou agendada) |
 | POST | `/api/v1/campaigns/:id/run` | Dispara agora |

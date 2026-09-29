@@ -104,7 +104,41 @@ export interface Offer {
   relevanceScore?: number
   discountPercent?: number
   commissionRate?: number
+  /** Snapshot of the classifier configuration used for this result. */
+  classificationProfileId?: string
+  classificationProfileName?: string
 }
+
+export interface ClassificationProfileWeights {
+  relevance: number
+  discount: number
+  commission: number
+}
+
+export interface ClassificationProfileThresholds {
+  aScore: number
+  aRelevance: number
+  aDiscount: number
+  aCommission: number
+  bScore: number
+  bRelevance: number
+  cScore: number
+  dRelevance: number
+}
+
+export interface ClassificationProfile {
+  id: string
+  name: string
+  nicheDescription: string
+  relevanceInstructions: string
+  weights: ClassificationProfileWeights
+  discountCap: number
+  commissionCap: number
+  thresholds: ClassificationProfileThresholds
+  builtIn: boolean
+}
+
+export type ClassificationProfileInput = Omit<ClassificationProfile, 'id' | 'builtIn'>
 
 /** Matches the identity keys returned by /campaigns/check-offers. */
 export function offerIdentity(offer: Pick<Offer, 'savedProductId' | 'source' | 'productId' | 'affiliateUrl'>): string {
@@ -121,6 +155,26 @@ export interface SavedProduct {
   id: number
   offer: Offer
   manualOverrides?: string[]
+  groupIds: number[]
+  classifications: Record<string, SavedProductClassification>
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SavedProductClassification {
+  category: 'A' | 'B' | 'C' | 'D'
+  relevanceScore?: number
+  profileName: string
+  discountPercent?: number
+  commissionRate?: number
+  classifiedAt: string
+}
+
+export interface ProductGroup {
+  id: number
+  name: string
+  isDefault: boolean
+  productCount: number
   createdAt: string
   updatedAt: string
 }
@@ -250,6 +304,7 @@ export interface ImportResult {
   categorization?: {
     method: 'jev' | 'fallback'
     counts: Record<'A' | 'B' | 'C' | 'D', number>
+    profile: Pick<ClassificationProfile, 'id' | 'name'>
   }
 }
 
@@ -339,13 +394,14 @@ export const campaignApi = {
   },
   async importOffers(
     json: string | unknown,
-    opts?: { source?: string; template?: string },
+    opts?: { source?: string; template?: string; classificationProfileId?: string },
   ): Promise<ImportResult> {
     return unwrap<ImportResult>(
       await api.post('/campaigns/import-offers', {
         json,
         source: opts?.source,
         template: opts?.template,
+        classificationProfileId: opts?.classificationProfileId,
       }),
     )
   },
@@ -430,6 +486,21 @@ export const campaignApi = {
   },
 }
 
+export const classificationProfileApi = {
+  async list(): Promise<ClassificationProfile[]> {
+    return unwrap<ClassificationProfile[]>(await api.get('/classification-profiles'))
+  },
+  async create(profile: ClassificationProfileInput): Promise<ClassificationProfile> {
+    return unwrap<ClassificationProfile>(await api.post('/classification-profiles', profile))
+  },
+  async update(id: string, profile: ClassificationProfileInput): Promise<ClassificationProfile> {
+    return unwrap<ClassificationProfile>(await api.put(`/classification-profiles/${encodeURIComponent(id)}`, profile))
+  },
+  async remove(id: string): Promise<void> {
+    await api.delete(`/classification-profiles/${encodeURIComponent(id)}`)
+  },
+}
+
 export const savedProductApi = {
   async list(limit = 100, offset = 0): Promise<{ items: SavedProduct[]; total: number }> {
     return unwrap<{ items: SavedProduct[]; total: number }>(
@@ -441,8 +512,11 @@ export const savedProductApi = {
       await api.post('/saved-products', { offers }),
     )
   },
-  async update(id: number, offer: SavedProductOfferPatch): Promise<SavedProduct> {
-    return unwrap<SavedProduct>(await api.patch(`/saved-products/${id}`, { offer }))
+  async update(id: number, offer: SavedProductOfferPatch, classificationProfileId?: string): Promise<SavedProduct> {
+    return unwrap<SavedProduct>(await api.patch(`/saved-products/${id}`, {
+      offer,
+      ...(classificationProfileId ? { classificationProfileId } : {}),
+    }))
   },
   async remove(id: number): Promise<void> {
     await api.delete(`/saved-products/${id}`)

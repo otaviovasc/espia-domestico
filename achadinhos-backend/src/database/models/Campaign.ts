@@ -46,6 +46,8 @@ export interface CampaignOffer {
   relevanceScore?: number
   discountPercent?: number
   commissionRate?: number
+  classificationProfileId?: string
+  classificationProfileName?: string
 }
 
 /**

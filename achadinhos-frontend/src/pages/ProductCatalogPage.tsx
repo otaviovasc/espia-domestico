@@ -1,18 +1,22 @@
 import { useMemo, useState } from 'react'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { CheckCircle2, FileJson, Pencil, Search, Upload, X } from 'lucide-react'
+import { CheckCircle2, FileJson, FolderPlus, Pencil, Search, Tags, Upload, X } from 'lucide-react'
 import {
   apiErrorMessage,
   campaignApi,
+  classificationProfileApi,
   groupApi,
   offerIdentity,
   savedProductApi,
   type ImportResult,
   type Offer,
+  type SavedProduct,
   type SavedProductOfferPatch,
 } from '@/lib/api'
+import { productGroupApi } from '@/lib/productGroups'
 import { Badge, Button, Card, Input, Label, Spinner } from '@/components/ui'
+import { ClassificationProfilePanel } from '@/components/ClassificationProfilePanel'
 import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const CATEGORIES = ['A', 'B', 'C', 'D'] as const
@@ -79,6 +83,28 @@ export default function ProductCatalogPage() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null)
   const [catalogSearch, setCatalogSearch] = useState('')
   const [catalogCategory, setCatalogCategory] = useState<'all' | typeof CATEGORIES[number]>('all')
+  const [classificationProfileId, setClassificationProfileId] = useState('default')
+  const [catalogProfileId, setCatalogProfileId] = useState('all')
+  const [catalogGroupId, setCatalogGroupId] = useState('all')
+  const [selectedSavedIds, setSelectedSavedIds] = useState<Set<number>>(new Set())
+  const [saveGroupIds, setSaveGroupIds] = useState<Set<number>>(new Set())
+  const [assignmentGroupId, setAssignmentGroupId] = useState('')
+  const [newGroupName, setNewGroupName] = useState('')
+  const [renamingGroupId, setRenamingGroupId] = useState<number | null>(null)
+  const [renamingGroupName, setRenamingGroupName] = useState('')
+  const [deleteGroupConfirmId, setDeleteGroupConfirmId] = useState<number | null>(null)
+  const [groupError, setGroupError] = useState<string | null>(null)
+  const [groupFeedback, setGroupFeedback] = useState<string | null>(null)
+  const [editClassificationProfileId, setEditClassificationProfileId] = useState<string>('default')
+
+  const classificationProfiles = useQuery({
+    queryKey: ['classification-profiles'],
+    queryFn: classificationProfileApi.list,
+  })
+  const productGroups = useQuery({
+    queryKey: ['product-groups'],
+    queryFn: productGroupApi.list,
+  })
 
   const catalog = useInfiniteQuery({
     queryKey: ['saved-products', 'pages'],
@@ -90,6 +116,15 @@ export default function ProductCatalogPage() {
     },
   })
   const savedItems = useMemo(() => catalog.data?.pages.flatMap((page) => page.items) ?? [], [catalog.data])
+  const catalogProfileOptions = useMemo(() => {
+    const options = new Map((classificationProfiles.data ?? []).map((profile) => [profile.id, profile.name]))
+    for (const item of savedItems) {
+      for (const [profileId, classification] of Object.entries(item.classifications ?? {})) {
+        if (!options.has(profileId)) options.set(profileId, `${classification.profileName} (arquivado)`)
+      }
+    }
+    return [...options].map(([id, name]) => ({ id, name }))
+  }, [classificationProfiles.data, savedItems])
   const groups = useQuery({
     queryKey: ['groups'],
     queryFn: () => groupApi.list(),
@@ -121,7 +156,12 @@ export default function ProductCatalogPage() {
   )), [savedItems])
   const remove = useMutation({
     mutationFn: savedProductApi.remove,
-    onSuccess: async () => {
+    onSuccess: async (_, removedId) => {
+      setSelectedSavedIds((current) => {
+        const next = new Set(current)
+        next.delete(removedId)
+        return next
+      })
       setCatalogFeedback('Produto removido do catálogo.')
       setError(null)
       await Promise.all([
@@ -132,7 +172,7 @@ export default function ProductCatalogPage() {
     onError: (cause) => setError(apiErrorMessage(cause)),
   })
   const update = useMutation({
-    mutationFn: ({ id, offer }: { id: number; offer: SavedProductOfferPatch }) => savedProductApi.update(id, offer),
+    mutationFn: ({ id, offer, classificationProfileId: profileId }: { id: number; offer: SavedProductOfferPatch; classificationProfileId?: string }) => savedProductApi.update(id, offer, profileId),
     onSuccess: async () => {
       setEditingId(null)
       setEditOffer(null)
@@ -147,8 +187,62 @@ export default function ProductCatalogPage() {
     },
     onError: (cause) => setEditError(apiErrorMessage(cause)),
   })
+  const createGroup = useMutation({
+    mutationFn: (name: string) => productGroupApi.create(name),
+    onSuccess: async (created) => {
+      setNewGroupName('')
+      setAssignmentGroupId(String(created.id))
+      setGroupError(null)
+      setGroupFeedback(`Grupo “${created.name}” criado.`)
+      await queryClient.invalidateQueries({ queryKey: ['product-groups'] })
+    },
+    onError: (cause) => setGroupError(apiErrorMessage(cause)),
+  })
+  const renameGroup = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) => productGroupApi.update(id, name),
+    onSuccess: async (updatedGroup) => {
+      setRenamingGroupId(null)
+      setRenamingGroupName('')
+      setGroupError(null)
+      setGroupFeedback(`Grupo renomeado para “${updatedGroup.name}”.`)
+      await queryClient.invalidateQueries({ queryKey: ['product-groups'] })
+    },
+    onError: (cause) => setGroupError(apiErrorMessage(cause)),
+  })
+  const deleteGroup = useMutation({
+    mutationFn: productGroupApi.remove,
+    onSuccess: async (_, removedId) => {
+      if (catalogGroupId === String(removedId)) setCatalogGroupId('all')
+      if (assignmentGroupId === String(removedId)) setAssignmentGroupId('')
+      setDeleteGroupConfirmId(null)
+      setGroupError(null)
+      setGroupFeedback('Grupo removido. Os produtos continuam no catálogo.')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['product-groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['saved-products'] }),
+      ])
+    },
+    onError: (cause) => setGroupError(apiErrorMessage(cause)),
+  })
+  const assignGroups = useMutation({
+    mutationFn: (mode: 'add' | 'remove') => productGroupApi.assign({
+      productIds: [...selectedSavedIds],
+      groupIds: [Number(assignmentGroupId)],
+      mode,
+    }),
+    onSuccess: async (data) => {
+      setSelectedSavedIds(new Set())
+      setGroupError(null)
+      setGroupFeedback(`${data.updated} produto(s) atualizado(s).`)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['product-groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['saved-products'] }),
+      ])
+    },
+    onError: (cause) => setGroupError(apiErrorMessage(cause)),
+  })
   const classify = useMutation({
-    mutationFn: () => campaignApi.importOffers(jsonText, { source: 'mercadolivre' }),
+    mutationFn: () => campaignApi.importOffers(jsonText, { classificationProfileId }),
     onSuccess: (data) => {
       setResult(data)
       setSelected(new Set())
@@ -162,11 +256,25 @@ export default function ProductCatalogPage() {
     mutationFn: () => savedProductApi.save(result?.offers.filter((_, index) => selected.has(index)) ?? []),
     onSuccess: async (data) => {
       setSelected(new Set())
-      setFeedback(`${data.created} produto(s) salvo(s), ${data.updated} atualizado(s).`)
-      setError(null)
+      let groupAssignmentFailed = false
+      if (saveGroupIds.size > 0 && data.saved.length > 0) {
+        try {
+          await productGroupApi.assign({
+            productIds: data.saved.map((item) => item.id),
+            groupIds: [...saveGroupIds],
+            mode: 'add',
+          })
+        } catch (cause) {
+          groupAssignmentFailed = true
+          setError(`Os produtos foram salvos, mas não foi possível adicioná-los aos grupos: ${apiErrorMessage(cause)}`)
+        }
+      }
+      setFeedback(`${data.created} produto(s) salvo(s), ${data.updated} atualizado(s).${saveGroupIds.size > 0 && !groupAssignmentFailed ? ' Grupos aplicados.' : ''}`)
+      if (!groupAssignmentFailed) setError(null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['saved-products'] }),
         queryClient.invalidateQueries({ queryKey: ['offer-group-delivery'] }),
+        queryClient.invalidateQueries({ queryKey: ['product-groups'] }),
       ])
     },
     onError: (cause) => setError(apiErrorMessage(cause)),
@@ -216,10 +324,22 @@ export default function ProductCatalogPage() {
     })
   }
 
-  const startEditing = (id: number, offer: Offer) => {
-    setEditingId(id)
-    setEditOffer({ ...offer })
-    setOriginalEditOffer({ ...offer })
+  const startEditing = (item: SavedProduct) => {
+    const availableProfileIds = new Set((classificationProfiles.data ?? []).map((profile) => profile.id))
+    const currentProfileId = item.offer.classificationProfileId
+    const profileId = currentProfileId && availableProfileIds.has(currentProfileId)
+      ? currentProfileId
+      : Object.keys(item.classifications ?? {}).find((id) => availableProfileIds.has(id)) ?? 'default'
+    const classification = item.classifications?.[profileId]
+    const offer = {
+      ...item.offer,
+      category: classification?.category ?? item.offer.category,
+      relevanceScore: classification?.relevanceScore ?? item.offer.relevanceScore,
+    }
+    setEditingId(item.id)
+    setEditClassificationProfileId(profileId)
+    setEditOffer(offer)
+    setOriginalEditOffer(offer)
     setEditError(null)
     setError(null)
     setFeedback(null)
@@ -238,33 +358,83 @@ export default function ProductCatalogPage() {
   const visibleSavedItems = useMemo(() => {
     const query = catalogSearch.trim().toLocaleLowerCase('pt-BR')
     return savedItems.filter((item) => {
-      if (catalogCategory !== 'all' && item.offer.category !== catalogCategory) return false
+      if (catalogGroupId !== 'all' && !item.groupIds?.includes(Number(catalogGroupId))) return false
+      const classifications = Object.entries(item.classifications ?? {})
+      const selectedClassification = catalogProfileId === 'all'
+        ? null
+        : item.classifications?.[catalogProfileId]
+      if (catalogProfileId !== 'all' && !selectedClassification) return false
+      if (catalogCategory !== 'all') {
+        const matchesCategory = selectedClassification
+          ? selectedClassification.category === catalogCategory
+          : classifications.length > 0
+            ? classifications.some(([, value]) => value.category === catalogCategory)
+            : item.offer.category === catalogCategory
+        if (!matchesCategory) return false
+      }
       if (!query) return true
       return item.offer.title.toLocaleLowerCase('pt-BR').includes(query)
         || item.offer.productId?.toLocaleLowerCase('pt-BR').includes(query)
         || item.offer.affiliateUrl.toLocaleLowerCase('pt-BR').includes(query)
+        || item.offer.classificationProfileName?.toLocaleLowerCase('pt-BR').includes(query)
+        || classifications.some(([, value]) => value.profileName.toLocaleLowerCase('pt-BR').includes(query))
     })
-  }, [catalogCategory, catalogSearch, savedItems])
+  }, [catalogCategory, catalogGroupId, catalogProfileId, catalogSearch, savedItems])
+
+  const toggleSaved = (id: number) => {
+    setSelectedSavedIds((current) => {
+      const next = new Set(current)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const changeEditClassification = (item: SavedProduct, profileId: string) => {
+    const classification = item.classifications?.[profileId]
+    setEditClassificationProfileId(profileId)
+    setOriginalEditOffer((current) => current ? {
+      ...item.offer,
+      category: classification?.category ?? item.offer.category,
+      relevanceScore: classification?.relevanceScore ?? item.offer.relevanceScore,
+    } : current)
+    setEditOffer((current) => current ? {
+      ...current,
+      category: classification?.category ?? item.offer.category,
+      relevanceScore: classification?.relevanceScore ?? item.offer.relevanceScore,
+    } : current)
+    setEditError(null)
+  }
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Classificar produtos</h1>
-        <p className="mt-1 text-sm text-zinc-600">Cole ou envie o JSON do Mercado Livre, revise as categorias e salve os produtos que quer usar em campanhas.</p>
+        <p className="mt-1 text-sm text-zinc-600">Escolha um nicho, envie um JSON de produtos, revise as categorias e salve o que quer usar em campanhas.</p>
       </div>
 
       <Card>
         <div className="mb-3 flex items-center gap-2">
           <FileJson size={18} className="text-violet-600" />
-          <h2 className="font-semibold">JSON do Mercado Livre</h2>
+          <h2 className="font-semibold">Classificação de um arquivo</h2>
         </div>
+        <ClassificationProfilePanel
+          profiles={classificationProfiles.data ?? []}
+          selectedId={classificationProfileId}
+          onSelect={setClassificationProfileId}
+          isLoading={classificationProfiles.isPending}
+          isError={classificationProfiles.isError}
+          disabled={classify.isPending || save.isPending}
+          onRetry={() => { void classificationProfiles.refetch() }}
+        />
+        <div className="mt-5">
         <label htmlFor="catalog-json" className="mb-1 block text-sm font-medium text-zinc-700">Conteúdo do arquivo</label>
         <textarea
           id="catalog-json"
           value={jsonText}
           disabled={classify.isPending || save.isPending}
           onChange={(event) => { setFileName(''); updateText(event.target.value) }}
-          placeholder="Cole aqui o JSON exportado do hub de afiliados"
+          placeholder="Cole um array de produtos ou um JSON exportado de um marketplace"
           className="h-36 w-full rounded-lg border border-zinc-300 p-3 font-mono text-xs outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
         />
           <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -273,9 +443,10 @@ export default function ProductCatalogPage() {
             <input type="file" accept=".json,application/json" className="sr-only" disabled={classify.isPending || save.isPending} onChange={(event) => { void readFile(event.target.files?.[0]); event.target.value = '' }} />
           </label>
           {fileName && <span className="text-sm text-zinc-500">{fileName}</span>}
-          <Button onClick={() => classify.mutate()} disabled={!jsonText.trim() || classify.isPending || save.isPending}>
+          <Button onClick={() => classify.mutate()} disabled={!jsonText.trim() || classify.isPending || save.isPending || classificationProfiles.isPending || classificationProfiles.isError}>
             {classify.isPending ? 'Classificando…' : 'Classificar produtos'}
           </Button>
+        </div>
         </div>
         {fileError && <p role="alert" className="mt-3 text-sm text-red-700">{fileError}</p>}
         {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}
@@ -288,18 +459,38 @@ export default function ProductCatalogPage() {
             <div>
               <h2 className="font-semibold">Revisar classificação</h2>
               <p className="text-sm text-zinc-500">{result.offers.length} produto(s) reconhecido(s) de {result.totalSeen} no arquivo.</p>
+              {result.categorization?.profile && <p className="mt-1 text-xs text-violet-700">Perfil usado: <strong>{result.categorization.profile.name}</strong></p>}
             </div>
             <Button onClick={() => save.mutate()} disabled={selected.size === 0 || save.isPending}>
               {save.isPending ? 'Salvando…' : `Salvar ${selected.size} selecionado(s)`}
             </Button>
           </div>
           <p className="mt-2 text-xs text-zinc-500">Até 100 produtos por arquivo. Cada produto válido é avaliado por Jev, então a classificação pode levar alguns minutos.</p>
+          {(productGroups.data?.length ?? 0) > 0 && (
+            <fieldset className="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+              <legend className="px-1 text-sm font-medium text-zinc-700">Adicionar os produtos salvos a grupos</legend>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-2">
+                {(productGroups.data ?? []).map((group) => (
+                  <label key={group.id} className="inline-flex items-center gap-2 text-sm text-zinc-700">
+                    <input type="checkbox" checked={saveGroupIds.has(group.id)} disabled={save.isPending} onChange={(event) => setSaveGroupIds((current) => {
+                      const next = new Set(current)
+                      if (event.target.checked) next.add(group.id)
+                      else next.delete(group.id)
+                      return next
+                    })} />
+                    {group.name}{group.isDefault ? ' (padrão)' : ''}
+                  </label>
+                ))}
+              </div>
+              <p className="mt-2 text-xs text-zinc-500">A seleção vale para este salvamento e pode ser alterada depois no catálogo.</p>
+            </fieldset>
+          )}
             <div className="mt-4 flex flex-wrap gap-2" aria-label="Filtrar por categoria">
               <button type="button" aria-pressed={categoryFilter === 'all'} onClick={() => setCategoryFilter('all')} className={`rounded-lg px-2 py-1 ring-offset-2 ${categoryFilter === 'all' ? 'ring-2 ring-violet-500' : ''}`}><Badge>Todos: {result.offers.length}</Badge></button>
               {CATEGORIES.map((category) => <button type="button" key={category} aria-pressed={categoryFilter === category} onClick={() => setCategoryFilter(category)} className={`rounded-lg px-2 py-1 ring-offset-2 ${categoryFilter === category ? 'ring-2 ring-violet-500' : ''}`}><Badge tone={TONES[category]}>{category}: {counts[category]}</Badge></button>)}
               {counts.uncategorized > 0 && <Badge>Sem categoria: {counts.uncategorized}</Badge>}
             </div>
-            <p className="mt-2 text-xs text-zinc-500">A combina alta afinidade com casa, desconto e comissão; D indica baixa prioridade. A afinidade aparece ao passar o cursor sobre a categoria.</p>
+            <p className="mt-2 text-xs text-zinc-500">A combina alta afinidade com o nicho, desconto e comissão; D indica baixa prioridade. A afinidade aparece ao passar o cursor sobre a categoria.</p>
             {result.offers.some((offer) => !!offer.category) && <div className="mt-3 flex gap-4 text-sm"><button type="button" className="text-violet-700 underline" onClick={selectVisible}>Selecionar visíveis</button><button type="button" className="text-zinc-600 underline" onClick={() => setSelected(new Set())}>Limpar seleção</button></div>}
           {counts.uncategorized > 0 && <p className="mt-2 text-sm text-amber-800">Produtos sem categoria não podem ser salvos. Confira os avisos da importação.</p>}
           {result.errors.length > 0 && <p className="mt-3 text-sm text-amber-800">{result.errors.length} item(ns) não puderam ser importados. {result.errors.slice(0, 3).map((item) => item.message).join(' ')}</p>}
@@ -314,7 +505,7 @@ export default function ProductCatalogPage() {
                     <tr key={`${offer.productId || offer.affiliateUrl}-${index}`} className="border-b border-zinc-100">
                       <td className="px-2 py-3"><input type="checkbox" aria-label={`Salvar ${offer.title}`} checked={selected.has(index)} disabled={!offer.category || save.isPending} onChange={() => toggle(index)} /></td>
                         <td className="px-2 py-3"><div className="flex min-w-48 items-center gap-2">{offer.imageUrl && <img src={offer.imageUrl} alt="" loading="lazy" className="h-10 w-10 rounded object-cover" />}<span>{offer.title}</span>{savedKeys.has(offer.source && offer.productId ? `${offer.source}:${offer.productId}` : offer.affiliateUrl) && <Badge tone="green">Salvo</Badge>}</div></td>
-                        <td className="px-2 py-3">{offer.category ? <span title={`Afinidade com casa: ${offer.relevanceScore ?? '—'}/100`}><Badge tone={TONES[offer.category]}>Categoria {offer.category}</Badge></span> : <Badge>Sem categoria</Badge>}</td>
+                        <td className="px-2 py-3">{offer.category ? <span title={`Afinidade com o nicho: ${offer.relevanceScore ?? '—'}/100`}><Badge tone={TONES[offer.category]}>Categoria {offer.category}</Badge></span> : <Badge>Sem categoria</Badge>}</td>
                         <td className="whitespace-nowrap px-2 py-3">{offer.discountPercent != null ? `${offer.discountPercent}%` : '—'}</td>
                         <td className="whitespace-nowrap px-2 py-3">{offer.commissioned === false ? 'Sem comissão' : offer.commissionRate != null ? `${offer.commissionRate}%` : '—'}</td>
                       <td className="whitespace-nowrap px-2 py-3">{money(offer.discountedPrice)}</td>
@@ -347,13 +538,67 @@ export default function ProductCatalogPage() {
           </p>
         )}
         {catalogFeedback && <p role="status" className="mt-3 flex items-center gap-2 text-sm text-green-700"><CheckCircle2 size={16} />{catalogFeedback}</p>}
+        <section className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50/70 p-4" aria-labelledby="product-groups-heading">
+          <div className="flex items-center gap-2"><Tags size={17} className="text-violet-600" /><h3 id="product-groups-heading" className="font-semibold">Grupos de produtos</h3></div>
+          <p className="mt-1 text-xs text-zinc-500">Um produto pode ficar em vários grupos. Use os grupos para organizar seleções por tema, campanha ou público.</p>
+          {productGroups.isPending ? <div className="mt-3"><Spinner /></div> : productGroups.isError ? (
+            <p role="alert" className="mt-3 text-sm text-red-700">Não foi possível carregar os grupos de produtos. <button type="button" className="underline" onClick={() => void productGroups.refetch()}>Tentar novamente</button></p>
+          ) : (
+            <>
+              <form className="mt-3 flex flex-col gap-2 sm:flex-row" onSubmit={(event) => { event.preventDefault(); const name = newGroupName.trim(); if (name) createGroup.mutate(name) }}>
+                <Input value={newGroupName} maxLength={120} onChange={(event) => setNewGroupName(event.target.value)} placeholder="Nome do novo grupo" aria-label="Nome do novo grupo de produtos" />
+                <Button type="submit" variant="secondary" disabled={!newGroupName.trim() || createGroup.isPending}><FolderPlus size={15} />{createGroup.isPending ? 'Criando…' : 'Criar grupo'}</Button>
+              </form>
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {(productGroups.data ?? []).map((group) => (
+                  <div key={group.id} className="flex min-w-0 items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm">
+                    {renamingGroupId === group.id ? (
+                      <form className="flex min-w-0 flex-1 gap-2" onSubmit={(event) => { event.preventDefault(); const name = renamingGroupName.trim(); if (name) renameGroup.mutate({ id: group.id, name }) }}>
+                        <Input autoFocus value={renamingGroupName} maxLength={120} onChange={(event) => setRenamingGroupName(event.target.value)} aria-label={`Novo nome para ${group.name}`} />
+                        <Button type="submit" className="px-3" disabled={!renamingGroupName.trim() || renameGroup.isPending}>Salvar</Button>
+                        <Button type="button" className="px-3" variant="ghost" onClick={() => setRenamingGroupId(null)}>Cancelar</Button>
+                      </form>
+                    ) : (
+                      <>
+                        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setCatalogGroupId(String(group.id))} title={`Filtrar por ${group.name}`}>
+                          <span className="truncate font-medium">{group.name}</span>
+                          <span className="ml-2 text-xs text-zinc-500">{group.productCount} produto(s)</span>
+                          {group.isDefault && <span className="ml-2"><Badge>Padrão</Badge></span>}
+                        </button>
+                        {!group.isDefault && (
+                          <span className="flex shrink-0 items-center gap-2 text-xs">
+                            <button type="button" className="text-violet-700 underline" onClick={() => { setRenamingGroupId(group.id); setRenamingGroupName(group.name); setGroupError(null) }}>Renomear</button>
+                            {deleteGroupConfirmId === group.id ? <>
+                              <button type="button" className="font-semibold text-red-700 underline" disabled={deleteGroup.isPending} onClick={() => deleteGroup.mutate(group.id)}>Confirmar</button>
+                              <button type="button" className="text-zinc-600 underline" onClick={() => setDeleteGroupConfirmId(null)}>Cancelar</button>
+                            </> : <button type="button" className="text-red-700 underline" onClick={() => setDeleteGroupConfirmId(group.id)}>Remover</button>}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {groupError && <p role="alert" className="mt-3 text-sm text-red-700">{groupError}</p>}
+          {groupFeedback && <p role="status" className="mt-3 text-sm text-green-700">{groupFeedback}</p>}
+        </section>
         {savedItems.length > 0 && (
           <div className="mt-4 space-y-2">
-            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
               <div className="relative">
                 <Search size={16} className="absolute left-3 top-3 text-zinc-400" />
                 <Input className="pl-9" value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar nos produtos carregados" aria-label="Buscar no catálogo carregado" />
               </div>
+              <select value={catalogGroupId} onChange={(event) => setCatalogGroupId(event.target.value)} className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" aria-label="Filtrar catálogo por grupo de produtos">
+                <option value="all">Todos os grupos</option>
+                {(productGroups.data ?? []).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              </select>
+              <select value={catalogProfileId} onChange={(event) => setCatalogProfileId(event.target.value)} className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" aria-label="Filtrar catálogo por perfil de classificação">
+                <option value="all">Todos os nichos</option>
+                {catalogProfileOptions.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+              </select>
               <select value={catalogCategory} onChange={(event) => setCatalogCategory(event.target.value as typeof catalogCategory)} className="h-10 rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" aria-label="Filtrar catálogo salvo por categoria">
                 <option value="all">Todas as categorias</option>
                 {CATEGORIES.map((category) => <option key={category} value={category}>Categoria {category}</option>)}
@@ -365,6 +610,17 @@ export default function ProductCatalogPage() {
                 ? ' Carregue mais para pesquisar o restante do catálogo.'
                 : ' Todo o catálogo está carregado.'}
             </p>
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 bg-white p-3">
+              <button type="button" className="text-sm text-violet-700 underline" onClick={() => setSelectedSavedIds(new Set(visibleSavedItems.map((item) => item.id)))}>Selecionar resultados visíveis</button>
+              {selectedSavedIds.size > 0 && <button type="button" className="text-sm text-zinc-600 underline" onClick={() => setSelectedSavedIds(new Set())}>Limpar seleção</button>}
+              <span className="text-xs text-zinc-500">{selectedSavedIds.size} selecionado(s)</span>
+              <select value={assignmentGroupId} onChange={(event) => setAssignmentGroupId(event.target.value)} className="h-9 min-w-48 rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" aria-label="Grupo para atribuição em massa">
+                <option value="">Escolha um grupo</option>
+                {(productGroups.data ?? []).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}
+              </select>
+              <Button type="button" className="px-3 py-1.5" disabled={selectedSavedIds.size === 0 || !assignmentGroupId || assignGroups.isPending} onClick={() => assignGroups.mutate('add')}>Adicionar ao grupo</Button>
+              <Button type="button" variant="secondary" className="px-3 py-1.5" disabled={selectedSavedIds.size === 0 || !assignmentGroupId || assignGroups.isPending} onClick={() => assignGroups.mutate('remove')}>Remover do grupo</Button>
+            </div>
           </div>
         )}
         {catalog.isPending ? <div className="mt-4"><Spinner /></div> : catalog.isError ? (
@@ -376,11 +632,21 @@ export default function ProductCatalogPage() {
                 ...item.offer,
                 savedProductId: item.offer.savedProductId ?? item.id,
               })]
+              const itemGroups = (productGroups.data ?? []).filter((group) => item.groupIds?.includes(group.id))
+              const itemClassifications = Object.entries(item.classifications ?? {})
               return (
-                <div key={item.id} className="grid gap-2 border-b border-zinc-100 py-3 text-sm md:grid-cols-[minmax(0,1fr)_auto_minmax(13rem,auto)_auto] md:items-start">
+                <div key={item.id} className="grid gap-2 border-b border-zinc-100 py-3 text-sm md:grid-cols-[auto_minmax(0,1fr)_minmax(12rem,auto)_minmax(13rem,auto)_auto] md:items-start">
+                  <input type="checkbox" className="mt-1" checked={selectedSavedIds.has(item.id)} onChange={() => toggleSaved(item.id)} aria-label={`Selecionar ${item.offer.title} para organizar em grupos`} />
                   <span className="min-w-0 truncate font-medium" title={item.offer.title}>{item.offer.title}</span>
-                  <div className="flex flex-wrap gap-1">
-                    <Badge tone={item.offer.category ? TONES[item.offer.category] : 'zinc'}>{item.offer.category || 'Sem categoria'}</Badge>
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap gap-1">
+                      {itemClassifications.length > 0 ? itemClassifications.map(([profileId, classification]) => (
+                        <span key={profileId} title={`Afinidade: ${classification.relevanceScore ?? '—'}/100 · classificado em ${new Date(classification.classifiedAt).toLocaleString('pt-BR')}`}>
+                          <Badge tone={TONES[classification.category]}>{classification.profileName}: {classification.category}</Badge>
+                        </span>
+                      )) : <Badge tone={item.offer.category ? TONES[item.offer.category] : 'zinc'}>{item.offer.category || 'Sem categoria'}</Badge>}
+                    </div>
+                    {itemGroups.length > 0 && <p className="text-xs text-zinc-500">{itemGroups.map((group) => group.name).join(' · ')}</p>}
                     {(item.manualOverrides?.length ?? 0) > 0 && <span title={`Campos ajustados: ${item.manualOverrides?.map((field) => FIELD_LABELS[field] ?? field).join(', ')}`}><Badge tone="violet">Editado manualmente</Badge></span>}
                   </div>
                   {delivery.isPending ? (
@@ -397,7 +663,7 @@ export default function ProductCatalogPage() {
                     />
                   )}
                   <div className="flex gap-3 md:justify-end">
-                    <button type="button" disabled={update.isPending} onClick={() => startEditing(item.id, item.offer)} className="inline-flex items-center gap-1 text-violet-700 underline disabled:opacity-50" aria-label={`Editar ${item.offer.title}`}><Pencil size={13} />Editar</button>
+                    <button type="button" disabled={update.isPending} onClick={() => startEditing(item)} className="inline-flex items-center gap-1 text-violet-700 underline disabled:opacity-50" aria-label={`Editar ${item.offer.title}`}><Pencil size={13} />Editar</button>
                     {deleteConfirmId === item.id ? (
                       <span className="inline-flex flex-wrap items-center gap-2 text-xs text-red-800">
                         Remover?
@@ -417,7 +683,7 @@ export default function ProductCatalogPage() {
                           setEditError('Faça ao menos uma alteração antes de salvar.')
                           return
                         }
-                        update.mutate({ id: item.id, offer: patch })
+                        update.mutate({ id: item.id, offer: patch, classificationProfileId: editClassificationProfileId })
                       }}
                     >
                       <div className="mb-4 flex items-center justify-between gap-3">
@@ -445,6 +711,19 @@ export default function ProductCatalogPage() {
                         }} /></div>
                         <div><Label>Cupom</Label><Input value={editOffer.coupon ?? ''} onChange={(event) => updateEdit('coupon', event.target.value || undefined)} /></div>
                         <div>
+                          <label htmlFor={`edit-profile-${item.id}`} className="mb-1 block text-sm font-medium text-zinc-700">Nicho da categoria</label>
+                          <select
+                            id={`edit-profile-${item.id}`}
+                            value={editClassificationProfileId}
+                            onChange={(event) => changeEditClassification(item, event.target.value)}
+                            className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                          >
+                            {(classificationProfiles.data ?? []).map((profile) => <option key={profile.id} value={profile.id}>{profile.name}{item.classifications?.[profile.id] ? '' : ' (sem avaliação)'}</option>)}
+                            {(classificationProfiles.data?.length ?? 0) === 0 && <option value="default">Doméstico</option>}
+                          </select>
+                          <p className="mt-1 text-xs text-zinc-500">Cada nicho mantém sua própria categoria.</p>
+                        </div>
+                        <div>
                           <Label>Categoria (ajuste manual)</Label>
                           <select
                             value={editOffer.category ?? ''}
@@ -456,7 +735,7 @@ export default function ProductCatalogPage() {
                           >
                             {CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
                           </select>
-                          <p className="mt-1 text-xs text-zinc-500">Ao trocar a categoria, ela passa a ser um ajuste manual e a pontuação Jev deixa de ser associada a ela.</p>
+                          <p className="mt-1 text-xs text-zinc-500">A alteração afeta somente o nicho selecionado e passa a ser identificada como ajuste manual.</p>
                         </div>
                         <label className="flex items-center gap-2 text-sm md:col-span-2">
                           <input

@@ -11,11 +11,13 @@ import {
   ImageOff,
   Image as ImageIcon,
   History,
+  FolderOpen,
 } from 'lucide-react'
 import {
   groupApi,
   campaignApi,
   savedProductApi,
+  classificationProfileApi,
   apiErrorMessage,
   offerIdentity,
   type Offer,
@@ -23,6 +25,10 @@ import {
   type Safety,
   type OfferFlag,
 } from '@/lib/api'
+import {
+  productGroupApi,
+  type GroupedSavedProduct,
+} from '@/lib/productGroups'
 import { Button, Card, Input, Label, Badge, Spinner } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
 import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
@@ -51,12 +57,52 @@ const CATEGORIES = ['A', 'B', 'C', 'D'] as const
 type CategoryFilter = 'all' | (typeof CATEGORIES)[number] | 'uncategorized'
 const CATEGORY_TONES = { A: 'green', B: 'blue', C: 'amber', D: 'red' } as const
 const EMPTY_OFFER_FLAGS: Record<string, OfferFlag> = {}
+const PRODUCT_PAGE_SIZE = 50
+
+interface ClassificationOption {
+  id: string
+  name: string
+  builtIn: boolean
+  archived: boolean
+}
+
+function offerForProfile(item: GroupedSavedProduct, profileId: string, profileName?: string): Offer {
+  const savedProductId = item.offer.savedProductId ?? item.id
+  if (!profileId) return { ...item.offer, savedProductId }
+
+  const classification = item.classifications?.[profileId]
+  if (classification) {
+    return {
+      ...item.offer,
+      savedProductId,
+      category: classification.category,
+      relevanceScore: classification.relevanceScore,
+      discountPercent: classification.discountPercent,
+      commissionRate: classification.commissionRate,
+      classificationProfileId: profileId,
+      classificationProfileName: classification.profileName,
+    }
+  }
+
+  // Do not leak a rating from another niche into this campaign snapshot.
+  return {
+    ...item.offer,
+    savedProductId,
+    category: undefined,
+    relevanceScore: undefined,
+    classificationProfileId: profileId,
+    classificationProfileName: profileName,
+  }
+}
 
 export default function ComposePage() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>('all')
+  const [selectedProfileId, setSelectedProfileId] = useState('')
+  const [selectedProductGroupIds, setSelectedProductGroupIds] = useState<Set<number>>(new Set())
   const [selectedProductIds, setSelectedProductIds] = useState<Set<number>>(new Set())
+  const [productPage, setProductPage] = useState(1)
   const [template, setTemplate] = useState<string | null>(null)
   const [sendImages, setSendImages] = useState(true)
   const [previews, setPreviews] = useState<{ title: string; message: string }[]>([])
@@ -69,58 +115,95 @@ export default function ComposePage() {
 
   const metaQuery = useQuery({ queryKey: ['campaign-meta'], queryFn: campaignApi.meta })
   const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupApi.list() })
+  const profilesQuery = useQuery({
+    queryKey: ['classification-profiles'],
+    queryFn: classificationProfileApi.list,
+  })
+  const productGroupsQuery = useQuery({
+    queryKey: ['product-groups'],
+    queryFn: productGroupApi.list,
+  })
   const catalogQuery = useQuery({
     queryKey: ['saved-products', 'all'],
     queryFn: async () => {
       const first = await savedProductApi.list(100, 0)
-      const items = [...first.items]
-      while (items.length < first.total) {
-        const page = await savedProductApi.list(100, items.length)
-        if (page.items.length === 0) break
-        items.push(...page.items)
+      const remainingPages = Math.ceil(Math.max(0, first.total - first.items.length) / 100)
+      const offsets = Array.from({ length: remainingPages }, (_, index) => (index + 1) * 100)
+      const pages: Awaited<ReturnType<typeof savedProductApi.list>>[] = []
+      for (let index = 0; index < offsets.length; index += 6) {
+        pages.push(...await Promise.all(
+          offsets.slice(index, index + 6).map((offset) => savedProductApi.list(100, offset)),
+        ))
       }
-      return items
+      return [first, ...pages]
+        .flatMap((page) => page.items)
+        .map((item) => ({
+          ...item,
+          groupIds: 'groupIds' in item && Array.isArray(item.groupIds) ? item.groupIds : [],
+          classifications: 'classifications' in item && item.classifications ? item.classifications : {},
+        })) as GroupedSavedProduct[]
     },
   })
 
+  const classificationOptions = useMemo(() => {
+    const options = new Map<string, ClassificationOption>()
+    for (const profile of profilesQuery.data ?? []) {
+      options.set(profile.id, {
+        id: profile.id,
+        name: profile.name,
+        builtIn: profile.builtIn,
+        archived: false,
+      })
+    }
+    for (const item of catalogQuery.data ?? []) {
+      for (const [id, classification] of Object.entries(item.classifications ?? {})) {
+        if (!options.has(id)) {
+          options.set(id, {
+            id,
+            name: classification.profileName,
+            builtIn: id === 'default',
+            archived: true,
+          })
+        }
+      }
+    }
+    return [...options.values()]
+  }, [catalogQuery.data, profilesQuery.data])
+  const activeProfile = classificationOptions.find((profile) => profile.id === selectedProfileId)
+    ?? classificationOptions.find((profile) => profile.builtIn)
+    ?? classificationOptions[0]
+  const activeProfileId = activeProfile?.id ?? ''
+
+  const catalogItems = useMemo(
+    () => (catalogQuery.data ?? []).map((item) => ({
+      item,
+      offer: offerForProfile(item, activeProfileId, activeProfile?.name),
+    })),
+    [activeProfile?.name, activeProfileId, catalogQuery.data],
+  )
+  const productGroupFilteredItems = useMemo(
+    () => selectedProductGroupIds.size === 0
+      ? catalogItems
+      : catalogItems.filter(({ item }) => item.groupIds.some((id) => selectedProductGroupIds.has(id))),
+    [catalogItems, selectedProductGroupIds],
+  )
   const offers = useMemo(
-    () => catalogQuery.data?.map((item) => ({
-      ...item.offer,
-      savedProductId: item.offer.savedProductId ?? item.id,
-    })) ?? [],
-    [catalogQuery.data],
+    () => productGroupFilteredItems.map(({ offer }) => offer),
+    [productGroupFilteredItems],
   )
   const selectedGroupIdList = useMemo(() => [...selectedGroupIds].sort(), [selectedGroupIds])
   const groupNames = useMemo(
     () => new Map((groupsQuery.data ?? []).map((group) => [group.id, group.name])),
     [groupsQuery.data],
   )
-  const catalogIds = useMemo(() => catalogQuery.data?.map((item) => item.id) ?? [], [catalogQuery.data])
-
-  const offerFlagsQuery = useQuery({
-    queryKey: ['offer-group-delivery', catalogIds, selectedGroupIdList],
-    queryFn: () => campaignApi.checkOffersBatched(
-      offers.map((offer) => ({
-        savedProductId: offer.savedProductId,
-        source: offer.source,
-        productId: offer.productId,
-        affiliateUrl: offer.affiliateUrl,
-      })),
-      selectedGroupIdList.length > 0 ? selectedGroupIdList : undefined,
-    ),
-    enabled: offers.length > 0,
-  })
-  const offerFlags = offerFlagsQuery.data ?? EMPTY_OFFER_FLAGS
-
   // The editor shows the user's edits, or the server default until they type.
   const effectiveTemplate = template ?? metaQuery.data?.defaultTemplate ?? ''
 
   const includedOffers = useMemo(
-    () => catalogQuery.data?.filter((item) => selectedProductIds.has(item.id)).map((item) => ({
-      ...item.offer,
-      savedProductId: item.offer.savedProductId ?? item.id,
-    })) ?? [],
-    [catalogQuery.data, selectedProductIds],
+    () => catalogItems
+      .filter(({ item }) => selectedProductIds.has(item.id) && Boolean(item.classifications?.[activeProfileId]))
+      .map(({ offer }) => offer),
+    [activeProfileId, catalogItems, selectedProductIds],
   )
   const categoryCounts = useMemo(() => {
     const counts = { A: 0, B: 0, C: 0, D: 0, uncategorized: 0 }
@@ -130,13 +213,47 @@ export default function ComposePage() {
     })
     return counts
   }, [offers])
-  const visibleOffers = useMemo(
-    () => (catalogQuery.data ?? [])
-      .map((item) => ({ offer: { ...item.offer, savedProductId: item.offer.savedProductId ?? item.id }, id: item.id }))
-      .filter(({ offer }) => categoryFilter === 'all'
-        || (categoryFilter === 'uncategorized' ? !offer.category : offer.category === categoryFilter)),
-    [catalogQuery.data, categoryFilter],
+  const filteredOffers = useMemo(
+    () => productGroupFilteredItems.filter(({ offer }) => categoryFilter === 'all'
+      || (categoryFilter === 'uncategorized' ? !offer.category : offer.category === categoryFilter)),
+    [categoryFilter, productGroupFilteredItems],
   )
+  const productPageCount = Math.max(1, Math.ceil(filteredOffers.length / PRODUCT_PAGE_SIZE))
+  const safeProductPage = Math.min(productPage, productPageCount)
+  const visibleOffers = useMemo(
+    () => filteredOffers.slice(
+      (safeProductPage - 1) * PRODUCT_PAGE_SIZE,
+      safeProductPage * PRODUCT_PAGE_SIZE,
+    ),
+    [filteredOffers, safeProductPage],
+  )
+  const statusOffers = useMemo(() => {
+    const unique = new Map<number, Offer>()
+    for (const { item, offer } of visibleOffers) unique.set(item.id, offer)
+    for (const offer of includedOffers) {
+      if (offer.savedProductId) unique.set(offer.savedProductId, offer)
+    }
+    return [...unique.values()]
+  }, [includedOffers, visibleOffers])
+  const statusOfferIds = useMemo(
+    () => statusOffers.map((offer) => offer.savedProductId ?? offerIdentity(offer)),
+    [statusOffers],
+  )
+
+  const offerFlagsQuery = useQuery({
+    queryKey: ['offer-group-delivery', statusOfferIds, selectedGroupIdList],
+    queryFn: () => campaignApi.checkOffersBatched(
+      statusOffers.map((offer) => ({
+        savedProductId: offer.savedProductId,
+        source: offer.source,
+        productId: offer.productId,
+        affiliateUrl: offer.affiliateUrl,
+      })),
+      selectedGroupIdList,
+    ),
+    enabled: statusOffers.length > 0 && selectedGroupIdList.length > 0,
+  })
+  const offerFlags = offerFlagsQuery.data ?? EMPTY_OFFER_FLAGS
 
   // Re-render previews when the template or included offers change (debounced).
   const previewMutation = useMutation({
@@ -148,7 +265,7 @@ export default function ComposePage() {
     const t = setTimeout(() => previewMutation.mutate(), 400)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveTemplate, offers, selectedProductIds])
+  }, [effectiveTemplate, includedOffers])
 
   const shownPreviews = includedOffers.length === 0 ? [] : previews
 
@@ -197,6 +314,51 @@ export default function ComposePage() {
     })
   }
 
+  const toggleProductGroup = (id: number) => {
+    setSelectedProductGroupIds((previous) => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+    setProductPage(1)
+  }
+
+  const visibleProductIds = useMemo(
+    () => visibleOffers
+      .filter(({ item }) => Boolean(item.classifications?.[activeProfileId]))
+      .map(({ item }) => item.id),
+    [activeProfileId, visibleOffers],
+  )
+  const filteredProductIds = useMemo(
+    () => filteredOffers
+      .filter(({ item }) => Boolean(item.classifications?.[activeProfileId]))
+      .map(({ item }) => item.id),
+    [activeProfileId, filteredOffers],
+  )
+  const allVisibleSelected = visibleProductIds.length > 0
+    && visibleProductIds.every((id) => selectedProductIds.has(id))
+  const allFilteredSelected = filteredProductIds.length > 0
+    && filteredProductIds.every((id) => selectedProductIds.has(id))
+
+  const toggleVisibleProducts = () => {
+    setSelectedProductIds((previous) => {
+      const next = new Set(previous)
+      if (allVisibleSelected) visibleProductIds.forEach((id) => next.delete(id))
+      else visibleProductIds.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
+  const toggleFilteredProducts = () => {
+    setSelectedProductIds((previous) => {
+      const next = new Set(previous)
+      if (allFilteredSelected) filteredProductIds.forEach((id) => next.delete(id))
+      else filteredProductIds.forEach((id) => next.add(id))
+      return next
+    })
+  }
+
   const insertPlaceholder = (key: string) => {
     const ta = templateRef.current
     const token = `{${key}}`
@@ -230,7 +392,9 @@ export default function ComposePage() {
     return counts
   }, [includedOffers, offerFlags])
   const totalPairs = includedOffers.length * selectedGroupIds.size
-  const hasSelection = includedOffers.length > 0 && selectedGroupIds.size > 0
+  const hasSelection = includedOffers.length > 0
+    && selectedGroupIds.size > 0
+    && Boolean(activeProfileId)
   const canSaveDraft = hasSelection && !createMutation.isPending
   const canDispatch = canSaveDraft
     && !offerFlagsQuery.isPending
@@ -238,11 +402,10 @@ export default function ComposePage() {
     && deliverySummary.eligible > 0
 
   const keepOnlyEligibleProducts = () => {
-    if (!catalogQuery.data) return
-    setSelectedProductIds(new Set(catalogQuery.data
-      .filter((item) => selectedProductIds.has(item.id)
-        && (offerFlags[offerIdentity({ ...item.offer, savedProductId: item.offer.savedProductId ?? item.id })]?.eligibleGroupIds.length ?? 0) > 0)
-      .map((item) => item.id)))
+    setSelectedProductIds(new Set(catalogItems
+      .filter(({ item, offer }) => selectedProductIds.has(item.id)
+        && (offerFlags[offerIdentity(offer)]?.eligibleGroupIds.length ?? 0) > 0)
+      .map(({ item }) => item.id)))
   }
 
   return (
@@ -250,7 +413,7 @@ export default function ComposePage() {
       <div>
         <h1 className="text-2xl font-bold">Nova campanha</h1>
         <p className="text-sm text-zinc-500">
-          Escolha produtos salvos, personalize a mensagem, escolha grupos e dispare com
+          Escolha produtos salvos por nicho e coleção, personalize a mensagem, escolha grupos de WhatsApp e dispare com
           segurança.
         </p>
       </div>
@@ -266,25 +429,148 @@ export default function ComposePage() {
             <Package size={18} className="text-violet-600" />
             <h2 className="font-semibold">1 · Produtos salvos</h2>
           </div>
-          <Link to="/products" className="text-sm font-medium text-violet-700 underline">Classificar mais produtos</Link>
+          <Link to="/products" className="text-sm font-medium text-violet-700 underline">Gerenciar produtos e grupos</Link>
         </div>
         {catalogQuery.isPending ? <Spinner /> : catalogQuery.isError ? (
           <p role="alert" className="text-sm text-red-700">Não foi possível carregar o catálogo. <button type="button" className="underline" onClick={() => void catalogQuery.refetch()}>Tentar novamente</button></p>
-        ) : offers.length === 0 ? (
+        ) : catalogItems.length === 0 ? (
           <p className="text-sm text-zinc-600">Nenhum produto salvo. Classifique um JSON e salve os produtos antes de criar a campanha.</p>
         ) : (
           <>
-            <p className="mb-3 text-sm text-zinc-500">{includedOffers.length} de {offers.length} produto(s) incluído(s). Selecione os produtos que quer enviar nesta campanha.</p>
+            <div className="mb-4 grid gap-4 rounded-xl border border-zinc-200 bg-zinc-50 p-4 lg:grid-cols-2">
+              <div>
+                <Label>Nicho da classificação</Label>
+                {profilesQuery.isPending && classificationOptions.length === 0 ? <Spinner /> : profilesQuery.isError && classificationOptions.length === 0 ? (
+                  <p role="alert" className="text-sm text-red-700">
+                    Não foi possível carregar os nichos.{' '}
+                    <button type="button" className="underline" onClick={() => void profilesQuery.refetch()}>
+                      Tentar novamente
+                    </button>
+                  </p>
+                ) : classificationOptions.length > 0 ? (
+                  <select
+                    value={activeProfileId}
+                    onChange={(event) => {
+                      setSelectedProfileId(event.target.value)
+                      setSelectedProductIds(new Set())
+                      setCategoryFilter('all')
+                      setProductPage(1)
+                    }}
+                    className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                  >
+                    {classificationOptions.map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {profile.name}{profile.archived ? ' (arquivado)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-sm text-zinc-500">Nenhum nicho configurado.</p>
+                )}
+                {activeProfile && (
+                  <p className="mt-1 text-xs text-zinc-500">
+                    A campanha usa a nota de {activeProfile.name}; o catálogo permanece intacto.
+                    {activeProfile.archived && ' Este nicho foi arquivado, mas suas avaliações salvas continuam disponíveis.'}
+                  </p>
+                )}
+                {profilesQuery.isError && classificationOptions.length > 0 && (
+                  <p role="status" className="mt-1 text-xs text-amber-700">
+                    Os nichos ativos não puderam ser atualizados. As avaliações já salvas continuam disponíveis.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <Label>Grupos de produtos</Label>
+                  {selectedProductGroupIds.size > 0 && (
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-violet-700 underline"
+                      onClick={() => {
+                        setSelectedProductGroupIds(new Set())
+                        setProductPage(1)
+                      }}
+                    >
+                      Mostrar todos
+                    </button>
+                  )}
+                </div>
+                {productGroupsQuery.isPending ? <Spinner /> : productGroupsQuery.isError ? (
+                  <p role="alert" className="text-sm text-red-700">
+                    Não foi possível carregar os grupos de produtos.{' '}
+                    <button type="button" className="underline" onClick={() => void productGroupsQuery.refetch()}>
+                      Tentar novamente
+                    </button>
+                  </p>
+                ) : (
+                  <div className="flex max-h-28 flex-wrap gap-2 overflow-y-auto" aria-label="Filtrar por grupos de produtos">
+                    {(productGroupsQuery.data ?? []).map((productGroup) => {
+                      const selected = selectedProductGroupIds.has(productGroup.id)
+                      return (
+                        <button
+                          key={productGroup.id}
+                          type="button"
+                          aria-pressed={selected}
+                          onClick={() => toggleProductGroup(productGroup.id)}
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition ${
+                            selected
+                              ? 'border-violet-500 bg-violet-100 text-violet-800'
+                              : 'border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100'
+                          }`}
+                        >
+                          <FolderOpen size={13} />
+                          {productGroup.name} · {productGroup.productCount}
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+                <p className="mt-1 text-xs text-zinc-500">
+                  Selecione vários grupos para combinar os produtos sem duplicá-los.
+                </p>
+              </div>
+            </div>
+
+            {offers.length === 0 && (
+              <p role="status" className="mb-3 rounded-lg bg-zinc-100 p-3 text-sm text-zinc-700">
+                Nenhum produto pertence aos grupos de produtos selecionados. Remova um filtro ou escolha outro grupo.
+              </p>
+            )}
+
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm">
+              <p className="text-zinc-500">
+                {includedOffers.length} selecionado(s) · {offers.length} produto(s) nos filtros atuais.
+              </p>
+              <div className="flex gap-3">
+                <button type="button" className="font-medium text-violet-700 underline" onClick={toggleVisibleProducts}>
+                  {allVisibleSelected ? 'Remover página' : 'Selecionar página'}
+                </button>
+                {filteredProductIds.length > visibleProductIds.length && (
+                  <button type="button" className="font-medium text-violet-700 underline" onClick={toggleFilteredProducts}>
+                    {allFilteredSelected ? 'Remover filtrados' : `Selecionar filtrados (${filteredProductIds.length})`}
+                  </button>
+                )}
+                {selectedProductIds.size > 0 && (
+                  <button type="button" className="text-zinc-600 underline" onClick={() => setSelectedProductIds(new Set())}>
+                    Limpar seleção
+                  </button>
+                )}
+              </div>
+            </div>
             <div className="mb-3 flex flex-wrap items-center gap-2" aria-label="Filtrar produtos por categoria">
               {(['all', ...CATEGORIES, ...(categoryCounts.uncategorized > 0 ? ['uncategorized'] as const : [])] as CategoryFilter[]).map((category) => {
                 const count = category === 'all' ? offers.length : categoryCounts[category]
-                const label = category === 'all' ? 'Todas' : category === 'uncategorized' ? 'Sem categoria' : `Categoria ${category}`
+                const label = category === 'all' ? 'Todas' : category === 'uncategorized' ? 'Sem classificação neste nicho' : `Categoria ${category}`
                 return (
                   <button
                     key={category}
                     type="button"
                     aria-pressed={categoryFilter === category}
-                    onClick={() => setCategoryFilter(category)}
+                    onClick={() => {
+                      setCategoryFilter(category)
+                      setProductPage(1)
+                    }}
                     className={`rounded-full border px-3 py-1 text-xs font-medium transition ${
                       categoryFilter === category
                         ? 'border-violet-500 bg-violet-50 text-violet-700'
@@ -311,12 +597,13 @@ export default function ComposePage() {
                   </tr>
                 </thead>
                 <tbody>
-                {visibleOffers.map(({ offer: o, id }) => {
+                {visibleOffers.map(({ offer: o, item }) => {
                   const pct = discountPct(o)
-                  const isIn = selectedProductIds.has(id)
+                  const isClassified = Boolean(item.classifications?.[activeProfileId])
+                  const isIn = isClassified && selectedProductIds.has(item.id)
                   return (
-                    <tr key={id} className={`border-b border-zinc-100 ${isIn ? '' : 'opacity-40'}`}>
-                      <td className="px-2 py-2"><input type="checkbox" aria-label={`Incluir ${o.title}`} checked={isIn} onChange={() => toggleOffer(id)} /></td>
+                    <tr key={item.id} className={`border-b border-zinc-100 ${isIn ? '' : 'opacity-40'}`}>
+                      <td className="px-2 py-2"><input type="checkbox" aria-label={`Incluir ${o.title}`} checked={isIn} disabled={!isClassified} onChange={() => toggleOffer(item.id)} /></td>
                       <td className="px-2 py-2">
                         <div className="flex items-center gap-2">
                           {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" loading="lazy" />}
@@ -324,13 +611,14 @@ export default function ComposePage() {
                         </div>
                       </td>
                       <td className="px-2 py-2 whitespace-nowrap">
-                        {o.category ? <div className="space-y-1"><Badge tone={CATEGORY_TONES[o.category]}>Categoria {o.category}</Badge>{typeof o.relevanceScore === 'number' && <div className="text-xs text-zinc-500">Relevância {o.relevanceScore}/100</div>}</div> : <span className="text-xs text-zinc-400">Sem categoria</span>}
+                        {o.category ? <div className="space-y-1"><Badge tone={CATEGORY_TONES[o.category]}>Categoria {o.category}</Badge>{typeof o.relevanceScore === 'number' && <div className="text-xs text-zinc-500">Relevância {o.relevanceScore}/100</div>}</div> : <span className="text-xs text-zinc-400">Não classificado neste nicho</span>}
                       </td>
                       <td className="px-2 py-2 whitespace-nowrap"><div className="font-medium">{formatBRL(o.discountedPrice)}</div>{o.originalPrice && <div className="text-xs text-zinc-400 line-through">{formatBRL(o.originalPrice)}</div>}</td>
                       <td className="px-2 py-2">{pct !== null ? <Badge tone="green">{pct}%</Badge> : <span className="text-zinc-300">—</span>}</td>
                       <td className="px-2 py-2">{typeof o.commissionRate === 'number' || o.commissionPercent ? <Badge tone="violet">{typeof o.commissionRate === 'number' ? `${o.commissionRate}%` : o.commissionPercent}</Badge> : <span className="text-zinc-300">—</span>}</td>
                       <td className="px-2 py-2">{o.commissioned === false ? <Badge tone="amber">sem comissão</Badge> : <Badge tone="blue">afiliado</Badge>}</td>
                       <td className="px-2 py-2 align-top">{(() => {
+                        if (selectedGroupIds.size === 0) return <span className="text-xs text-zinc-400">Selecione os grupos de WhatsApp</span>
                         const f = offerFlags[offerIdentity(o)]
                         if (offerFlagsQuery.isPending) return <span className="text-xs text-zinc-400">Verificando…</span>
                         if (offerFlagsQuery.isError) return <span className="text-xs text-red-600">Indisponível</span>
@@ -348,12 +636,33 @@ export default function ComposePage() {
                 </tbody>
               </table>
             </div>
+            {productPageCount > 1 && (
+              <div className="mt-4 flex items-center justify-between gap-3 text-sm">
+                <Button
+                  variant="secondary"
+                  disabled={safeProductPage === 1}
+                  onClick={() => setProductPage((page) => Math.max(1, page - 1))}
+                >
+                  Anterior
+                </Button>
+                <span className="text-zinc-500">
+                  Página {safeProductPage} de {productPageCount} · até {PRODUCT_PAGE_SIZE} produtos por página
+                </span>
+                <Button
+                  variant="secondary"
+                  disabled={safeProductPage === productPageCount}
+                  onClick={() => setProductPage((page) => Math.min(productPageCount, page + 1))}
+                >
+                  Próxima
+                </Button>
+              </div>
+            )}
           </>
         )}
       </Card>
 
       {/* ── 2. Message template ──────────────────────── */}
-      {offers.length > 0 && (
+      {catalogItems.length > 0 && (
         <Card>
           <div className="mb-2 flex items-center justify-between">
             <h2 className="font-semibold">2 · Personalizar mensagem</h2>
@@ -430,7 +739,7 @@ export default function ComposePage() {
       {/* ── 3. Groups ────────────────────────────────── */}
       <Card>
         <div className="mb-2 flex items-center justify-between">
-          <h2 className="font-semibold">3 · Grupos ({selectedGroupIds.size} selecionados)</h2>
+          <h2 className="font-semibold">3 · Grupos de WhatsApp ({selectedGroupIds.size} selecionados)</h2>
           <Button variant="ghost" onClick={() => groupsQuery.refetch()}>
             Recarregar
           </Button>

@@ -58,7 +58,10 @@ function comparableOffer(offer: CampaignOffer): string {
   return JSON.stringify(
     Object.fromEntries(
       Object.entries(offer)
-        .filter(([key, value]) => key !== 'savedProductId' && value !== undefined)
+        .filter(
+          ([key, value]) =>
+            key !== 'savedProductId' && key !== 'classificationProfileName' && value !== undefined,
+        )
         .sort(([left], [right]) => left.localeCompare(right)),
     ),
   )
@@ -974,7 +977,27 @@ export class CampaignService {
       if (!offer.savedProductId) continue
       const saved = byId.get(offer.savedProductId)
       if (!saved) throw BadRequestError('Produto salvo inválido ou não pertence ao usuário')
-      if (comparableOffer(saved.offer) !== comparableOffer(offer)) {
+      const unchanged = comparableOffer(saved.offer) === comparableOffer(offer)
+      const rating = offer.classificationProfileId
+        ? saved.classifications[offer.classificationProfileId]
+        : undefined
+      const ratedOffer: CampaignOffer = {
+        ...saved.offer,
+        ...(rating
+          ? {
+              classificationProfileId: offer.classificationProfileId,
+              classificationProfileName: rating.profileName,
+            }
+          : {}),
+      }
+      if (rating) {
+        for (const field of ['category', 'relevanceScore', 'discountPercent', 'commissionRate'] as const) {
+          const value = rating[field]
+          if (value === undefined) delete ratedOffer[field]
+          else Object.assign(ratedOffer, { [field]: value })
+        }
+      }
+      if (!unchanged && (!rating || comparableOffer(ratedOffer) !== comparableOffer(offer))) {
         throw BadRequestError(
           `O produto salvo #${offer.savedProductId} foi alterado. Atualize a campanha antes de enviar.`,
         )

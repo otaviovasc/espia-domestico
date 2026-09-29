@@ -165,6 +165,57 @@ test('campaign delivery ledger skips successful product/group pairs and retries 
       /foi alterado/,
     )
 
+    ownProduct.classifications = {
+      corrida: {
+        category: 'A',
+        relevanceScore: 95,
+        discountPercent: 20,
+        commissionRate: 12,
+        profileName: 'Corrida',
+        classifiedAt: new Date().toISOString(),
+      },
+    }
+    await ownProduct.save()
+    const nicheOffer = {
+      ...mercadoOffer,
+      savedProductId: ownProduct.id,
+      category: 'A',
+      relevanceScore: 95,
+      discountPercent: 20,
+      commissionRate: 12,
+      classificationProfileId: 'corrida',
+      classificationProfileName: 'Corrida',
+    }
+    await service.create(user.id, {
+      name: 'Categoria do nicho salvo',
+      offers: [nicheOffer],
+      groups: [groups[0]],
+      safety,
+      sendImages: false,
+    })
+    ownProduct.classifications = {
+      ...ownProduct.classifications,
+      corrida: { ...ownProduct.classifications.corrida, profileName: 'Corrida e treino' },
+    }
+    await ownProduct.save()
+    await service.create(user.id, {
+      name: 'Nome do nicho alterado',
+      offers: [nicheOffer],
+      groups: [groups[0]],
+      safety,
+      sendImages: false,
+    })
+    await assert.rejects(
+      service.create(user.id, {
+        name: 'Categoria de nicho forjada',
+        offers: [{ ...nicheOffer, category: 'B' }],
+        groups: [groups[0]],
+        safety,
+        sendImages: false,
+      }),
+      /foi alterado/,
+    )
+
     const first = await Campaign.create({
       userId: user.id,
       name: 'Primeiro envio',

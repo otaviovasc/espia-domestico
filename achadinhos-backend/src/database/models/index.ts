@@ -3,6 +3,10 @@ import { Connection } from './Connection'
 import { Campaign } from './Campaign'
 import { CampaignLog } from './CampaignLog'
 import { ProductGroupDelivery } from './ProductGroupDelivery'
+import { ClassificationProfileRecord } from './ClassificationProfile'
+import { ProductGroup } from './ProductGroup'
+import { SavedProduct } from './SavedProduct'
+import { SavedProductGroupMembership } from './SavedProductGroupMembership'
 
 /**
  * Register model associations. Call once at boot before serving requests.
@@ -21,6 +25,34 @@ export function registerAssociations(): void {
   ProductGroupDelivery.belongsTo(User, { foreignKey: 'userId', as: 'user' })
   Campaign.hasMany(ProductGroupDelivery, { foreignKey: 'campaignId', as: 'productGroupDeliveries' })
   ProductGroupDelivery.belongsTo(Campaign, { foreignKey: 'campaignId', as: 'campaign' })
+
+  User.hasMany(ClassificationProfileRecord, { foreignKey: 'userId', as: 'classificationProfiles' })
+  ClassificationProfileRecord.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+
+  User.hasMany(ProductGroup, { foreignKey: 'userId', as: 'productGroups' })
+  ProductGroup.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+  ProductGroup.belongsToMany(SavedProduct, {
+    through: SavedProductGroupMembership,
+    foreignKey: 'productGroupId',
+    otherKey: 'savedProductId',
+    as: 'products',
+  })
+  SavedProduct.belongsToMany(ProductGroup, {
+    through: SavedProductGroupMembership,
+    foreignKey: 'savedProductId',
+    otherKey: 'productGroupId',
+    as: 'productGroups',
+  })
 }
 
-export { User, Connection, Campaign, CampaignLog, ProductGroupDelivery }
+export {
+  User,
+  Connection,
+  Campaign,
+  CampaignLog,
+  ProductGroupDelivery,
+  ClassificationProfileRecord,
+  ProductGroup,
+  SavedProduct,
+  SavedProductGroupMembership,
+}

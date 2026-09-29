@@ -10,7 +10,10 @@ const {
   categorizeOffers,
   categoryForSignals,
   commercialSignals,
+  buildRelevanceQuestion,
 } = require('../dist/services/OfferCategorizationService.js')
+const { ClassificationProfileInputSchema } = require('../dist/dtos/classificationProfile.js')
+const { CampaignController } = require('../dist/controllers/CampaignController.js')
 
 const offer = (title, extra = {}) => ({
   title,
@@ -84,7 +87,9 @@ test('the full 100-product import can evaluate concurrently', async () => {
   const input = Array.from({ length: MAX_IMPORT_ITEMS }, (_, index) => offer(`item ${index}`))
   let started = 0
   let release
-  const gate = new Promise((resolve) => { release = resolve })
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
   const running = categorizeOffers(input, async () => {
     started++
     await gate
@@ -140,4 +145,99 @@ test('imports above the paid evaluation limit are rejected before categorization
     url: 'https://example.com/product',
   }))
   assert.throws(() => new OfferImportService().parse(cards), /no máximo 100 produtos/)
+})
+
+const sportsProfile = {
+  id: '42',
+  name: 'Corrida',
+  nicheDescription: 'Corredores de rua e pessoas treinando para provas de longa distância.',
+  relevanceInstructions: 'Tênis, hidratação e relógios esportivos têm alta relevância.',
+  weights: { relevance: 80, discount: 10, commission: 10 },
+  discountCap: 40,
+  commissionCap: 15,
+  thresholds: {
+    aScore: 95,
+    aRelevance: 98,
+    aDiscount: 10,
+    aCommission: 5,
+    bScore: 60,
+    bRelevance: 60,
+    cScore: 40,
+    dRelevance: 20,
+  },
+  builtIn: false,
+}
+
+test('a custom niche changes both the Jev prompt and deterministic category math', () => {
+  const question = buildRelevanceQuestion(sportsProfile)
+  assert.match(question.instructions, /Corredores de rua/)
+  assert.match(question.instructions, /Tênis, hidratação/)
+
+  assert.equal(categoryForSignals(95, 20, 12), 'A')
+  assert.equal(categoryForSignals(95, 20, 12, sportsProfile), 'B')
+})
+
+test('profile validation rejects invalid weights, threshold order, and caps', () => {
+  const invalid = {
+    ...sportsProfile,
+    weights: { relevance: 50, discount: 10, commission: 10 },
+    thresholds: { ...sportsProfile.thresholds, aScore: 50, aDiscount: 50 },
+  }
+  const parsed = ClassificationProfileInputSchema.safeParse(invalid)
+  assert.equal(parsed.success, false)
+  const messages = parsed.error.issues.map((issue) => issue.message).join(' | ')
+  assert.match(messages, /somar 100/)
+  assert.match(messages, /A > B > C/)
+  assert.match(messages, /teto de desconto/)
+})
+
+test('import resolves the selected user profile and snapshots it on categorized offers', async () => {
+  let resolved
+  let usedProfile
+  const controller = new CampaignController(
+    {},
+    {
+      parse() {
+        return { source: 'generic', totalSeen: 1, offers: [offer('Tênis')], errors: [] }
+      },
+    },
+    {
+      async getForUser(userId, profileId) {
+        resolved = { userId, profileId }
+        return sportsProfile
+      },
+    },
+    {
+      async categorize(offers, profile) {
+        usedProfile = profile
+        return {
+          offers: offers.map((item) => ({
+            ...item,
+            category: 'A',
+            relevanceScore: 95,
+            classificationProfileId: profile.id,
+            classificationProfileName: profile.name,
+          })),
+          counts: { A: 1, B: 0, C: 0, D: 0 },
+        }
+      },
+    },
+  )
+  let response
+  await controller.importOffers(
+    {
+      user: { userId: 7 },
+      body: { json: [{}], classificationProfileId: '42' },
+    },
+    {
+      json(value) {
+        response = value
+      },
+    },
+  )
+  assert.deepEqual(resolved, { userId: 7, profileId: '42' })
+  assert.equal(usedProfile, sportsProfile)
+  assert.deepEqual(response.data.categorization.profile, { id: '42', name: 'Corrida' })
+  assert.equal(response.data.offers[0].classificationProfileId, '42')
+  assert.equal(response.data.offers[0].classificationProfileName, 'Corrida')
 })

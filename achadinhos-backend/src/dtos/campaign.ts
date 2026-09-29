@@ -27,6 +27,9 @@ export const OfferSchema = z.object({
   relevanceScore: z.number().min(0).max(100).optional(),
   discountPercent: z.number().min(0).max(100).optional(),
   commissionRate: z.number().min(0).max(100).optional(),
+  /** Snapshot of the niche configuration used for this A-D rating. */
+  classificationProfileId: z.string().max(20).optional(),
+  classificationProfileName: z.string().max(120).optional(),
 })
 export type OfferInput = z.infer<typeof OfferSchema>
 
