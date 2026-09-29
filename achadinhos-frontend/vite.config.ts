@@ -56,27 +56,26 @@ function landingDevServer(): Plugin {
   }
 }
 
-/** On build: app HTML → dist/painel/index.html, landing page → dist/index.html. */
+/**
+ * After Vite builds the app into dist/painel (outDir below), place the public
+ * landing page at dist/index.html with its assets at dist/assets, and ship
+ * serve.json. The app is fully self-contained under dist/painel/ (HTML +
+ * dist/painel/assets/*), so /painel/assets/* resolves to real files.
+ */
 function landingBuild(): Plugin {
   return {
     name: 'landing-build',
     apply: 'build',
     closeBundle() {
       const distRoot = resolve(__dirname, 'dist')
-      const appHtml = resolve(distRoot, 'index.html') // Vite built the SPA here
-      const painelDir = resolve(distRoot, 'painel')
-      // Move the built SPA entry under /painel/ so it is reachable at /painel.
-      if (existsSync(appHtml)) {
-        mkdirSync(painelDir, { recursive: true })
-        copyFileSync(appHtml, resolve(painelDir, 'index.html'))
-      }
+      mkdirSync(distRoot, { recursive: true })
       // Landing page becomes the site root.
-      if (existsSync(LANDING)) copyFileSync(LANDING, appHtml)
-      // Ship landing assets (logo + review prints + depo photos) to dist/assets.
+      if (existsSync(LANDING)) copyFileSync(LANDING, resolve(distRoot, 'index.html'))
+      // Landing assets (logo + review prints + depo photos) at dist/assets.
       if (existsSync(LANDING_ASSETS)) {
         cpSync(LANDING_ASSETS, resolve(distRoot, 'assets'), { recursive: true })
       }
-      // Ship serve.json (SPA rewrites for /painel) alongside the build.
+      // SPA rewrites for /painel.
       const serveJson = resolve(__dirname, 'serve.json')
       if (existsSync(serveJson)) copyFileSync(serveJson, resolve(distRoot, 'serve.json'))
     },
@@ -88,6 +87,12 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), landingDevServer(), landingBuild()],
   resolve: {
     alias: { '@': '/src' },
+  },
+  build: {
+    // Build the whole app self-contained under dist/painel so its assets live
+    // at dist/painel/assets and /painel/assets/* resolves on the static host.
+    outDir: 'dist/painel',
+    emptyOutDir: true,
   },
   server: {
     port: 5273,
