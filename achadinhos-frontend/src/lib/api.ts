@@ -249,6 +249,8 @@ export interface Campaign {
   totalSkipped: number
   createdAt: string
   editable: boolean
+  /** RUNNING but its process died (deploy/crash) — can be resumed. */
+  stalled?: boolean
 }
 
 export interface CampaignLog {

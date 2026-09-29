@@ -2,6 +2,7 @@ import { Request, Response } from 'express'
 import { injectable, inject } from 'tsyringe'
 import { z } from 'zod'
 import { CampaignService } from '@/services/CampaignService'
+import { computeStallMs } from '@/services/SafeSender'
 import { OfferImportService } from '@/services/OfferImportService'
 import { CreateCampaignSchema, UpdateCampaignSchema, OfferSchema } from '@/dtos/campaign'
 import {
@@ -32,6 +33,14 @@ function serializeCampaign(c: Campaign) {
     c.status === 'SCHEDULED' ||
     c.status === 'PAUSED' ||
     c.status === 'FAILED'
+  // A RUNNING campaign whose heartbeat is stale has no live process (a
+  // deploy/crash killed its loop); the UI can offer "Resume" to relaunch it.
+  // The threshold is derived from the campaign's own pacing so long-interval
+  // campaigns are never wrongly flagged during their normal quiet time.
+  const lastBeat = c.heartbeatAt ?? c.startedAt
+  const stalled =
+    c.status === 'RUNNING' &&
+    (!lastBeat || lastBeat.getTime() <= Date.now() - computeStallMs(c.safety))
   return {
     id: c.id,
     uuid: c.uuid,
@@ -44,12 +53,14 @@ function serializeCampaign(c: Campaign) {
     status: c.status,
     scheduledAt: c.scheduledAt,
     startedAt: c.startedAt,
+    heartbeatAt: c.heartbeatAt,
     completedAt: c.completedAt,
     totalSent: c.totalSent,
     totalFailed: c.totalFailed,
     totalSkipped: c.totalSkipped,
     createdAt: c.createdAt,
     editable,
+    stalled,
   }
 }
 

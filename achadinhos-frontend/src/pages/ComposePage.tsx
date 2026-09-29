@@ -31,6 +31,7 @@ import {
 } from '@/lib/productGroups'
 import { Button, Card, Input, Label, Badge, Spinner } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
+import { SafetyControls } from '@/components/SafetyControls'
 import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const DEFAULT_SAFETY: Safety = {
@@ -802,52 +803,7 @@ export default function ComposePage() {
       {/* ── 4. Safety ────────────────────────────────── */}
       <Card>
         <h2 className="mb-3 font-semibold">4 · Segurança de envio</h2>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <Label>Intervalo mínimo (segundos)</Label>
-            <Input
-              type="number"
-              min={1}
-              value={safety.minDelaySeconds}
-              onChange={(e) => setSafety({ ...safety, minDelaySeconds: Number(e.target.value) })}
-            />
-          </div>
-          <div>
-            <Label>Intervalo máximo (segundos)</Label>
-            <Input
-              type="number"
-              min={1}
-              value={safety.maxDelaySeconds}
-              onChange={(e) => setSafety({ ...safety, maxDelaySeconds: Number(e.target.value) })}
-            />
-          </div>
-          <div>
-            <Label>Máximo por hora (0 = ilimitado)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={safety.maxPerHour}
-              onChange={(e) => setSafety({ ...safety, maxPerHour: Number(e.target.value) })}
-            />
-          </div>
-          <div>
-            <Label>Aquecimento: lote (0 = desligado)</Label>
-            <Input
-              type="number"
-              min={0}
-              value={safety.warmupBatchSize}
-              onChange={(e) => setSafety({ ...safety, warmupBatchSize: Number(e.target.value) })}
-            />
-          </div>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={safety.shuffleGroups}
-              onChange={(e) => setSafety({ ...safety, shuffleGroups: e.target.checked })}
-            />
-            Embaralhar ordem dos grupos
-          </label>
-        </div>
+        <SafetyControls safety={safety} onChange={setSafety} />
       </Card>
 
       {/* ── 5. Send / Schedule ───────────────────────── */}

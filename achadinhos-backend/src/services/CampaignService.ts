@@ -16,7 +16,7 @@ import {
 import { UazapiClient } from '@/channels/uazapi/UazapiClient'
 import { ConnectionService, ConnectedContext } from '@/services/ConnectionService'
 import { GroupService } from '@/services/GroupService'
-import { SafeSender, SendResult, SendTask, buildTasks } from '@/services/SafeSender'
+import { SafeSender, SendResult, SendTask, buildTasks, computeStallMs } from '@/services/SafeSender'
 import { CreateCampaignInput } from '@/dtos/campaign'
 import { BadRequestError, NotFoundError } from '@/middleware/Error/AppError'
 import { logger } from '@/utils/logger'
@@ -34,6 +34,15 @@ export const DELIVERY_CLAIM_HEARTBEAT_MS =
   Number.isFinite(configuredHeartbeatMs) && configuredHeartbeatMs >= 10
     ? configuredHeartbeatMs
     : 15_000
+
+/**
+ * A RUNNING campaign updates its heartbeat every CAMPAIGN_HEARTBEAT_MS while a
+ * live process owns it (even during inter-message delays and hourly-cap
+ * pauses). The stall threshold — how long silence means the process died — is
+ * computed per campaign from its pacing via computeStallMs (SafeSender), so a
+ * long-interval campaign is never wrongly flagged as dead.
+ */
+export const CAMPAIGN_HEARTBEAT_MS = 15_000
 
 type CheckOfferInput = {
   savedProductId?: number
@@ -575,8 +584,19 @@ export class CampaignService {
    */
   async resume(userId: number, campaignId: number): Promise<Campaign> {
     const campaign = await this.getForUser(userId, campaignId)
+
+    // A RUNNING campaign whose process died (deploy/crash) can be relaunched.
+    if (campaign.status === CAMPAIGN_STATUS_ENUM.RUNNING) {
+      if (this.isStalledRunning(campaign)) {
+        await this.resumeStalledRun(userId, campaignId)
+        return this.getForUser(userId, campaignId)
+      }
+      // Still actively sending in a live process — nothing to do.
+      return campaign
+    }
+
     if (campaign.status !== CAMPAIGN_STATUS_ENUM.PAUSED) {
-      throw BadRequestError('Somente campanhas pausadas podem ser retomadas')
+      throw BadRequestError('Somente campanhas pausadas ou travadas podem ser retomadas')
     }
     if (campaign.scheduledAt && campaign.scheduledAt.getTime() > Date.now()) {
       campaign.status = CAMPAIGN_STATUS_ENUM.SCHEDULED
@@ -625,6 +645,7 @@ export class CampaignService {
       {
         status: CAMPAIGN_STATUS_ENUM.RUNNING,
         startedAt: new Date(),
+        heartbeatAt: new Date(),
         completedAt: null,
         totalSkipped: 0,
         groups,
@@ -652,6 +673,69 @@ export class CampaignService {
     })
 
     return running
+  }
+
+  /** A RUNNING campaign is stalled when its heartbeat is stale (no live loop). */
+  private isStalledRunning(campaign: Campaign): boolean {
+    if (campaign.status !== CAMPAIGN_STATUS_ENUM.RUNNING) return false
+    const last = campaign.heartbeatAt ?? campaign.startedAt
+    if (!last) return true
+    return last.getTime() <= Date.now() - computeStallMs(campaign.safety)
+  }
+
+  /**
+   * Re-launch the send loop for a RUNNING campaign whose previous process died
+   * (deploy/crash). Atomically claims ownership by bumping the heartbeat only
+   * if it is still stale, so two processes never resume the same campaign. The
+   * ledger makes execute() skip every pair already sent, so it continues from
+   * where it stopped. Returns true if this process took ownership.
+   */
+  private async resumeStalledRun(userId: number, campaignId: number): Promise<boolean> {
+    const campaign = await Campaign.findOne({ where: { id: campaignId, userId } })
+    if (!campaign || !this.isStalledRunning(campaign)) return false
+
+    // Validate the connection before touching the provider.
+    let context: ConnectedContext
+    try {
+      context = await this.connectionService.requireConnectedContext(userId)
+    } catch (error) {
+      logger.warn({ error, campaignId }, 'Cannot resume campaign: connection not ready')
+      await Campaign.update(
+        { status: CAMPAIGN_STATUS_ENUM.FAILED },
+        { where: { id: campaignId, status: CAMPAIGN_STATUS_ENUM.RUNNING } },
+      )
+      return false
+    }
+
+    // Atomic claim: only proceed if the heartbeat is still stale.
+    const staleBefore = new Date(Date.now() - computeStallMs(campaign.safety))
+    const [claimed] = await Campaign.update(
+      { heartbeatAt: new Date() },
+      {
+        where: {
+          id: campaignId,
+          status: CAMPAIGN_STATUS_ENUM.RUNNING,
+          [Op.or]: [{ heartbeatAt: { [Op.lte]: staleBefore } }, { heartbeatAt: null }],
+        },
+      },
+    )
+    if (claimed !== 1) return false // another process resumed it first
+
+    const running = await this.getForUser(userId, campaignId)
+    logger.info({ campaignId }, 'Resuming stalled campaign')
+    void this.execute(userId, running, context).catch(async (error) => {
+      try {
+        await this.refreshCampaignCounters(running.id)
+        await Campaign.update(
+          { status: CAMPAIGN_STATUS_ENUM.FAILED },
+          { where: { id: running.id, status: CAMPAIGN_STATUS_ENUM.RUNNING } },
+        )
+      } catch (recoveryError) {
+        logger.error({ recoveryError, campaignId: running.id }, 'Failed to persist campaign failure')
+      }
+      logger.error({ error, campaignId: running.id }, 'Resumed campaign execution failed')
+    })
+    return true
   }
 
   /** The actual paced execution. Persists a log row per send and updates counters. */
@@ -695,6 +779,17 @@ export class CampaignService {
     const claims = new Map<string, ProductGroupDelivery>()
     const stopHeartbeats = new Map<string, () => void>()
     let connectionChanged = false
+
+    // Campaign-level heartbeat: proves a live process owns this RUNNING campaign,
+    // even during inter-message delays. The scheduler resumes campaigns whose
+    // heartbeat has gone stale (killed by a deploy/crash).
+    await Campaign.update({ heartbeatAt: new Date() }, { where: { id: campaign.id } })
+    const campaignHeartbeat = setInterval(() => {
+      void Campaign.update(
+        { heartbeatAt: new Date() },
+        { where: { id: campaign.id, status: CAMPAIGN_STATUS_ENUM.RUNNING } },
+      ).catch(() => {})
+    }, CAMPAIGN_HEARTBEAT_MS)
 
     try {
       await sender.run(
@@ -785,6 +880,7 @@ export class CampaignService {
       )
       throw error
     } finally {
+      clearInterval(campaignHeartbeat)
       for (const stop of stopHeartbeats.values()) stop()
       stopHeartbeats.clear()
     }
@@ -1096,6 +1192,31 @@ export class CampaignService {
           { status: CAMPAIGN_STATUS_ENUM.FAILED },
           { where: { id: campaign.id, status: CAMPAIGN_STATUS_ENUM.SCHEDULED } },
         )
+      }
+    }
+
+    // Self-heal: resume RUNNING campaigns whose loop died (deploy/crash) and
+    // whose heartbeat has gone stale. The stall threshold is per-campaign
+    // (derived from its interval/pacing), so we cheaply pre-filter by the
+    // minimum possible threshold in SQL, then apply the exact check in code.
+    const MIN_STALL_FLOOR_MS = 90 * 1000
+    const stalledCandidates = await Campaign.findAll({
+      where: {
+        status: CAMPAIGN_STATUS_ENUM.RUNNING,
+        [Op.or]: [
+          { heartbeatAt: { [Op.lte]: new Date(now - MIN_STALL_FLOOR_MS) } },
+          { heartbeatAt: null },
+        ],
+      },
+      order: [['startedAt', 'ASC']],
+      limit: 50,
+    })
+    for (const campaign of stalledCandidates) {
+      if (!this.isStalledRunning(campaign)) continue // still within its quiet window
+      try {
+        await this.resumeStalledRun(campaign.userId, campaign.id)
+      } catch (error) {
+        logger.warn({ error, campaignId: campaign.id }, 'Failed to resume stalled campaign')
       }
     }
   }

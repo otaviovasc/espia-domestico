@@ -91,6 +91,8 @@ export class Campaign extends Model<InferAttributes<Campaign>, InferCreationAttr
   declare status: CreationOptional<CAMPAIGN_STATUS_ENUM>
   declare scheduledAt: CreationOptional<Date | null>
   declare startedAt: CreationOptional<Date | null>
+  /** Liveness signal from the running send loop; used to detect stalled runs. */
+  declare heartbeatAt: CreationOptional<Date | null>
   declare completedAt: CreationOptional<Date | null>
   declare totalSent: CreationOptional<number>
   declare totalFailed: CreationOptional<number>
@@ -128,6 +130,7 @@ Campaign.init(
     },
     scheduledAt: { type: DataTypes.DATE, allowNull: true, field: 'scheduled_at' },
     startedAt: { type: DataTypes.DATE, allowNull: true, field: 'started_at' },
+    heartbeatAt: { type: DataTypes.DATE, allowNull: true, field: 'heartbeat_at' },
     completedAt: { type: DataTypes.DATE, allowNull: true, field: 'completed_at' },
     totalSent: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0, field: 'total_sent' },
     totalFailed: {

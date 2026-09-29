@@ -18,6 +18,41 @@ export interface SendResult {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * The longest a *live* campaign can legitimately stay quiet between sends,
+ * derived from its own pacing:
+ *   - normal jitter delay: up to maxDelaySeconds
+ *   - warmup pause: up to maxDelaySeconds × warmupPauseFactor
+ *   - hourly cap: up to one full hour when the cap is hit
+ *   - plus one send's own worst-case duration (provider + image HEAD check)
+ *
+ * A campaign is only considered "stalled" (its process died) when it has been
+ * silent for longer than this window plus a safety margin. This makes the
+ * stall threshold scale with the configured interval — a 20–26 min interval
+ * campaign is never wrongly flagged as dead during its normal quiet time.
+ */
+export function computeMaxQuietMs(safety: CampaignSafety): number {
+  const maxDelayMs = Math.max(0, safety.maxDelaySeconds) * 1000
+  const warmupMs =
+    safety.warmupBatchSize > 0
+      ? Math.max(0, safety.maxDelaySeconds) * Math.max(1, safety.warmupPauseFactor) * 1000
+      : 0
+  const hourlyCapMs = safety.maxPerHour && safety.maxPerHour > 0 ? 60 * 60 * 1000 : 0
+  const perSendWorstCaseMs = 45 * 1000 // provider call + HEAD check headroom
+  return Math.max(maxDelayMs, warmupMs, hourlyCapMs) + perSendWorstCaseMs
+}
+
+/**
+ * How long after the last heartbeat a RUNNING campaign is treated as stalled.
+ * = the max legitimate quiet window + a generous margin (so a briefly delayed
+ * heartbeat never triggers a false resume), with a sane floor.
+ */
+export function computeStallMs(safety: CampaignSafety): number {
+  const STALL_MARGIN_MS = 2 * 60 * 1000 // absorb heartbeat jitter / slow writes
+  const FLOOR_MS = 90 * 1000
+  return Math.max(FLOOR_MS, computeMaxQuietMs(safety) + STALL_MARGIN_MS)
+}
+
 /** Uniform random integer in [min, max]. */
 function jitter(minSeconds: number, maxSeconds: number): number {
   const min = Math.min(minSeconds, maxSeconds)

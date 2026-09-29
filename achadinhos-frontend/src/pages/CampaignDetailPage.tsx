@@ -27,6 +27,7 @@ import {
 } from '@/lib/api'
 import { Button, Card, Badge, Spinner, Input, Label } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
+import { SafetyControls } from '@/components/SafetyControls'
 import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const ACTIVE: Campaign['status'][] = ['RUNNING', 'SCHEDULED']
@@ -269,7 +270,12 @@ export default function CampaignDetailPage() {
               <Pause size={16} /> Pausar
             </Button>
           )}
-          {c.status === 'RUNNING' && (
+          {c.status === 'RUNNING' && c.stalled && (
+            <Button variant="secondary" onClick={() => resumeM.mutate()} disabled={resumeM.isPending}>
+              <RotateCw size={16} /> Retomar envio
+            </Button>
+          )}
+          {c.status === 'RUNNING' && !c.stalled && (
             <Button variant="secondary" onClick={() => pauseM.mutate()} disabled={pauseM.isPending}>
               <Pause size={16} /> Pausar
             </Button>
@@ -290,6 +296,13 @@ export default function CampaignDetailPage() {
       {error && <p className="text-sm text-red-600">{error}</p>}
       {saveMutation.isSuccess && !error && (
         <p className="text-sm text-green-600">Alterações salvas.</p>
+      )}
+      {c.status === 'RUNNING' && c.stalled && (
+        <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+          Este envio foi interrompido (o servidor reiniciou durante a campanha). Clique em
+          <strong> Retomar envio</strong> para continuar de onde parou — os produtos já enviados
+          não serão repetidos.
+        </div>
       )}
 
       {offers.length > 0 && groups.length > 0 && (
@@ -518,52 +531,7 @@ export default function CampaignDetailPage() {
           {/* Safety */}
           <Card>
             <h2 className="mb-3 font-semibold">Segurança de envio</h2>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <Label>Intervalo mínimo (s)</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  value={safety.minDelaySeconds}
-                  onChange={(e) => setSafety({ ...safety, minDelaySeconds: Number(e.target.value) })}
-                />
-              </div>
-              <div>
-                <Label>Intervalo máximo (s)</Label>
-                <Input
-                  type="number"
-                  min={1}
-                  value={safety.maxDelaySeconds}
-                  onChange={(e) => setSafety({ ...safety, maxDelaySeconds: Number(e.target.value) })}
-                />
-              </div>
-              <div>
-                <Label>Máximo por hora (0 = ilimitado)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={safety.maxPerHour}
-                  onChange={(e) => setSafety({ ...safety, maxPerHour: Number(e.target.value) })}
-                />
-              </div>
-              <div>
-                <Label>Aquecimento: lote (0 = off)</Label>
-                <Input
-                  type="number"
-                  min={0}
-                  value={safety.warmupBatchSize}
-                  onChange={(e) => setSafety({ ...safety, warmupBatchSize: Number(e.target.value) })}
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={safety.shuffleGroups}
-                  onChange={(e) => setSafety({ ...safety, shuffleGroups: e.target.checked })}
-                />
-                Embaralhar ordem dos grupos
-              </label>
-            </div>
+            <SafetyControls safety={safety} onChange={setSafety} />
           </Card>
         </>
       ) : null}
