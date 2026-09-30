@@ -294,14 +294,25 @@
       @media (prefers-reduced-motion: reduce) {
         .ml-badge-3d, .ml-badge-3d::after { animation: none !important; transform: none !important; }
       }
+      /* ===== Otimização conversão mobile-first: hero compacto, CTA acima da dobra ===== */
+      @media (max-width: 639.98px) {
+        .topbar { padding-top: 8px !important; padding-bottom: 8px !important; }
+        .brand-logo { height: 48px !important; width: 48px !important; }
+        .hero-h1 { font-size: 32px !important; line-height: 1.07 !important; }
+        .ml-badge-3d { padding: 8px 14px 8px 8px !important; gap: 10px !important; }
+        .ml-logo-3d { width: 46px !important; height: 34px !important; }
+      }
+      @media (max-width: 359.98px) {
+        .hero-h1 { font-size: 29px !important; }
+      }
     </style>
   </head>
   <body class="min-h-screen overflow-x-hidden font-sans text-[#49392D] antialiased selection:bg-[#C98268]/30">
     <div class="paper-grain fixed inset-0 z-0" aria-hidden="true"></div>
 
-    <header class="relative z-10 mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-3 sm:px-8 sm:py-5">
+    <header class="topbar relative z-10 mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-3 sm:px-8 sm:py-5">
       <a href="#inicio" class="group flex items-center gap-3" aria-label="Espia Doméstico — início">
-        <span class="grid h-[62px] w-[62px] shrink-0 place-items-center overflow-hidden rounded-full bg-white/80 p-0.5 shadow-[0_5px_18px_rgba(90,64,42,.10)] ring-1 ring-[#B96F55]/15 sm:h-[72px] sm:w-[72px]">
+        <span class="brand-logo grid h-[62px] w-[62px] shrink-0 place-items-center overflow-hidden rounded-full bg-white/80 p-0.5 shadow-[0_5px_18px_rgba(90,64,42,.10)] ring-1 ring-[#B96F55]/15 sm:h-[72px] sm:w-[72px]">
           <img src="./assets/logo-espiadomestico-256.png" alt="Espia Doméstico" width="72" height="72" fetchpriority="high" class="h-full w-full rounded-full object-contain" />
         </span>
         <span class="leading-tight">
@@ -325,21 +336,28 @@
             </span>
             <span class="ml-badge-text">
               <small>PROMOÇÕES OCULTAS • MERCADO LIVRE</small>
-              <strong>ATÉ 60% OFF HOJE</strong>
+              <strong>OFERTAS DE HOJE NO GRUPO</strong>
             </span>
           </a>
         </div>
         <p class="mb-2 text-[10px] font-bold uppercase tracking-[.2em] text-[#B96F55] sm:mb-3 sm:text-xs">grupo gratuito no WhatsApp</p>
-        <h1 class="max-w-[760px] font-display text-[39px] font-semibold leading-[1.04] tracking-[-.045em] text-[#49392D] sm:text-[64px] sm:leading-[1.06] md:text-[72px]">
+        <h1 class="hero-h1 max-w-[760px] font-display text-[39px] font-semibold leading-[1.04] tracking-[-.045em] text-[#49392D] sm:text-[64px] sm:leading-[1.06] md:text-[72px]">
           Promoções ocultas<br />
           do Mercado Livre.<br />
           <span class="ml-headline-mark">Até 60% de desconto.</span>
         </h1>
         <p class="mt-3 max-w-[520px] text-[14px] leading-6 text-[#765F4D] sm:mt-4 sm:text-[17px] sm:leading-7">
-          Achados com cupons e quedas de preço que quase ninguém vê. Entrou no grupo, viu primeiro, pagou menos.
+          Cupons, quedas de preço e ofertas que quase ninguém vê. Receba primeiro no grupo gratuito do WhatsApp.
         </p>
 
-        <div id="reviews-carousel" class="orbit-carousel mt-5 max-w-[720px] sm:mt-8" role="region" aria-roledescription="carrossel" aria-label="Avaliações de clientes" tabindex="0">
+        <a href="https://chat.whatsapp.com/C7VeJk0EZ91EeJ3SbkaJRa" class="group mt-4 inline-flex min-h-[62px] w-full max-w-[440px] items-center justify-center gap-3 rounded-full bg-[#075E54] px-6 py-4 text-[13px] font-bold uppercase tracking-[.08em] text-white shadow-[0_10px_24px_rgba(7,94,84,.24)] transition duration-200 hover:-translate-y-0.5 hover:bg-[#064E46] hover:shadow-[0_14px_30px_rgba(7,94,84,.3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#075E54] sm:mt-7 sm:min-h-[58px] sm:w-auto sm:px-9 sm:text-sm">
+          <svg class="h-6 w-6 shrink-0 transition-transform group-hover:scale-110" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.5 11.7a8.3 8.3 0 0 1-12.3 7.2l-4.2 1.1 1.1-4.1a8.3 8.3 0 1 1 15.4-4.2Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 8.5c.2-.4.4-.4.7-.4h.3c.2 0 .4.1.5.4l.8 1.8c.1.2.1.4-.1.6l-.5.6c-.2.2-.2.4 0 .6.6 1 1.4 1.7 2.4 2.2.2.1.4.1.6-.1l.7-.8c.2-.2.4-.3.6-.2l1.7.8c.3.1.4.3.4.5 0 .3-.1 1-.6 1.4-.5.5-1.1.7-1.8.7-.8 0-2.1-.3-3.7-1.6-1.5-1.2-2.6-2.9-2.9-3.7-.3-.8-.1-1.6.2-2.1.3-.5.6-.7.7-.7Z" fill="currentColor"/></svg>
+          <span>ENTRAR GRÁTIS NO WHATSAPP</span>
+        </a>
+        <p style="margin:8px 0 0;font-size:11px;font-weight:600;letter-spacing:.04em;color:#8D735B">Grátis para entrar • ofertas todos os dias</p>
+        <p class="mt-4 text-[10px] font-bold uppercase tracking-[.2em] text-[#B96F55] sm:mb-3 sm:text-xs">Veja algumas ofertas do grupo</p>
+
+        <div id="reviews-carousel" class="orbit-carousel mt-3 max-w-[720px] sm:mt-8" role="region" aria-roledescription="carrossel" aria-label="Avaliações de clientes" tabindex="0">
           <div id="reviews-stage" class="orbit-stage"></div>
           <p id="review-comment" class="orbit-comment" aria-label="Comentário da avaliação"></p>
           <div id="reviews-pagination" class="orbit-pagination" role="group" aria-label="Escolher avaliação"></div>
@@ -348,7 +366,7 @@
 
         <a href="https://chat.whatsapp.com/C7VeJk0EZ91EeJ3SbkaJRa" class="group mt-5 inline-flex min-h-[62px] w-full max-w-[440px] items-center justify-center gap-3 rounded-full bg-[#075E54] px-6 py-4 text-[13px] font-bold uppercase tracking-[.08em] text-white shadow-[0_10px_24px_rgba(7,94,84,.24)] transition duration-200 hover:-translate-y-0.5 hover:bg-[#064E46] hover:shadow-[0_14px_30px_rgba(7,94,84,.3)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#075E54] sm:mt-7 sm:min-h-[58px] sm:w-auto sm:px-9 sm:text-sm">
           <svg class="h-6 w-6 shrink-0 transition-transform group-hover:scale-110" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.5 11.7a8.3 8.3 0 0 1-12.3 7.2l-4.2 1.1 1.1-4.1a8.3 8.3 0 1 1 15.4-4.2Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 8.5c.2-.4.4-.4.7-.4h.3c.2 0 .4.1.5.4l.8 1.8c.1.2.1.4-.1.6l-.5.6c-.2.2-.2.4 0 .6.6 1 1.4 1.7 2.4 2.2.2.1.4.1.6-.1l.7-.8c.2-.2.4-.3.6-.2l1.7.8c.3.1.4.3.4.5 0 .3-.1 1-.6 1.4-.5.5-1.1.7-1.8.7-.8 0-2.1-.3-3.7-1.6-1.5-1.2-2.6-2.9-2.9-3.7-.3-.8-.1-1.6.2-2.1.3-.5.6-.7.7-.7Z" fill="currentColor"/></svg>
-          <span>Ver ofertas no WhatsApp</span>
+          <span>ENTRAR GRÁTIS NO WHATSAPP</span>
         </a>
       </section>
     </main>
@@ -426,7 +444,8 @@
           image.dataset.src = review.image;
           if (review.fallback) image.dataset.fallback = review.fallback;
           image.alt = review.alt || `Foto do produto da avaliação ${index + 1}`;
-          image.loading = 'eager';
+          image.loading = index === 0 ? 'eager' : 'lazy';
+          if (index === 0) image.fetchPriority = 'high';
           image.decoding = 'async';
           image.draggable = false;
           image.onerror = () => {

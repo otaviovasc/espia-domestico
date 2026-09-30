@@ -213,6 +213,14 @@
       @media (prefers-reduced-motion: reduce) {
         .ml-badge-3d, .ml-badge-3d::after { animation: none !important; transform: none !important; }
       }
+      /* ===== Otimização conversão mobile-first: hero compacto, CTA acima da dobra ===== */
+      @media (max-width: 639px) {
+        #topo { padding-top: 20px !important; }
+        .hero-title { font-size: clamp(42px, 12.5vw, 76px) !important; }
+        .hero-copy { margin-top: 14px !important; }
+        .cta { margin-top: 18px !important; }
+        .benefits { margin-top: 16px !important; }
+      }
     </style>
   </head>
   <body>
@@ -237,25 +245,24 @@
             </span>
             <span class="ml-badge-text">
               <small>PROMOÇÕES OCULTAS • MERCADO LIVRE</small>
-              <strong>ATÉ 60% OFF HOJE</strong>
+              <strong>OFERTAS DE HOJE NO GRUPO</strong>
             </span>
           </a>
         </div>
         <p class="eyebrow">Grupo grátis · ofertas que somem rápido</p>
         <h1 id="hero-title" class="hero-title">PROMOÇÕES OCULTAS DO <span style="color:#FFE600">MERCADO LIVRE</span><strong>PRODUTOS COM <span class="ml-headline-mark">ATÉ 60% OFF.</span></strong></h1>
-        <p class="mt-5 font-[Barlow_Condensed] text-[28px] font-bold uppercase leading-none tracking-wide text-[#e9e3d8] sm:text-[36px]">
-          Achados com <span class="offer-number text-[#dda858]">até 60% OFF</span>
-        </p>
-        <p class="hero-copy">Pare de pagar preço cheio. Tecnologia, estilo, treino e cuidados com desconto real — as promoções ocultas caem primeiro no grupo.</p>
+        <p class="hero-copy">Cupons, quedas de preço e ofertas relâmpago em tecnologia, ferramentas, estilo e muito mais.</p>
         <a data-whatsapp-cta class="cta" href="https://chat.whatsapp.com/D24YD5tXxzQ1RdY795Bg6G">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.2 11.7a8.1 8.1 0 0 1-12 7l-4.1 1.1 1.1-4a8.1 8.1 0 1 1 15-4.1Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 8.5c.2-.4.4-.4.7-.4h.3c.2 0 .4.1.5.4l.8 1.8c.1.2.1.4-.1.6l-.5.6c-.2.2-.2.4 0 .6.6 1 1.4 1.7 2.4 2.2.2.1.4.1.6-.1l.7-.8c.2-.2.4-.3.6-.2l1.7.8c.3.1.4.3.4.5 0 .3-.1 1-.6 1.4-.5.5-1.1.7-1.8.7-.8 0-2.1-.3-3.7-1.6-1.5-1.2-2.6-2.9-2.9-3.7-.3-.8-.1-1.6.2-2.1.3-.5.6-.7.7-.7Z" fill="currentColor"/></svg>
-          <span>QUERO ENTRAR NO GRUPO</span>
+          <span>ENTRAR GRÁTIS NO WHATSAPP</span>
         </a>
         <p class="cta-caption">Grátis para entrar · ofertas direto no WhatsApp</p>
       </section>
 
       <section aria-labelledby="reviews-title" class="pt-2">
         <p class="eyebrow mt-4">Achados na vida real</p>
+        <h2 id="reviews-title" class="reviews-heading">Veja o que a galera recebeu</h2>
+        <p class="reviews-lede">Fotos enviadas pela comunidade · deslize para ver os próximos</p>
         <div id="reviews-carousel" class="orbit-carousel" role="region" aria-roledescription="carrossel" aria-label="Fotos e avaliações da comunidade" tabindex="0">
           <div id="reviews-stage" class="orbit-stage"></div>
           <div class="review-caption" aria-live="polite" aria-atomic="true">
@@ -265,12 +272,10 @@
           <div id="reviews-pagination" class="orbit-pagination" role="group" aria-label="Escolher avaliação"></div>
           <p id="reviews-status" class="sr-only" aria-live="polite" aria-atomic="true"></p>
         </div>
-        <h2 id="reviews-title" class="reviews-heading">Veja o que a galera recebeu</h2>
-        <p class="reviews-lede">Fotos enviadas pela comunidade · deslize para ver os próximos</p>
       </section>
 
       <div class="benefits mt-4" aria-label="Vantagens do grupo">
-        <span class="benefit"><b>ATÉ 60% OFF</b> em selecionados</span>
+        <span class="benefit">CUPONS E QUEDAS DE PREÇO</span>
         <span class="benefit">SEM PAGAR PARA ENTRAR</span>
         <span class="benefit">ACHADOS ATUALIZADOS</span>
       </div>
@@ -278,12 +283,12 @@
       <hr class="rule" />
 
       <section class="bottom-offer" aria-labelledby="bottom-title">
-        <p class="eyebrow">Chega de comprar no preço cheio</p>
+        <p class="eyebrow">Grupo gratuito no WhatsApp</p>
         <h2 id="bottom-title" class="mt-2">Entre grátis. Pague menos.</h2>
-        <p>Até 60% OFF em produtos selecionados. As oportunidades aparecem no grupo.</p>
+        <p>Cupons e ofertas relâmpago caem primeiro no grupo.</p>
         <a data-whatsapp-cta class="cta" href="https://chat.whatsapp.com/D24YD5tXxzQ1RdY795Bg6G">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20.2 11.7a8.1 8.1 0 0 1-12 7l-4.1 1.1 1.1-4a8.1 8.1 0 1 1 15-4.1Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 8.5c.2-.4.4-.4.7-.4h.3c.2 0 .4.1.5.4l.8 1.8c.1.2.1.4-.1.6l-.5.6c-.2.2-.2.4 0 .6.6 1 1.4 1.7 2.4 2.2.2.1.4.1.6-.1l.7-.8c.2-.2.4-.3.6-.2l1.7.8c.3.1.4.3.4.5 0 .3-.1 1-.6 1.4-.5.5-1.1.7-1.8.7-.8 0-2.1-.3-3.7-1.6-1.5-1.2-2.6-2.9-2.9-3.7-.3-.8-.1-1.6.2-2.1.3-.5.6-.7.7-.7Z" fill="currentColor"/></svg>
-          <span>ENTRAR NO WHATSAPP AGORA</span>
+          <span>ENTRAR GRÁTIS NO WHATSAPP</span>
         </a>
       </section>
       <p class="disclaimer">Descontos de até 60% em itens selecionados. Preços, cupons e disponibilidade podem mudar.</p>
@@ -331,7 +336,8 @@
         const image = document.createElement("img");
         image.dataset.src = review.image;
         image.alt = review.alt;
-        image.loading = "eager";
+        image.loading = index === 0 ? "eager" : "lazy";
+        if (index === 0) image.fetchPriority = "high";
         image.decoding = "async";
         image.draggable = false;
         card.append(image);
