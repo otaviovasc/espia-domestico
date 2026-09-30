@@ -56,8 +56,9 @@ export function CampaignProgressCard({ progress }: { progress: CampaignProgress 
   }, [])
 
   const { totalPlanned, sent, failed, skipped, remaining } = progress
-  const done = sent + failed + skipped
-  const pct = totalPlanned > 0 ? Math.round((done / totalPlanned) * 100) : 0
+  const done = Math.min(sent + failed + skipped, totalPlanned)
+  const pct = totalPlanned > 0 ? Math.min(100, Math.round((done / totalPlanned) * 100)) : 0
+  const resends = progress.resends ?? Math.max(0, (progress.totalSends ?? sent) - sent)
   const isRunning = progress.status === 'RUNNING'
   const running = isRunning && !progress.stalled && remaining > 0
 
@@ -83,6 +84,11 @@ export function CampaignProgressCard({ progress }: { progress: CampaignProgress 
         <Stat icon={SkipForward} label="ignoradas" value={skipped} tone="text-zinc-400" />
         <Stat icon={Send} label="restantes" value={remaining} tone="text-violet-600" />
       </div>
+      {resends > 0 && (
+        <p className="mt-2 text-xs text-amber-700">
+          +{resends} reenvio(s) além dos pares únicos — o progresso conta cada par uma vez.
+        </p>
+      )}
 
       {/* Next-send ETA — the key info while running */}
       {running && (

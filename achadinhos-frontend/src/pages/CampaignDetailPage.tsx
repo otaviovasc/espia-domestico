@@ -295,7 +295,11 @@ export default function CampaignDetailPage() {
               variant="secondary"
               onClick={() => resumeM.mutate()}
               disabled={resumeM.isPending}
-              title="Reinicia o envio de onde parou (não reenvia o que já foi enviado)"
+              title={
+                allowResend
+                  ? 'Reinicia o envio de onde parou (pares já enviados SERÃO enviados de novo — reenvio ativado)'
+                  : 'Reinicia o envio de onde parou (não reenvia o que já foi enviado)'
+              }
             >
               <RotateCw size={16} /> {c.stalled ? 'Retomar envio' : 'Reiniciar envio'}
             </Button>
@@ -320,8 +324,12 @@ export default function CampaignDetailPage() {
       {c.status === 'RUNNING' && c.stalled && (
         <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
           Este envio foi interrompido (o servidor reiniciou durante a campanha). Clique em
-          <strong> Retomar envio</strong> para continuar de onde parou — os produtos já enviados
-          não serão repetidos.
+          <strong> Retomar envio</strong> para continuar de onde parou
+          {allowResend ? (
+            <> — atenção: com o reenvio ativado, os pares já enviados SERÃO enviados de novo.</>
+          ) : (
+            <> — os produtos já enviados não serão repetidos.</>
+          )}
         </div>
       )}
 

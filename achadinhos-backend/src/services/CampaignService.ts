@@ -392,6 +392,10 @@ export class CampaignService {
     failed: number
     skipped: number
     remaining: number
+    /** Raw successful provider accepts, including resends of the same pair. */
+    totalSends: number
+    /** Extra sends beyond the first per pair (totalSends - sent). */
+    resends: number
     lastSentAt: string | null
     nextSendEtaMinAt: string | null
     nextSendEtaMaxAt: string | null
@@ -402,9 +406,37 @@ export class CampaignService {
     const campaign = await this.getForUser(userId, campaignId)
     const safety = campaign.safety
     const totalPlanned = campaign.offers.length * campaign.groups.length
-    const sent = campaign.totalSent ?? 0
-    const failed = campaign.totalFailed ?? 0
-    const skipped = campaign.totalSkipped ?? 0
+    // Counters on the campaign row are cumulative log counts: restarting with
+    // allowResend appends a new log row per resend, so raw totals can exceed
+    // totalPlanned. Progress must be computed on DISTINCT pairs so it never
+    // passes 100%.
+    const logs = await CampaignLog.findAll({
+      where: { campaignId },
+      attributes: ['success', 'offerIdentity', 'offerUrl', 'groupId'],
+    })
+    const pairKey = (log: { offerIdentity: string | null; offerUrl: string | null; groupId: string }): string =>
+      `${log.offerIdentity?.trim() || log.offerUrl?.trim() || '?'}\u0000${log.groupId}`
+    const sentPairs = new Set<string>()
+    const failedPairs = new Set<string>()
+    let totalSends = 0
+    for (const log of logs) {
+      const key = pairKey(log)
+      if (log.success) {
+        totalSends += 1
+        sentPairs.add(key)
+      } else {
+        failedPairs.add(key)
+      }
+    }
+    // A pair that eventually succeeded counts as sent, not failed.
+    for (const key of sentPairs) failedPairs.delete(key)
+    const sent = Math.min(sentPairs.size, totalPlanned)
+    const failed = Math.min(failedPairs.size, Math.max(0, totalPlanned - sent))
+    const skipped = Math.min(
+      campaign.totalSkipped ?? 0,
+      Math.max(0, totalPlanned - sent - failed),
+    )
+    const resends = Math.max(0, totalSends - sentPairs.size)
     const remaining = Math.max(0, totalPlanned - sent - failed - skipped)
 
     // Last successful send timestamp (drives the next-send estimate).
@@ -440,6 +472,8 @@ export class CampaignService {
       failed,
       skipped,
       remaining,
+      totalSends,
+      resends,
       lastSentAt: lastSentAt ? lastSentAt.toISOString() : null,
       nextSendEtaMinAt: nextMin ? nextMin.toISOString() : null,
       nextSendEtaMaxAt: nextMax ? nextMax.toISOString() : null,

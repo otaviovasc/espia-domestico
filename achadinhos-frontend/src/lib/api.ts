@@ -262,6 +262,10 @@ export interface CampaignProgress {
   failed: number
   skipped: number
   remaining: number
+  /** Raw successful sends including resends (optional for older backends). */
+  totalSends?: number
+  /** Extra sends beyond the first per pair. */
+  resends?: number
   lastSentAt: string | null
   nextSendEtaMinAt: string | null
   nextSendEtaMaxAt: string | null
