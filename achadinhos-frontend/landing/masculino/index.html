@@ -215,6 +215,7 @@
       }
       /* ===== Otimização conversão mobile-first: hero compacto, CTA acima da dobra ===== */
       @media (max-width: 639px) {
+        .topbar { display: none !important; }
         #topo { padding-top: 20px !important; }
         .hero-title { font-size: clamp(42px, 12.5vw, 76px) !important; }
         .hero-copy { margin-top: 14px !important; }
@@ -224,7 +225,7 @@
     </style>
   </head>
   <body>
-    <header class="shell flex items-center justify-between gap-4 pt-4">
+    <header class="shell topbar flex items-center justify-between gap-4 pt-4">
       <a class="flex min-w-0 items-center gap-3 text-inherit no-underline" href="#topo" aria-label="Espia Doméstico — início">
         <img class="brand-mark" src="/masculino/assets/male/logo-masculino.webp" alt="" width="58" height="58" fetchpriority="high" />
         <span class="min-w-0">
