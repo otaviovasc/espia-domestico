@@ -147,7 +147,7 @@ async function joinSegments(
     // discontinuous time base. Normalise every input before joining so one bad
     // segment cannot create a visible freeze at the next cut.
     filters.push(
-      `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=${fps},tpad=stop_mode=clone:stop_duration=${expectedDuration.toFixed(3)},trim=duration=${expectedDuration.toFixed(3)},setpts=PTS-STARTPTS[${label}]`,
+      `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=${fps},tpad=stop_mode=clone:stop_duration=${expectedDuration.toFixed(3)},trim=duration=${expectedDuration.toFixed(3)},setpts=PTS-STARTPTS,fps=${fps},settb=AVTB[${label}]`,
     )
     return label
   })
@@ -160,8 +160,10 @@ async function joinSegments(
   for (let index = 1; index < segments.length; index += 1) {
     if (transition.preset === 'cut') break
     const next = index === segments.length - 1 ? 'vout' : `xf${index}`
+    // FFmpeg 7.x clears frame-rate metadata on xfade output. Restore it
+    // before feeding the next transition, using the same time base as inputs.
     filters.push(
-      `[${current}][${segmentLabels[index]}]xfade=transition=${XFADE_TRANSITIONS[transition.preset]}:duration=${transition.durationSeconds.toFixed(3)}:offset=${cuts[index].toFixed(3)}[${next}]`,
+      `[${current}][${segmentLabels[index]}]xfade=transition=${XFADE_TRANSITIONS[transition.preset]}:duration=${transition.durationSeconds.toFixed(3)}:offset=${cuts[index].toFixed(3)},fps=${fps},settb=AVTB[${next}]`,
     )
     current = next
   }
