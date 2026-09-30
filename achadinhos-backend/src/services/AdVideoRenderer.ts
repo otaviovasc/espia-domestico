@@ -1,14 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { injectable } from 'tsyringe'
-import { Resvg } from '@resvg/resvg-js'
-import { env } from '@/config/env'
 import { AdAsset } from '@/database/models/AdAsset'
 import type { AdRenderJob, AdRenderOutput } from '@/database/models/AdRenderJob'
 import type { AdProjectConfig } from '@/dtos/adProject'
 import { adMediaRoot, runProcess } from '@/services/AdMediaService'
+import { sfxFilter } from '@/services/adTransitionSfx'
+import { createCaptionArtwork, rasterizeCaptionArtwork } from '@/services/adCaptionArtwork'
 import {
   buildGlowGraph,
   buildLinearVisualEffectFilter,
@@ -29,96 +28,8 @@ function rotated<T>(values: T[], offset: number): T[] {
   return [...values.slice(normalized), ...values.slice(0, normalized)]
 }
 
-function filterEscape(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "\\'")
-}
-
-const TWEMOJI_DIR = path.dirname(require.resolve('@twemoji/svg/package.json'))
-const EMOJI_PATTERN = /\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)*/gu
-
-function twemojiPath(grapheme: string): string | null {
-  const code = [...grapheme]
-    .map((character) => character.codePointAt(0)!)
-    .filter((point) => point !== 0xfe0f)
-    .map((point) => point.toString(16))
-    .join('-')
-  const candidate = path.join(TWEMOJI_DIR, `${code}.svg`)
-  return existsSync(candidate) ? candidate : null
-}
-
-function splitSupportedEmoji(value: string): { text: string; emojiPaths: string[] } {
-  const emojiPaths: string[] = []
-  let text = ''
-  let offset = 0
-  for (const match of value.matchAll(EMOJI_PATTERN)) {
-    const index = match.index ?? 0
-    text += value.slice(offset, index)
-    const assetPath = twemojiPath(match[0])
-    if (assetPath) emojiPaths.push(assetPath)
-    else text += match[0]
-    offset = index + match[0].length
-  }
-  text += value.slice(offset)
-  return { text: text.replace(/\s{2,}/g, ' ').trim(), emojiPaths }
-}
-
-async function createEmojiOverlay(
-  emojiPaths: string[],
-  outputPath: string,
-  config: AdProjectConfig,
-  signal?: AbortSignal,
-): Promise<void> {
-  signal?.throwIfAborted()
-  const size = Math.round(config.textStyle.fontSize * 1.05)
-  const gap = Math.round(size * 0.18)
-  const totalWidth = emojiPaths.length * size + Math.max(0, emojiPaths.length - 1) * gap
-  const startX = (config.output.width - totalWidth) / 2
-  const centerY = config.output.height * (config.textStyle.positionY / 100)
-  const y = Math.max(12, centerY - size * 1.55)
-  const images: string[] = []
-  for (let index = 0; index < emojiPaths.length; index += 1) {
-    const svg = await readFile(emojiPaths[index])
-    images.push(
-      `<image x="${startX + index * (size + gap)}" y="${y}" width="${size}" height="${size}" href="data:image/svg+xml;base64,${svg.toString('base64')}"/>`,
-    )
-  }
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${config.output.width}" height="${config.output.height}">${images.join('')}</svg>`
-  const png = new Resvg(svg, {
-    fitTo: { mode: 'original' },
-    background: 'rgba(0,0,0,0)',
-  })
-    .render()
-    .asPng()
-  signal?.throwIfAborted()
-  await writeFile(outputPath, png)
-}
-
 function ffconcatEscape(value: string): string {
   return value.replace(/'/g, "'\\''")
-}
-
-function wrapText(value: string, maxChars: number, maxLines = 3): string {
-  const paragraphs = value.split(/\n/)
-  const lines = paragraphs
-    .flatMap((paragraph) => {
-      const words = paragraph.trim().split(/\s+/)
-      const lines: string[] = []
-      let line = ''
-      for (const word of words) {
-        if (!line) line = word
-        else if (`${line} ${word}`.length <= maxChars) line += ` ${word}`
-        else {
-          lines.push(line)
-          line = word
-        }
-      }
-      if (line) lines.push(line)
-      return lines.length ? lines : ['']
-    })
-  if (lines.length <= maxLines) return lines.join('\n')
-  const visible = lines.slice(0, maxLines)
-  visible[maxLines - 1] = `${visible[maxLines - 1].slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`
-  return visible.join('\n')
 }
 
 function fixedCuts(duration: number, seconds: number): number[] {
@@ -219,30 +130,38 @@ async function joinSegments(
   cuts: number[],
   outputPath: string,
   transition: AdProjectConfig['transition'],
+  fps: AdProjectConfig['output']['fps'],
   signal?: AbortSignal,
 ): Promise<void> {
-  if (transition.preset === 'cut' || segments.length < 2) {
-    const concatFile = path.join(path.dirname(outputPath), 'segments.ffconcat')
-    await writeFile(
-      concatFile,
-      `ffconcat version 1.0\n${segments.map((item) => `file '${ffconcatEscape(item)}'`).join('\n')}\n`,
-    )
-    await runProcess(
-      'ffmpeg',
-      ['-v', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', concatFile, '-c', 'copy', outputPath],
-      { signal },
-    )
-    return
-  }
-
   const args = ['-v', 'error', '-y']
   for (const segment of segments) args.push('-i', segment)
   const filters: string[] = []
-  let current = '0:v'
+  const segmentLabels = segments.map((_, index) => {
+    const baseDuration = cuts[index + 1] - cuts[index]
+    const transitionTail = transition.preset !== 'cut' && index < segments.length - 1
+      ? transition.durationSeconds
+      : 0
+    const expectedDuration = baseDuration + transitionTail
+    const label = `seg${index}`
+    // Separately encoded MP4 segments may carry a long final packet or a
+    // discontinuous time base. Normalise every input before joining so one bad
+    // segment cannot create a visible freeze at the next cut.
+    filters.push(
+      `[${index}:v]settb=AVTB,setpts=PTS-STARTPTS,fps=${fps},tpad=stop_mode=clone:stop_duration=${expectedDuration.toFixed(3)},trim=duration=${expectedDuration.toFixed(3)},setpts=PTS-STARTPTS[${label}]`,
+    )
+    return label
+  })
+
+  if (transition.preset === 'cut' || segments.length < 2) {
+    filters.push(`${segmentLabels.map((label) => `[${label}]`).join('')}concat=n=${segments.length}:v=1:a=0[vout]`)
+  }
+
+  let current = segmentLabels[0]
   for (let index = 1; index < segments.length; index += 1) {
+    if (transition.preset === 'cut') break
     const next = index === segments.length - 1 ? 'vout' : `xf${index}`
     filters.push(
-      `[${current}][${index}:v]xfade=transition=${XFADE_TRANSITIONS[transition.preset]}:duration=${transition.durationSeconds.toFixed(3)}:offset=${cuts[index].toFixed(3)}[${next}]`,
+      `[${current}][${segmentLabels[index]}]xfade=transition=${XFADE_TRANSITIONS[transition.preset]}:duration=${transition.durationSeconds.toFixed(3)}:offset=${cuts[index].toFixed(3)}[${next}]`,
     )
     current = next
   }
@@ -253,6 +172,7 @@ async function joinSegments(
     '-c:v', 'libx264',
     '-preset', 'veryfast',
     '-crf', '20',
+    '-r', String(fps),
     '-pix_fmt', 'yuv420p',
     '-movflags', '+faststart',
     outputPath,
@@ -260,32 +180,19 @@ async function joinSegments(
   await runProcess('ffmpeg', args, { signal })
 }
 
-function sfxFilter(
-  preset: AdProjectConfig['transition']['sfx'],
-  volume: number,
-  delaySeconds: number,
-  label: string,
-): string {
-  const delay = Math.round(delaySeconds * 1000)
-  const gain = volume.toFixed(3)
-  if (preset === 'whoosh') {
-    return `anoisesrc=color=pink:amplitude=0.35:duration=0.32:sample_rate=48000,highpass=f=700,lowpass=f=6500,afade=t=in:st=0:d=0.04,afade=t=out:st=0.12:d=0.2,volume=${gain},adelay=${delay}:all=1[${label}]`
-  }
-  if (preset === 'pop') {
-    return `sine=frequency=210:duration=0.14:sample_rate=48000,afade=t=out:st=0.025:d=0.115,volume=${gain},adelay=${delay}:all=1[${label}]`
-  }
-  return `sine=frequency=1800:duration=0.055:sample_rate=48000,afade=t=out:st=0.012:d=0.043,volume=${gain},adelay=${delay}:all=1[${label}]`
-}
 
 async function detectBeatCuts(
   musicPath: string,
   duration: number,
   sourceStart = 0,
+  timelineStart = 0,
+  timelineEnd = duration,
   signal?: AbortSignal,
 ): Promise<{ cuts: number[]; timingSource: 'beat' | 'fallback' }> {
+  const trackDuration = Math.max(0.01, Math.min(duration, timelineEnd) - timelineStart)
   const pcm = await runProcess(
     'ffmpeg',
-    ['-v', 'error', '-stream_loop', '-1', '-ss', sourceStart.toFixed(3), '-i', musicPath, '-t', String(duration), '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'],
+    ['-v', 'error', '-stream_loop', '-1', '-ss', sourceStart.toFixed(3), '-i', musicPath, '-t', String(trackDuration), '-ac', '1', '-ar', '8000', '-f', 's16le', 'pipe:1'],
     { captureStdout: true, signal },
   )
   const samplesPerWindow = 400 // 50ms at 8kHz
@@ -304,7 +211,7 @@ async function detectBeatCuts(
   const cuts = [0]
   let last = 0
   for (let i = 1; i < energies.length - 1; i += 1) {
-    const time = i * 0.05
+    const time = timelineStart + i * 0.05
     if (
       time - last >= 0.7 &&
       energies[i] >= threshold &&
@@ -323,13 +230,55 @@ async function detectBeatCuts(
   while (duration - filled[filled.length - 1] > 4) filled.push(filled[filled.length - 1] + 2.5)
   if (duration - filled[filled.length - 1] > 0.2) filled.push(duration)
   else filled[filled.length - 1] = duration
-  return cuts.length >= 2
-    ? { cuts: filled.length >= 3 ? filled : fixedCuts(duration, 2.5), timingSource: 'beat' }
+  return cuts.length >= 2 && filled.length >= 3
+    ? { cuts: filled, timingSource: 'beat' }
     : { cuts: fixedCuts(duration, 2.5), timingSource: 'fallback' }
 }
 
 @injectable()
 export class AdVideoRenderer {
+  async getTiming(
+    config: AdProjectConfig,
+    music: AdAsset[],
+    signal?: AbortSignal,
+  ): Promise<{ cuts: number[]; timingSource: 'fixed' | 'beat' | 'fallback' }> {
+    const duration = config.output.durationSeconds
+    if (config.timing.mode === 'fixed') {
+      return {
+        cuts: cutsWithHook(config, fixedCuts(duration, config.timing.seconds)),
+        timingSource: 'fixed',
+      }
+    }
+    const configuredTracks = config.musicTracks?.length
+      ? config.musicTracks
+      : config.musicAssetId
+        ? [{
+            assetId: config.musicAssetId,
+            volume: config.musicVolume ?? 0.8,
+            startSeconds: 0,
+            endSeconds: null,
+            sourceStartSeconds: 0,
+            fadeInSeconds: 0,
+            fadeOutSeconds: 0.8,
+          }]
+        : []
+    const firstTrack = configuredTracks[0]
+    const firstAsset = firstTrack
+      ? music.find((asset) => asset.id === firstTrack.assetId)
+      : undefined
+    const timing = firstTrack && firstAsset
+      ? await detectBeatCuts(
+          firstAsset.storagePath,
+          duration,
+          firstTrack.sourceStartSeconds,
+          firstTrack.startSeconds,
+          firstTrack.endSeconds ?? duration,
+          signal,
+        )
+      : { cuts: fixedCuts(duration, 2.5), timingSource: 'fallback' as const }
+    return { ...timing, cuts: cutsWithHook(config, timing.cuts) }
+  }
+
   async render(
     job: AdRenderJob,
     clips: AdAsset[],
@@ -356,20 +305,8 @@ export class AdVideoRenderer {
     const musicTracks = configuredTracks
       .map((track) => ({ track, asset: musicById.get(track.assetId) }))
       .filter((item): item is { track: typeof configuredTracks[number]; asset: AdAsset } => Boolean(item.asset))
-    const beatTrack = musicTracks[0]
-    const timing =
-      config.timing.mode === 'beat' && beatTrack
-        ? await detectBeatCuts(
-            beatTrack.asset.storagePath,
-            duration,
-            beatTrack.track.sourceStartSeconds,
-            signal,
-          )
-        : {
-            cuts: fixedCuts(duration, config.timing.mode === 'fixed' ? config.timing.seconds : 2.5),
-            timingSource: config.timing.mode === 'fixed' ? ('fixed' as const) : ('fallback' as const),
-          }
-    const cuts = cutsWithHook(config, timing.cuts)
+    const timing = await this.getTiming(config, music, signal)
+    const cuts = timing.cuts
     const { timingSource } = timing
     const requestedTransition = transitionSettings(config)
     const shortestSegment = Math.min(...cuts.slice(1).map((cut, index) => cut - cuts[index]))
@@ -478,39 +415,41 @@ export class AdVideoRenderer {
         }
 
         const silentVideo = path.join(variationDir, 'silent.mp4')
-        await joinSegments(segments, cuts, silentVideo, transition, signal)
+        await joinSegments(segments, cuts, silentVideo, transition, config.output.fps, signal)
         await advanceProgress()
 
-        const drawFilters: string[] = []
-        const emojiOverlays: Array<{ path: string; start: number; end: number }> = []
+        const captionOverlays: Array<{ path: string; start: number; end: number }> = []
         for (let index = 0; index < cuts.length - 1; index += 1) {
-          const textFile = path.join(variationDir, `text-${String(index).padStart(3, '0')}.txt`)
           const displayedText = index === 0 && config.hook?.enabled && config.hook.text
             ? config.hook.text
             : textOrder[index % textOrder.length]
-          const split = splitSupportedEmoji(displayedText)
-          const maxChars = Math.max(
-            12,
-            Math.min(30, Math.floor(config.output.width / (config.textStyle.fontSize * 0.55))),
-          )
-          await writeFile(textFile, wrapText(split.text, maxChars))
-          if (split.emojiPaths.length) {
-            const overlayPath = path.join(variationDir, `emoji-${String(index).padStart(3, '0')}.png`)
-            await createEmojiOverlay(split.emojiPaths, overlayPath, config, signal)
-            emojiOverlays.push({ path: overlayPath, start: cuts[index], end: cuts[index + 1] })
-          }
-          const font = env.AD_FONT_FILE
-            ? `fontfile='${filterEscape(path.resolve(env.AD_FONT_FILE))}'`
-            : `font='DejaVu Sans\\:style=Bold'`
-          drawFilters.push(
-            `drawtext=${font}:textfile='${filterEscape(textFile)}':expansion=none:fontsize=${config.textStyle.fontSize}:fontcolor=${config.textStyle.fontColor}:borderw=${config.textStyle.borderWidth}:bordercolor=${config.textStyle.borderColor}:line_spacing=12:x=(w-text_w)/2:y=max(0\\,min(h-text_h\\,h*${config.textStyle.positionY / 100}-text_h/2)):enable='between(t,${cuts[index].toFixed(3)},${cuts[index + 1].toFixed(3)})'`,
-          )
+          signal?.throwIfAborted()
+          const artwork = createCaptionArtwork({
+            text: displayedText,
+            output: config.output,
+            textStyle: config.textStyle,
+          })
+          const overlayPath = path.join(variationDir, `caption-${String(index).padStart(3, '0')}.png`)
+          await writeFile(overlayPath, rasterizeCaptionArtwork(artwork))
+          captionOverlays.push({ path: overlayPath, start: cuts[index], end: cuts[index + 1] })
         }
 
         const tempOutput = path.join(variationDir, 'output.mp4')
-        const args = ['-v', 'error', '-y', '-i', silentVideo]
-        for (const overlay of emojiOverlays) args.push('-loop', '1', '-i', overlay.path)
-        const firstMusicInput = emojiOverlays.length + 1
+        const captionConcatPath = path.join(variationDir, 'captions.ffconcat')
+        const captionConcatLines = ['ffconcat version 1.0']
+        captionOverlays.forEach((overlay, index) => {
+          captionConcatLines.push(`file '${ffconcatEscape(overlay.path)}'`, 'option framerate 1000')
+          if (index < captionOverlays.length - 1) {
+            captionConcatLines.push(`duration ${(overlay.end - overlay.start).toFixed(6)}`)
+          }
+        })
+        await writeFile(captionConcatPath, `${captionConcatLines.join('\n')}\n`)
+        const args = [
+          '-v', 'error', '-y',
+          '-i', silentVideo,
+          '-f', 'concat', '-safe', '0', '-i', captionConcatPath,
+        ]
+        const firstMusicInput = 2
         for (const { track, asset } of musicTracks) {
           args.push(
             '-stream_loop', '-1',
@@ -524,14 +463,12 @@ export class AdVideoRenderer {
           complexFilters.push(buildGlowGraph(currentLabel, 'glowed', config, `fx${variation}`))
           currentLabel = 'glowed'
         }
-        emojiOverlays.forEach((overlay, index) => {
-          const nextLabel = `emoji${index}`
-          complexFilters.push(
-            `[${currentLabel}][${index + 1}:v]overlay=enable='between(t,${overlay.start.toFixed(3)},${overlay.end.toFixed(3)})'[${nextLabel}]`,
-          )
-          currentLabel = nextLabel
-        })
-        complexFilters.push(`[${currentLabel}]${drawFilters.join(',')}[vout]`)
+        complexFilters.push('[1:v]settb=AVTB,setpts=PTS-STARTPTS[captionstream]')
+        complexFilters.push(
+          `[${currentLabel}][captionstream]overlay=eof_action=repeat:shortest=0[captioned]`,
+        )
+        currentLabel = 'captioned'
+        complexFilters.push(`[${currentLabel}]null[vout]`)
         const transitionTimes = cuts.slice(1, -1)
         const hasSfx = transition.sfx !== 'none' && transitionTimes.length > 0
         if (musicTracks.length || hasSfx) {

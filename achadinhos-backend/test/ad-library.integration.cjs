@@ -13,6 +13,7 @@ const { User, USER_ROLE_ENUM } = require('../dist/database/models/User.js')
 const { createApp } = require('../dist/app.js')
 const { generateToken } = require('../dist/middleware/auth.js')
 const { AdRenderJob } = require('../dist/database/models/AdRenderJob.js')
+const { AdProject } = require('../dist/database/models/AdProject.js')
 const {
   cancelAdRender,
   startAdRenderQueue,
@@ -148,6 +149,30 @@ test('ad library stores media, renders a beat-synced variation and serves ranges
     })
     assert.equal(created.response.status, 201)
     projectId = created.body.data.id
+
+    // Projects saved by older releases can lack newly added creative fields.
+    // Reads and new render snapshots must restore schema defaults.
+    await AdProject.update({
+      config: {
+        variationCount: 1,
+        texts: ['Legacy copy'],
+        selectedClipIds: [],
+        timing: { mode: 'fixed', seconds: 2.5 },
+      },
+    }, { where: { id: projectId } })
+    const legacyProject = await jsonRequest(`${base}/${projectId}`)
+    assert.equal(legacyProject.response.status, 200)
+    assert.equal(legacyProject.body.data.config.transition.preset, 'cut')
+    assert.equal(legacyProject.body.data.config.visualEffects.preset, 'natural')
+    assert.equal(legacyProject.body.data.config.hook.enabled, false)
+    assert.equal(legacyProject.body.data.config.output.fps, 30)
+    const presetOnly = await jsonRequest(`${base}/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ config: { ...config, visualEffects: { preset: 'vivid' } } }),
+    })
+    assert.equal(presetOnly.response.status, 200)
+    assert.equal(presetOnly.body.data.config.visualEffects.saturation, 1.28)
+    assert.equal(presetOnly.body.data.config.visualEffects.sharpness, 0.55)
 
     const upload = async (kind, files) => {
       const body = new FormData()

@@ -12,6 +12,15 @@ export const AdTextStyleSchema = z
   })
   .default({})
 
+export const PreviewAdCaptionsSchema = z.object({
+  texts: z.array(z.string().min(1).max(280)).min(1).max(30),
+  output: z.object({
+    width: z.number().int().min(360).max(2160),
+    height: z.number().int().min(640).max(3840),
+  }),
+  textStyle: AdTextStyleSchema,
+})
+
 export const AdClipEditSchema = z.object({
   trimStart: z.number().min(0).max(3600).default(0),
   trimEnd: z.number().min(0).max(3600).nullable().default(null),
@@ -40,21 +49,31 @@ export const AdTransitionSchema = z
   })
   .default({})
 
+const visualPresetValues = {
+  natural: { brightness: 0, contrast: 1, saturation: 1, sharpness: 0, temperature: 0, vignette: 0, grain: 0, glow: 0 },
+  'clean-product': { brightness: 0.03, contrast: 1.07, saturation: 1.08, sharpness: 0.65, temperature: -0.03, vignette: 0.03, grain: 0, glow: 0.08 },
+  'warm-ugc': { brightness: 0.02, contrast: 1.04, saturation: 1.1, sharpness: 0.3, temperature: 0.25, vignette: 0.05, grain: 0.03, glow: 0.06 },
+  vivid: { brightness: 0.02, contrast: 1.1, saturation: 1.28, sharpness: 0.55, temperature: 0.03, vignette: 0.06, grain: 0.02, glow: 0.08 },
+  cinematic: { brightness: -0.02, contrast: 1.14, saturation: 0.9, sharpness: 0.35, temperature: -0.12, vignette: 0.25, grain: 0.04, glow: 0.06 },
+  custom: { brightness: 0, contrast: 1, saturation: 1, sharpness: 0, temperature: 0, vignette: 0, grain: 0, glow: 0 },
+} as const
+
 export const AdVisualEffectsSchema = z
   .object({
     preset: z
       .enum(['natural', 'clean-product', 'warm-ugc', 'vivid', 'cinematic', 'custom'])
       .default('natural'),
-    brightness: z.number().min(-1).max(1).default(0),
-    contrast: z.number().min(0.5).max(2).default(1),
-    saturation: z.number().min(0).max(3).default(1),
-    sharpness: z.number().min(0).max(2).default(0),
-    temperature: z.number().min(-1).max(1).default(0),
-    vignette: z.number().min(0).max(1).default(0),
-    grain: z.number().min(0).max(1).default(0),
-    glow: z.number().min(0).max(1).default(0),
+    brightness: z.number().min(-1).max(1).optional(),
+    contrast: z.number().min(0.5).max(2).optional(),
+    saturation: z.number().min(0).max(3).optional(),
+    sharpness: z.number().min(0).max(2).optional(),
+    temperature: z.number().min(-1).max(1).optional(),
+    vignette: z.number().min(0).max(1).optional(),
+    grain: z.number().min(0).max(1).optional(),
+    glow: z.number().min(0).max(1).optional(),
   })
   .default({})
+  .transform((effects) => ({ ...visualPresetValues[effects.preset], ...effects }))
 
 export const AdHookSchema = z
   .object({
@@ -130,6 +149,10 @@ export const UpdateAdProjectSchema = z.object({
   config: AdProjectConfigSchema.optional(),
 })
 
+export const PreviewAdTimingSchema = z.object({
+  config: AdProjectConfigSchema,
+})
+
 export const AdAssetKindSchema = z.enum(['clip', 'music'])
 
 export const ImportAdMusicSchema = z.object({
@@ -142,3 +165,4 @@ export type CreateAdProjectInput = z.infer<typeof CreateAdProjectSchema>
 export type UpdateAdProjectInput = z.infer<typeof UpdateAdProjectSchema>
 export type ImportAdMusicInput = z.infer<typeof ImportAdMusicSchema>
 export type AdAssetKind = z.infer<typeof AdAssetKindSchema>
+export type PreviewAdCaptionsInput = z.infer<typeof PreviewAdCaptionsSchema>

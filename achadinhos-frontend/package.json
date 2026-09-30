@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test:preview": "node --experimental-strip-types --test test/ad-preview-parity.test.mjs",
     "preview": "vite preview",
     "start": "serve dist -l ${PORT:-5273}",
     "lint": "eslint ."

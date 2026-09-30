@@ -7,6 +7,7 @@ import { AdProject } from '@/database/models/AdProject'
 import { AdRenderJob, type AdRenderOutput } from '@/database/models/AdRenderJob'
 import {
   AdProjectConfigSchema,
+  type AdProjectConfig,
   type CreateAdProjectInput,
   type ImportAdMusicInput,
   type UpdateAdProjectInput,
@@ -15,6 +16,29 @@ import { ConflictError, NotFoundError, UnprocessableError } from '@/middleware/E
 import { AdMediaService, serializeAdAsset } from '@/services/AdMediaService'
 import { cleanupImportedMusic, downloadDirectMusic } from '@/services/AdMusicImport'
 import { cancelAdRender, enqueueAdRender } from '@/services/AdRenderQueue'
+import { AdVideoRenderer } from '@/services/AdVideoRenderer'
+
+type AdTimingResult = { cuts: number[]; timingSource: 'fixed' | 'beat' | 'fallback' }
+const previewTimingCache = new Map<string, Promise<AdTimingResult>>()
+const MAX_PREVIEW_TIMING_CACHE_ENTRIES = 64
+
+function cachedTiming(key: string, compute: () => Promise<AdTimingResult>): Promise<AdTimingResult> {
+  const cached = previewTimingCache.get(key)
+  if (cached) {
+    previewTimingCache.delete(key)
+    previewTimingCache.set(key, cached)
+    return cached
+  }
+  const pending = compute().catch((error) => {
+    previewTimingCache.delete(key)
+    throw error
+  })
+  previewTimingCache.set(key, pending)
+  while (previewTimingCache.size > MAX_PREVIEW_TIMING_CACHE_ENTRIES) {
+    previewTimingCache.delete(previewTimingCache.keys().next().value!)
+  }
+  return pending
+}
 
 function serializeOutput(projectId: number, jobId: number, output: AdRenderOutput) {
   return {
@@ -38,7 +62,7 @@ export function serializeAdJob(job: AdRenderJob) {
     status: job.status,
     progress: job.progress,
     error: job.error,
-    config: job.configSnapshot,
+    config: AdProjectConfigSchema.parse(job.configSnapshot),
     outputs: job.outputs.map((output) => serializeOutput(job.projectId, job.id, output)),
     startedAt: job.startedAt,
     finishedAt: job.finishedAt,
@@ -49,7 +73,10 @@ export function serializeAdJob(job: AdRenderJob) {
 
 @injectable()
 export class AdProjectService {
-  constructor(@inject(AdMediaService) private media: AdMediaService) {}
+  constructor(
+    @inject(AdMediaService) private media: AdMediaService,
+    @inject(AdVideoRenderer) private renderer: AdVideoRenderer,
+  ) {}
 
   private async project(userId: number, projectId: number): Promise<AdProject> {
     const project = await AdProject.findOne({ where: { id: projectId, userId } })
@@ -75,7 +102,7 @@ export class AdProjectService {
         return {
           id: project.id,
           name: project.name,
-          config: project.config,
+          config: AdProjectConfigSchema.parse(project.config),
           assetCount,
           latestJob: latestJob ? serializeAdJob(latestJob) : null,
           createdAt: project.createdAt,
@@ -94,7 +121,7 @@ export class AdProjectService {
     return {
       id: project.id,
       name: project.name,
-      config: project.config,
+      config: AdProjectConfigSchema.parse(project.config),
       assets: assets.map(serializeAdAsset),
       latestJobs: jobs.map(serializeAdJob),
       createdAt: project.createdAt,
@@ -125,11 +152,12 @@ export class AdProjectService {
 
   async duplicate(userId: number, projectId: number) {
     const source = await this.project(userId, projectId)
+    const sourceConfig = AdProjectConfigSchema.parse(source.config)
     const sourceAssets = await AdAsset.findAll({ where: { projectId }, order: [['id', 'ASC']] })
     const clone = await AdProject.create({
       userId,
       name: `${source.name} (cópia)`.slice(0, 120),
-      config: { ...source.config, selectedClipIds: [], musicAssetId: null },
+      config: { ...sourceConfig, selectedClipIds: [], musicAssetId: null },
     })
     const assetMap = new Map<number, number>()
     try {
@@ -150,30 +178,30 @@ export class AdProjectService {
       }
       await clone.update({
         config: {
-          ...source.config,
-          selectedClipIds: source.config.selectedClipIds
+          ...sourceConfig,
+          selectedClipIds: sourceConfig.selectedClipIds
             .map((id) => assetMap.get(id))
             .filter((id): id is number => Boolean(id)),
           clipEdits: Object.fromEntries(
-            Object.entries(source.config.clipEdits ?? {}).flatMap(([id, edit]) => {
+            Object.entries(sourceConfig.clipEdits).flatMap(([id, edit]) => {
               const copiedId = assetMap.get(Number(id))
               return copiedId ? [[String(copiedId), edit]] : []
             }),
           ),
-          hook: source.config.hook
+          hook: sourceConfig.hook
             ? {
-                ...source.config.hook,
-                clipAssetId: source.config.hook.clipAssetId
-                  ? (assetMap.get(source.config.hook.clipAssetId) ?? null)
+                ...sourceConfig.hook,
+                clipAssetId: sourceConfig.hook.clipAssetId
+                  ? (assetMap.get(sourceConfig.hook.clipAssetId) ?? null)
                   : null,
               }
             : { enabled: false, clipAssetId: null, durationSeconds: 2, text: '' },
-          musicTracks: (source.config.musicTracks ?? []).flatMap((track) => {
+          musicTracks: sourceConfig.musicTracks.flatMap((track) => {
             const copiedId = assetMap.get(track.assetId)
             return copiedId ? [{ ...track, assetId: copiedId }] : []
           }),
-          musicAssetId: source.config.musicAssetId
-            ? (assetMap.get(source.config.musicAssetId) ?? null)
+          musicAssetId: sourceConfig.musicAssetId
+            ? (assetMap.get(sourceConfig.musicAssetId) ?? null)
             : null,
         },
       })
@@ -301,6 +329,67 @@ export class AdProjectService {
     return { asset, content: await this.media.content(asset.storagePath, rangeHeader) }
   }
 
+  async previewTiming(
+    userId: number,
+    projectId: number,
+    config: AdProjectConfig,
+  ): Promise<AdTimingResult> {
+    await this.project(userId, projectId)
+    if (config.timing.mode === 'fixed') return await this.renderer.getTiming(config, [])
+
+    const firstTrack = config.musicTracks[0] ?? (config.musicAssetId
+      ? {
+          assetId: config.musicAssetId,
+          volume: config.musicVolume,
+          startSeconds: 0,
+          endSeconds: null,
+          sourceStartSeconds: 0,
+          fadeInSeconds: 0,
+          fadeOutSeconds: 0.8,
+        }
+      : undefined)
+    if (!firstTrack) return await this.renderer.getTiming(config, [])
+
+    const asset = await AdAsset.findOne({
+      where: { id: firstTrack.assetId, projectId, kind: 'music' },
+    })
+    if (!asset) throw UnprocessableError('A música selecionada é inválida')
+    const trackEnd = firstTrack.endSeconds ?? config.output.durationSeconds
+    if (
+      firstTrack.startSeconds >= config.output.durationSeconds ||
+      trackEnd > config.output.durationSeconds ||
+      trackEnd - firstTrack.startSeconds < 0.1
+    ) {
+      throw UnprocessableError('O intervalo da faixa de música é inválido')
+    }
+    if (firstTrack.sourceStartSeconds >= asset.durationSeconds - 0.05) {
+      throw UnprocessableError('O início da faixa está fora da duração da música')
+    }
+
+    const key = JSON.stringify({
+      storagePath: asset.storagePath,
+      assetDuration: asset.durationSeconds,
+      outputDuration: config.output.durationSeconds,
+      track: {
+        sourceStartSeconds: firstTrack.sourceStartSeconds,
+        startSeconds: firstTrack.startSeconds,
+        endSeconds: firstTrack.endSeconds,
+      },
+      hook: {
+        enabled: config.hook.enabled,
+        durationSeconds: config.hook.durationSeconds,
+      },
+    })
+    return await cachedTiming(key, async () => {
+      const stage = await this.media.stageAssets(projectId, [asset])
+      try {
+        return await this.renderer.getTiming(config, stage.assets)
+      } finally {
+        await this.media.cleanupStage(stage)
+      }
+    })
+  }
+
   private async validateAssetSelection(
     projectId: number,
     config: AdProject['config'],
@@ -362,8 +451,9 @@ export class AdProjectService {
 
   async createJob(userId: number, projectId: number, configOverride?: unknown) {
     const project = await this.project(userId, projectId)
-    const config =
-      configOverride === undefined ? project.config : AdProjectConfigSchema.parse(configOverride)
+    const config = AdProjectConfigSchema.parse(
+      configOverride === undefined ? project.config : configOverride,
+    )
     await this.validateAssetSelection(projectId, config)
     if (!config.selectedClipIds.length) {
       throw UnprocessableError('Selecione pelo menos um clipe para renderizar')

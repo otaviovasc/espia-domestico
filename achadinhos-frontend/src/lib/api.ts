@@ -706,7 +706,29 @@ function adMediaUrl(path: string): string {
   return `${base}${path}`
 }
 
+export interface AdCaptionArtwork {
+  text: string
+  svg: string
+}
+
 export const adProjectApi = {
+  async previewSfx(preset: Exclude<AdTransitionSfx, 'none'>): Promise<ArrayBuffer> {
+    return (await api.get<ArrayBuffer>(`/ad-projects/preview/sfx/${preset}`, { responseType: 'arraybuffer' })).data
+  },
+  async previewTiming(projectId: number, config: AdProjectConfig, signal?: AbortSignal): Promise<{
+    cuts: number[]
+    timingSource: 'beat' | 'fixed' | 'fallback'
+  }> {
+    return unwrap(await api.post(`/ad-projects/${encodeURIComponent(projectId)}/preview/timing`, { config }, { signal }))
+  },
+  async previewCaptions(
+    input: { texts: string[]; output: Pick<AdProjectConfig['output'], 'width' | 'height'>; textStyle: AdProjectConfig['textStyle'] },
+    signal?: AbortSignal,
+  ): Promise<AdCaptionArtwork[]> {
+    return unwrap<{ captions: AdCaptionArtwork[] }>(
+      await api.post('/ad-projects/preview/captions', input, { signal }),
+    ).captions
+  },
   async list(): Promise<AdProjectSummary[]> {
     return unwrap<AdProjectSummary[]>(await api.get('/ad-projects'))
   },

@@ -8,11 +8,16 @@ import {
   AdProjectConfigSchema,
   CreateAdProjectSchema,
   ImportAdMusicSchema,
+  PreviewAdCaptionsSchema,
+  PreviewAdTimingSchema,
   UpdateAdProjectSchema,
 } from '@/dtos/adProject'
 import { BadRequestError, UnauthorizedError } from '@/middleware/Error/AppError'
 import { AdProjectService } from '@/services/AdProjectService'
 import type { StoredMediaContent } from '@/services/AdObjectStorage'
+import { createCaptionArtwork } from '@/services/adCaptionArtwork'
+
+import { previewTransitionSfx } from '@/services/adTransitionSfx'
 
 const IdSchema = z.coerce.number().int().positive()
 
@@ -56,6 +61,40 @@ export class AdProjectController {
 
   async list(req: Request, res: Response): Promise<void> {
     res.json({ success: true, data: await this.service.list(this.userId(req)) })
+  }
+
+  async previewCaptions(req: Request, res: Response): Promise<void> {
+    this.userId(req)
+    const input = PreviewAdCaptionsSchema.parse(req.body)
+    const captions = input.texts.map((text) => createCaptionArtwork({
+      text,
+      output: input.output,
+      textStyle: input.textStyle,
+    }))
+    res.json({
+      success: true,
+      data: { captions: captions.map(({ text, svg }) => ({ text, svg })) },
+    })
+  }
+
+  async previewSfx(req: Request, res: Response): Promise<void> {
+    this.userId(req)
+    const preset = z.enum(['whoosh', 'pop', 'click']).parse(req.params.preset)
+    const audio = await previewTransitionSfx(preset)
+    res.setHeader('Cache-Control', 'private, max-age=86400')
+    res.type('audio/wav').send(audio)
+  }
+
+  async previewTiming(req: Request, res: Response): Promise<void> {
+    const input = PreviewAdTimingSchema.parse(req.body)
+    res.json({
+      success: true,
+      data: await this.service.previewTiming(
+        this.userId(req),
+        this.id(req.params.id),
+        input.config,
+      ),
+    })
   }
 
   async get(req: Request, res: Response): Promise<void> {

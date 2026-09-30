@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type SyntheticEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AudioLines,
@@ -46,6 +46,13 @@ import CreativeControls from '@/components/CreativeControls'
 import EmojiPicker from '@/components/EmojiPicker'
 import { DEFAULT_HOOK, DEFAULT_VISUAL_EFFECTS, normaliseCreativeConfig } from '@/lib/adCreativeConfig'
 import { DEFAULT_TRANSITION, clipSequenceValidation, getAdClipEdit } from '@/lib/adClipConfig'
+import { previewClipGeometry } from '@/lib/adPreviewFraming'
+import {
+  previewClipLoops,
+  previewClipSourceTime,
+  previewDissolveMaskDataUrl,
+  previewTransitionFrame,
+} from '@/lib/adPreviewParity'
 
 const DEFAULT_CONFIG: AdProjectConfig = {
   variationCount: 5,
@@ -144,38 +151,15 @@ function formatDate(value: string): string {
   }).format(new Date(value))
 }
 
-function wrapPreviewText(value: string, maxChars: number, maxLines = 3): string {
-  const lines = value
-    .split('\n')
-    .flatMap((paragraph) => {
-      const words = paragraph.trim().split(/\s+/).filter(Boolean)
-      const paragraphLines: string[] = []
-      let line = ''
-      for (const word of words) {
-        if (!line) line = word
-        else if (`${line} ${word}`.length <= maxChars) line += ` ${word}`
-        else {
-          paragraphLines.push(line)
-          line = word
-        }
-      }
-      if (line) paragraphLines.push(line)
-      return paragraphLines.length > 0 ? paragraphLines : ['']
-    })
-  if (lines.length <= maxLines) return lines.join('\n')
-  const visible = lines.slice(0, maxLines)
-  visible[maxLines - 1] = `${visible[maxLines - 1].slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`
-  return visible.join('\n')
-}
-
-const PREVIEW_EMOJI_PATTERN = /\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)*/gu
-
-function splitPreviewEmoji(value: string): { text: string; emoji: string } {
-  const emoji = [...value.matchAll(PREVIEW_EMOJI_PATTERN)].map((match) => match[0]).join(' ')
-  return {
-    emoji,
-    text: value.replace(PREVIEW_EMOJI_PATTERN, '').replace(/\s{2,}/g, ' ').trim(),
-  }
+function playPreviewTransitionSfx(context: AudioContext, buffer: AudioBuffer, volume: number) {
+  const source = context.createBufferSource()
+  const gain = context.createGain()
+  source.buffer = buffer
+  gain.gain.value = Math.min(0.5, Math.max(0, volume)) / 0.5
+  source.connect(gain)
+  gain.connect(context.destination)
+  source.onended = () => { source.disconnect(); gain.disconnect() }
+  source.start()
 }
 
 function copyConfig(config: AdProjectConfig): AdProjectConfig {
@@ -440,6 +424,7 @@ function PreviewAudioTrack({
   elapsedSeconds,
   previewDuration,
   playing,
+  timelineReady,
   muted,
   seekVersion,
   retryToken,
@@ -454,6 +439,7 @@ function PreviewAudioTrack({
   elapsedSeconds: number
   previewDuration: number
   playing: boolean
+  timelineReady: boolean
   muted: boolean
   seekVersion: number
   retryToken: number
@@ -488,15 +474,13 @@ function PreviewAudioTrack({
     if (!element) return
     element.volume = volume
     element.muted = muted
-    if (playing) void element.play().catch(() => undefined)
+    if (Number.isFinite(element.duration) && element.duration > 0) {
+      const expectedTime = sourceTimeRef.current % element.duration
+      if (Math.abs(element.currentTime - expectedTime) > 0.15) element.currentTime = expectedTime
+    }
+    if (playing && timelineReady && active) void element.play().catch(() => undefined)
     else element.pause()
-  }, [media.url, muted, playing, volume])
-
-  useEffect(() => {
-    const element = audio.current
-    if (!element || !Number.isFinite(element.duration) || element.duration <= 0) return
-    element.currentTime = sourceTimeRef.current % element.duration
-  }, [active, media.url, seekVersion, track.assetId])
+  }, [active, media.url, muted, playing, seekVersion, timelineReady, track.assetId, volume])
 
   useEffect(() => {
     if (media.error) onError(trackKey)
@@ -512,6 +496,7 @@ function PreviewAudioTrack({
       preload="auto"
       className="ad-preview-audio sr-only"
       data-preview-audio-active={active ? 'true' : 'false'}
+      data-preview-timeline-ready={timelineReady ? 'true' : 'false'}
       onCanPlay={() => onReady(trackKey)}
       onError={() => onError(trackKey)}
       onLoadedMetadata={(event) => {
@@ -521,7 +506,22 @@ function PreviewAudioTrack({
   )
 }
 
-function PhonePreview({ project, config }: { project: AdProject; config: AdProjectConfig }) {
+function useDebouncedPreviewInput(value: string): string {
+  const [settled, setSettled] = useState(value)
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSettled(value), 120)
+    return () => window.clearTimeout(timer)
+  }, [value])
+  return settled
+}
+
+function PhonePreview({ project, config, onExactPreview, exactPreviewPending, canRenderExact }: {
+  project: AdProject
+  config: AdProjectConfig
+  onExactPreview: () => void
+  exactPreviewPending: boolean
+  canRenderExact: boolean
+}) {
   const clipAssets = (project.assets ?? []).filter((asset) => asset.kind === 'clip')
   const clips = config.selectedClipIds
     .map((assetId) => clipAssets.find((asset) => asset.id === assetId))
@@ -544,8 +544,20 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const outgoingForegroundVideo = useRef<HTMLVideoElement>(null)
   const outgoingBackgroundVideo = useRef<HTMLVideoElement>(null)
   const previewPanel = useRef<HTMLElement>(null)
+  const previewAudioContext = useRef<AudioContext | null>(null)
+  const playedTransitionSfxKey = useRef<string | null>(null)
+  const lastPreviewTickAt = useRef<number | null>(null)
   const audioActionVersion = useRef(0)
   const elapsedSecondsRef = useRef(0)
+  const ensurePreviewAudioContext = useCallback(() => {
+    if (previewAudioContext.current) return previewAudioContext.current
+    const AudioContextConstructor = window.AudioContext ?? (window as typeof window & {
+      webkitAudioContext?: typeof AudioContext
+    }).webkitAudioContext
+    if (!AudioContextConstructor) return null
+    previewAudioContext.current = new AudioContextConstructor()
+    return previewAudioContext.current
+  }, [])
   const markAudioReady = useCallback((trackKey: string) => {
     setReadyAudioKeys((current) => {
       if (current.has(trackKey)) return current
@@ -559,7 +571,7 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
       next.delete(trackKey)
       return next
     })
-  }, [])
+  }, [setFailedAudioKeys, setReadyAudioKeys])
   const markAudioFailed = useCallback((trackKey: string) => {
     setFailedAudioKeys((current) => {
       if (current.has(trackKey)) return current
@@ -573,19 +585,32 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
       next.delete(trackKey)
       return next
     })
-  }, [])
+  }, [setFailedAudioKeys, setReadyAudioKeys])
+  const beatAssetId = config.musicTracks?.[0]?.assetId ?? config.musicAssetId
+  const hasBeatMusic = Boolean(beatAssetId && project.assets?.some((asset) => asset.kind === 'music' && asset.id === beatAssetId))
+  const beatTiming = useQuery({
+    queryKey: ['ad-preview-timing', project.id, config.timing, config.musicTracks, config.musicAssetId,
+      config.output.durationSeconds, config.hook?.enabled, config.hook?.durationSeconds, config.selectedClipIds],
+    queryFn: ({ signal }) => adProjectApi.previewTiming(project.id, config, signal),
+    enabled: config.timing.mode === 'beat' && hasBeatMusic,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  })
+  const timingReady = config.timing.mode !== 'beat' || !hasBeatMusic || Boolean(beatTiming.data) || beatTiming.isError
   const previewSeconds = Math.max(0.5, config.timing.mode === 'fixed' ? config.timing.seconds : 2.5)
   const previewDuration = Math.max(1, config.output.durationSeconds)
   const previewElapsed = Math.min(elapsedSeconds, Math.max(0, previewDuration - 0.01))
   const hookConfig = { ...DEFAULT_CONFIG.hook, ...(config.hook ?? {}) }
   const hookClip = hookConfig.enabled
-    ? clipAssets.find((asset) => asset.id === hookConfig.clipAssetId)
+    ? clipAssets.find((asset) => asset.id === hookConfig.clipAssetId) ?? clips[0]
     : undefined
   const hookDuration = hookClip ? Math.min(previewDuration, hookConfig.durationSeconds) : 0
   const baseCuts = [0]
   for (let time = previewSeconds; time < previewDuration - 0.1; time += previewSeconds) baseCuts.push(time)
   baseCuts.push(previewDuration)
-  const previewCuts = hookClip && hookDuration < previewDuration - 0.1
+  const previewCuts = config.timing.mode === 'beat' && hasBeatMusic && beatTiming.data
+    ? beatTiming.data.cuts
+    : hookClip && hookDuration < previewDuration - 0.1
     ? [0, hookDuration, ...baseCuts.filter((cut) => cut > hookDuration + 0.1)]
     : hookClip
       ? [0, previewDuration]
@@ -603,9 +628,31 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const selectedClipIndex = clips.findIndex((clip) => clip.id === activeClip?.id)
   const hookActive = Boolean(hookClip && segmentIndex === 0)
   const rawActiveText = hookActive && hookConfig.text.trim() ? hookConfig.text : config.texts[textIndex] ?? ''
-  const previewCopy = splitPreviewEmoji(rawActiveText)
-  const textMaxChars = Math.max(12, Math.min(30, Math.floor(config.output.width / (config.textStyle.fontSize * 0.55))))
-  const activeText = wrapPreviewText(previewCopy.text, textMaxChars)
+  const captionTexts = [...new Set([...config.texts, ...(hookConfig.enabled && hookConfig.text.trim() ? [hookConfig.text] : [])])].filter((text) => text.trim())
+  const captionInput = JSON.stringify({
+    texts: captionTexts,
+    output: { width: config.output.width, height: config.output.height },
+    textStyle: config.textStyle,
+  })
+  const settledCaptionInput = useDebouncedPreviewInput(captionInput)
+  const captions = useQuery({
+    queryKey: ['ad-caption-artwork', settledCaptionInput],
+    queryFn: async ({ signal }) => {
+      const input = JSON.parse(settledCaptionInput) as {
+        texts: string[]
+        output: Pick<AdProjectConfig['output'], 'width' | 'height'>
+        textStyle: AdProjectConfig['textStyle']
+      }
+      const batches: string[][] = []
+      for (let index = 0; index < input.texts.length; index += 30) batches.push(input.texts.slice(index, index + 30))
+      const artwork = await Promise.all(batches.map((texts) => adProjectApi.previewCaptions({ ...input, texts }, signal)))
+      return new Map(artwork.flat().map(({ text, svg }) => [text, `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`]))
+    },
+    enabled: captionTexts.length > 0,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  })
+  const captionArtwork = captions.data?.get(rawActiveText)
   const activeEdit = activeClip ? getAdClipEdit(config, activeClip.id) : undefined
   const clipFocusX = activeEdit?.framingOverride ? activeEdit.focusX : config.framing?.focusX ?? DEFAULT_FRAMING.focusX
   const clipFocusY = activeEdit?.framingOverride ? activeEdit.focusY : config.framing?.focusY ?? DEFAULT_FRAMING.focusY
@@ -624,6 +671,21 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const segmentStart = previewCuts[segmentIndex] ?? 0
   const transitionElapsed = Math.max(0, previewElapsed - segmentStart)
   const transitionActive = segmentIndex > 0 && transitionDuration > 0 && transitionElapsed < transitionDuration
+  const transitionProgress = transitionActive && transitionDuration > 0
+    ? Math.min(1, transitionElapsed / transitionDuration)
+    : 1
+  const segmentBaseDuration = Math.max(0.01, (previewCuts[segmentIndex + 1] ?? previewDuration) - segmentStart)
+  const segmentOutputDuration = segmentBaseDuration + (
+    transition.preset !== 'cut' && segmentIndex < previewCuts.length - 2 ? transitionDuration : 0
+  )
+  const activeSourceEnd = trimEnd ?? activeClip?.durationSeconds ?? trimStart + 0.01
+  const activeSourceTime = previewClipSourceTime(
+    trimStart,
+    activeSourceEnd,
+    clipSpeed,
+    transitionElapsed,
+    segmentOutputDuration,
+  )
   const previousClip = segmentIndex > 0 && clipOrder.length > 0
     ? clipOrder[(segmentIndex - 1) % clipOrder.length]
     : null
@@ -640,7 +702,14 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const previousSourceDuration = previousTrimEnd === null
     ? Math.max(0.01, previousClip?.durationSeconds ?? 0.01)
     : Math.max(0.01, previousTrimEnd - previousTrimStart)
-  const previousSourceTime = previousTrimStart + ((previousSegmentDuration * previousSpeed) % previousSourceDuration)
+  const previousOutputDuration = previousSegmentDuration + transitionDuration
+  const previousSourceTime = previewClipSourceTime(
+    previousTrimStart,
+    previousTrimStart + previousSourceDuration,
+    previousSpeed,
+    previousSegmentDuration + transitionElapsed,
+    previousOutputDuration,
+  )
   const media = useMediaBlobUrl(
     `asset:${project.id}:${activeClip?.id ?? 'none'}`,
     activeClip ? adProjectApi.assetContentUrl(project.id, activeClip.id) : '',
@@ -677,12 +746,20 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const preparedOutgoingSpeed = transitionActive ? previousSpeed : clipSpeed
   const preparedOutgoingTrimStart = transitionActive ? previousTrimStart : trimStart
   const preparedOutgoingTrimEnd = transitionActive ? previousTrimEnd : trimEnd
-  const preparedOutgoingSourceTime = transitionActive ? previousSourceTime : trimStart
+  const preparedOutgoingSourceTime = transitionActive ? previousSourceTime : activeSourceTime
+  const activeSourceTimeRef = useRef(activeSourceTime)
+  const preparedOutgoingSourceTimeRef = useRef(preparedOutgoingSourceTime)
   const activeClipReady = Boolean(activeLayerKey && activeLayerReadyKey === activeLayerKey)
   const outgoingLayerReady = Boolean(previousMedia.url && outgoingLayerReadyKey === previousMedia.url)
   const transitionSkipped = Boolean(transitionLayerKey && skippedTransitionKey === transitionLayerKey)
   const transitionLayersReady = !transitionActive || outgoingLayerReady || transitionSkipped
   const renderedTransitionActive = transitionActive && activeClipReady && outgoingLayerReady && !transitionSkipped
+  const transitionFrame = transitionActive
+    ? previewTransitionFrame(transition.preset, transitionProgress, renderedTransitionActive)
+    : previewTransitionFrame('cut', 1, true)
+  const dissolveMaskUrl = transitionActive && renderedTransitionActive && transition.preset === 'dissolve'
+    ? previewDissolveMaskDataUrl(config.output.width, config.output.height, transitionProgress)
+    : null
   const configuredMusicTracks = config.musicTracks ?? []
   const timelineMusicTracks: AdMusicTrack[] = configuredMusicTracks.length > 0
     ? configuredMusicTracks
@@ -710,28 +787,57 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   const hasMusic = requiredAudioTrackKeys.length > 0
   const audioReady = hasMusic && requiredAudioTrackKeys.every((key) => readyAudioKeys.has(key))
   const audioFailed = requiredAudioTrackKeys.some((key) => failedAudioKeys.has(key))
+  const hasTransitionSfx = transition.sfx !== 'none' && previewCuts.length > 2
+  const hasPreviewSound = hasMusic || hasTransitionSfx
+  const sfxAudio = useQuery({
+    queryKey: ['ad-preview-sfx', transition.sfx],
+    queryFn: async () => {
+      const context = ensurePreviewAudioContext()
+      if (!context) throw new Error('Áudio não disponível neste navegador')
+      const audio = await adProjectApi.previewSfx(transition.sfx as 'whoosh' | 'pop' | 'click')
+      return await context.decodeAudioData(audio)
+    },
+    enabled: hasTransitionSfx,
+    staleTime: Infinity,
+  })
+  const sfxBuffer = sfxAudio.data
+  const sfxFailed = hasTransitionSfx && sfxAudio.isError
+  const previewSoundReady = (hasTransitionSfx && Boolean(sfxBuffer)) || audioReady
 
   useEffect(() => {
-    if (!playing || !activeClipReady || !transitionLayersReady) return undefined
+    activeSourceTimeRef.current = activeSourceTime
+    preparedOutgoingSourceTimeRef.current = preparedOutgoingSourceTime
+  }, [activeSourceTime, preparedOutgoingSourceTime])
+
+  useEffect(() => {
+    if (!playing || !activeClipReady || !transitionLayersReady || !timingReady) return undefined
+    lastPreviewTickAt.current = performance.now()
     const interval = window.setInterval(() => {
+      const tickedAt = performance.now()
+      const elapsedSinceTick = Math.min(0.2, Math.max(0, (tickedAt - (lastPreviewTickAt.current ?? tickedAt)) / 1000))
+      lastPreviewTickAt.current = tickedAt
       const current = elapsedSecondsRef.current
-      const next = (Math.min(current, previewDuration - 0.01) + 0.25) % previewDuration
+      const next = (Math.min(current, previewDuration - 0.01) + elapsedSinceTick) % previewDuration
       elapsedSecondsRef.current = next
       setElapsedSeconds(next)
       if (next < current) setSeekVersion((version) => version + 1)
-    }, 250)
-    return () => window.clearInterval(interval)
-  }, [activeClipReady, playing, previewDuration, transitionLayersReady])
+    }, 50)
+    return () => {
+      lastPreviewTickAt.current = null
+      window.clearInterval(interval)
+    }
+  }, [activeClipReady, playing, previewDuration, timingReady, transitionLayersReady])
 
   useEffect(() => {
     const videos = [foregroundVideo.current, backgroundVideo.current].filter((video): video is HTMLVideoElement => Boolean(video))
     for (const video of videos) {
       video.playbackRate = clipSpeed
-      if (Math.abs(video.currentTime - trimStart) > 0.15) video.currentTime = trimStart
-      if (playing) void video.play().catch(() => undefined)
+      const sourceTime = activeSourceTimeRef.current
+      if (Math.abs(video.currentTime - sourceTime) > 0.15) video.currentTime = sourceTime
+      if (playing && activeClipReady && transitionLayersReady && timingReady) void video.play().catch(() => undefined)
       else video.pause()
     }
-  }, [clipSpeed, hookActive, media.url, playing, segmentIndex, trimStart])
+  }, [activeClipReady, activeSourceEnd, clipSpeed, hookActive, media.url, playing, seekVersion, segmentIndex, segmentOutputDuration, timingReady, transitionLayersReady, trimEnd, trimStart])
 
   useEffect(() => {
     if (!preparedOutgoingClip || !preparedOutgoingUrl) return
@@ -739,21 +845,51 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
       .filter((video): video is HTMLVideoElement => Boolean(video))
     for (const video of videos) {
       video.playbackRate = preparedOutgoingSpeed
-      if (Math.abs(video.currentTime - preparedOutgoingSourceTime) > 0.15) video.currentTime = preparedOutgoingSourceTime
-      if (playing) void video.play().catch(() => undefined)
+      const sourceTime = preparedOutgoingSourceTimeRef.current
+      if (Math.abs(video.currentTime - sourceTime) > 0.15) video.currentTime = sourceTime
+      if (playing && activeClipReady && transitionLayersReady && timingReady) void video.play().catch(() => undefined)
       else video.pause()
     }
-  }, [playing, preparedOutgoingClip, preparedOutgoingSourceTime, preparedOutgoingSpeed, preparedOutgoingUrl])
+  }, [activeClipReady, playing, preparedOutgoingClip, preparedOutgoingSpeed, preparedOutgoingTrimEnd, preparedOutgoingTrimStart, preparedOutgoingUrl, previousOutputDuration, seekVersion, segmentIndex, timingReady, transitionLayersReady])
+
+  useEffect(() => () => {
+    void previewAudioContext.current?.close()
+    previewAudioContext.current = null
+  }, [])
+
+  useEffect(() => {
+    const atCut = segmentIndex > 0 && transitionElapsed < 0.35
+    const cutReady = transition.preset === 'cut' && activeClipReady && atCut
+    if (!playing || muted || !hasTransitionSfx || !sfxBuffer || !(cutReady || renderedTransitionActive)) return
+    const transitionKey = `${seekVersion}:${segmentIndex}`
+    if (playedTransitionSfxKey.current === transitionKey) return
+    const context = ensurePreviewAudioContext()
+    if (!context || context.state !== 'running') return
+    playedTransitionSfxKey.current = transitionKey
+    playPreviewTransitionSfx(context, sfxBuffer, transition.sfxVolume)
+  }, [activeClipReady, ensurePreviewAudioContext, hasTransitionSfx, muted, playing, renderedTransitionActive, seekVersion, segmentIndex, sfxBuffer, transition.preset, transition.sfxVolume, transitionElapsed])
 
   function keepWithinTrim(event: SyntheticEvent<HTMLVideoElement>) {
-    if (trimEnd !== null && event.currentTarget.currentTime >= trimEnd) {
-      event.currentTarget.currentTime = trimStart
+    if (event.currentTarget.currentTime < activeSourceEnd - 0.01) return
+    event.currentTarget.currentTime = previewClipSourceTime(
+      trimStart,
+      activeSourceEnd,
+      clipSpeed,
+      transitionElapsed,
+      segmentOutputDuration,
+    )
+    if (!previewClipLoops(trimStart, activeSourceEnd, clipSpeed, segmentOutputDuration)) {
+      event.currentTarget.pause()
     }
   }
 
   function keepOutgoingWithinTrim(event: SyntheticEvent<HTMLVideoElement>) {
-    if (preparedOutgoingTrimEnd !== null && event.currentTarget.currentTime >= preparedOutgoingTrimEnd) {
-      event.currentTarget.currentTime = preparedOutgoingTrimStart
+    const sourceEnd = preparedOutgoingTrimEnd ?? preparedOutgoingClip?.durationSeconds ?? preparedOutgoingTrimStart + 0.01
+    if (event.currentTarget.currentTime < sourceEnd - 0.01) return
+    event.currentTarget.currentTime = preparedOutgoingSourceTimeRef.current
+    const outputDuration = transitionActive ? previousOutputDuration : segmentOutputDuration
+    if (!previewClipLoops(preparedOutgoingTrimStart, sourceEnd, preparedOutgoingSpeed, outputDuration)) {
+      event.currentTarget.pause()
     }
   }
 
@@ -785,10 +921,14 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
     const actionVersion = ++audioActionVersion.current
     const audioElements = Array.from(previewPanel.current?.querySelectorAll<HTMLAudioElement>('.ad-preview-audio') ?? [])
     setAudioPlaybackBlocked(false)
-    const attempts = audioElements.map((audio) => {
+    const attempts: Promise<unknown>[] = audioElements.map((audio) => {
       audio.muted = false
-      return audio.play()
+      return audio.dataset.previewAudioActive === 'true' && audio.dataset.previewTimelineReady === 'true'
+        ? audio.play()
+        : Promise.resolve()
     })
+    const context = ensurePreviewAudioContext()
+    if (context) attempts.push(context.resume())
     if (attempts.length === 0) return
     void Promise.allSettled(attempts).then((results) => {
       if (audioActionVersion.current !== actionVersion) return
@@ -801,7 +941,7 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
   }
 
   function togglePreviewSound() {
-    if (!hasMusic || !audioReady) return
+    if (!hasPreviewSound || !previewSoundReady) return
     if (!muted) {
       audioActionVersion.current += 1
       setMuted(true)
@@ -865,7 +1005,11 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
     whoosh: 'Passagem',
   }[transition.sfx]
   const framing = config.framing ?? DEFAULT_FRAMING
-  const objectPosition = `${clipFocusX}% ${clipFocusY}%`
+  const activeClipGeometry = previewClipGeometry(config.output, activeClip, framing.mode, clipFocusX, clipFocusY, clipZoom)
+  const outgoingClipGeometry = previewClipGeometry(config.output, preparedOutgoingClip ?? undefined, framing.mode, preparedOutgoingFocusX, preparedOutgoingFocusY, preparedOutgoingZoom)
+  const backgroundGeometry = previewClipGeometry(config.output, activeClip, 'cover', clipFocusX, clipFocusY, 1)
+  const outgoingBackgroundGeometry = previewClipGeometry(config.output, preparedOutgoingClip ?? undefined, 'cover', preparedOutgoingFocusX, preparedOutgoingFocusY, 1)
+  const backgroundBlur = `${28 / config.output.width * 100}cqw`
   const isReelsFormat = config.output.width * 16 === config.output.height * 9
   const safeAreaStyle = isReelsFormat
     ? { inset: '14% 6% 35%' }
@@ -904,14 +1048,14 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
             <button
               type="button"
               onClick={togglePreviewSound}
-              disabled={!hasMusic || !audioReady}
-              className={`ad-preview-tool-button ad-preview-sound-button ${hasMusic && !muted ? 'ad-preview-tool-button-active' : ''}`}
-              aria-label={!hasMusic ? 'Nenhuma trilha adicionada' : audioFailed ? 'Trilha indisponível' : !audioReady ? 'Preparando trilha da prévia' : muted ? 'Ligar trilha da prévia' : 'Desligar trilha da prévia'}
-              aria-pressed={hasMusic ? !muted : false}
-              title={!hasMusic ? 'Adicione uma trilha para ouvir' : audioFailed ? 'Não foi possível carregar a trilha' : !audioReady ? 'Preparando trilha' : muted ? 'Ligar trilha' : 'Desligar trilha'}
+              disabled={!hasPreviewSound || !previewSoundReady}
+              className={`ad-preview-tool-button ad-preview-sound-button ${hasPreviewSound && !muted ? 'ad-preview-tool-button-active' : ''}`}
+              aria-label={!hasPreviewSound ? 'Nenhum áudio configurado' : audioFailed && !hasTransitionSfx ? 'Trilha indisponível' : !previewSoundReady ? 'Preparando áudio da prévia' : muted ? 'Ligar áudio da prévia' : 'Desligar áudio da prévia'}
+              aria-pressed={hasPreviewSound ? !muted : false}
+              title={!hasPreviewSound ? 'Adicione uma trilha ou efeito sonoro' : audioFailed && !hasTransitionSfx ? 'Não foi possível carregar a trilha' : !previewSoundReady ? 'Preparando áudio' : muted ? 'Ligar áudio' : 'Desligar áudio'}
             >
-              {muted || !hasMusic ? <VolumeX size={15} /> : <Volume2 size={15} />}
-              <span>{!hasMusic ? 'Sem trilha' : audioFailed ? 'Som indisponível' : !audioReady ? 'Preparando' : muted ? 'Som desligado' : 'Som ligado'}</span>
+              {muted || !hasPreviewSound ? <VolumeX size={15} /> : <Volume2 size={15} />}
+              <span>{!hasPreviewSound ? 'Sem áudio' : audioFailed && !hasTransitionSfx ? 'Som indisponível' : !previewSoundReady ? 'Preparando' : muted ? 'Som desligado' : 'Som ligado'}</span>
             </button>
             <button
               type="button"
@@ -925,6 +1069,7 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
           </div>
         </div>
 
+      {sfxFailed ? <p className="text-sm text-amber-200">Não foi possível carregar o som de transição da prévia. Tente recarregar a página.</p> : null}
       {audioFailed ? (
         <p role="status" className="ad-preview-audio-status">
           Não foi possível carregar a trilha. <button type="button" onClick={retryPreviewAudio}>Tentar novamente</button>
@@ -943,7 +1088,7 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
           {activeClip && media.url ? (
             <>
               {preparedOutgoingClip && preparedOutgoingUrl ? (
-                <div className={`pointer-events-none absolute inset-0 z-0 ${transitionActive && outgoingLayerReady && !transitionSkipped ? 'opacity-100' : 'opacity-0'}`} aria-hidden="true">
+                <div className="ad-preview-transition-layer pointer-events-none absolute inset-0 z-0 overflow-hidden" style={{ ...transitionFrame.outgoing, backgroundColor: framing.backgroundColor }} aria-hidden="true">
                   {framing.mode === 'contain-blur' ? (
                     <video
                       ref={outgoingBackgroundVideo}
@@ -951,13 +1096,12 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
                       muted
                       playsInline
                       preload="auto"
-                      onLoadedMetadata={(event) => { event.currentTarget.currentTime = preparedOutgoingSourceTime; event.currentTarget.playbackRate = preparedOutgoingSpeed }}
+                      onLoadedMetadata={(event) => { event.currentTarget.currentTime = preparedOutgoingSourceTimeRef.current; event.currentTarget.playbackRate = preparedOutgoingSpeed }}
                       onTimeUpdate={keepOutgoingWithinTrim}
-                      className="absolute -inset-[7%] h-[114%] w-[114%] object-cover opacity-75 blur-xl"
+                      className="absolute max-w-none"
                       style={{
-                        filter: `${filter === 'none' ? '' : filter} blur(20px)`,
-                        objectPosition: `${preparedOutgoingFocusX}% ${preparedOutgoingFocusY}%`,
-                        transform: `scale(${Math.max(1, preparedOutgoingZoom)})`,
+                        ...outgoingBackgroundGeometry,
+                        filter: `${filter === 'none' ? '' : filter} blur(${backgroundBlur})`,
                       }}
                     />
                   ) : null}
@@ -967,23 +1111,33 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
                     muted
                     playsInline
                     preload="auto"
-                    onLoadedMetadata={(event) => { event.currentTarget.currentTime = preparedOutgoingSourceTime; event.currentTarget.playbackRate = preparedOutgoingSpeed }}
+                    onLoadedMetadata={(event) => { event.currentTarget.currentTime = preparedOutgoingSourceTimeRef.current; event.currentTarget.playbackRate = preparedOutgoingSpeed }}
                     onCanPlay={() => {
                       if (preparedOutgoingUrl) setOutgoingLayerReadyKey(preparedOutgoingUrl)
                     }}
                     onTimeUpdate={keepOutgoingWithinTrim}
-                    className={`absolute inset-0 h-full w-full ${framing.mode === 'cover' ? 'object-cover' : 'object-contain'}`}
+                    className="absolute max-w-none"
                     style={{
+                      ...outgoingClipGeometry,
                       filter,
-                      objectPosition: `${preparedOutgoingFocusX}% ${preparedOutgoingFocusY}%`,
-                      transform: `scale(${preparedOutgoingZoom})`,
                     }}
                   />
                 </div>
               ) : null}
               <div
-                className={`ad-preview-transition z-[1] ${renderedTransitionActive ? `ad-preview-transition-${transition.preset}` : ''}`}
-                style={{ '--ad-transition-duration': `${transitionDuration}s` } as CSSProperties}
+                className="ad-preview-transition ad-preview-transition-layer z-[1]"
+                style={{
+                  ...transitionFrame.incoming,
+                  backgroundColor: framing.backgroundColor,
+                  ...(dissolveMaskUrl ? {
+                    maskImage: `url(${dissolveMaskUrl})`,
+                    WebkitMaskImage: `url(${dissolveMaskUrl})`,
+                    maskSize: '100% 100%',
+                    WebkitMaskSize: '100% 100%',
+                    maskRepeat: 'no-repeat',
+                    WebkitMaskRepeat: 'no-repeat',
+                  } : {}),
+                }}
               >
               {framing.mode === 'contain-blur' ? (
                 <video
@@ -993,10 +1147,10 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
                   muted
                   playsInline
                   preload="auto"
-                  onLoadedMetadata={(event) => { event.currentTarget.currentTime = trimStart; event.currentTarget.playbackRate = clipSpeed }}
+                  onLoadedMetadata={(event) => { event.currentTarget.currentTime = activeSourceTimeRef.current; event.currentTarget.playbackRate = clipSpeed }}
                   onTimeUpdate={keepWithinTrim}
-                  className="absolute -inset-[7%] h-[114%] w-[114%] object-cover opacity-75 blur-xl"
-                  style={{ filter: `${filter === 'none' ? '' : filter} blur(20px)`, objectPosition, transform: `scale(${Math.max(1, clipZoom)})` }}
+                  className="absolute max-w-none"
+                  style={{ ...backgroundGeometry, filter: `${filter === 'none' ? '' : filter} blur(${backgroundBlur})` }}
                 />
               ) : null}
               <video
@@ -1005,13 +1159,13 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
                 muted
                 playsInline
                 preload="auto"
-                onLoadedMetadata={(event) => { event.currentTarget.currentTime = trimStart; event.currentTarget.playbackRate = clipSpeed }}
+                onLoadedMetadata={(event) => { event.currentTarget.currentTime = activeSourceTimeRef.current; event.currentTarget.playbackRate = clipSpeed }}
                 onCanPlay={() => {
                   if (activeLayerKey) setActiveLayerReadyKey(activeLayerKey)
                 }}
                 onTimeUpdate={keepWithinTrim}
-                className={`absolute inset-0 h-full w-full ${framing.mode === 'cover' ? 'object-cover' : 'object-contain'}`}
-                style={{ filter, objectPosition, transform: `scale(${clipZoom})` }}
+                className="absolute max-w-none"
+                style={{ ...activeClipGeometry, filter }}
               />
               </div>
             </>
@@ -1055,32 +1209,27 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
             <span className="absolute right-[4%] top-[4%] rounded bg-black/45 px-1.5 py-1 text-[8px]">Simulação</span>
           </div>
         ) : null}
-        {(activeText || previewCopy.emoji) && (
-          <div
-            className="ad-preview-copy absolute left-[7%] right-[7%] z-10 whitespace-pre-wrap text-center font-black leading-[1.04]"
-            style={{
-              top: `${config.textStyle.positionY}%`,
-              transform: 'translateY(-50%)',
-              color: config.textStyle.fontColor,
-              fontSize: `${(config.textStyle.fontSize / config.output.width) * 100}cqw`,
-              WebkitTextStroke: `${Math.max(0, (config.textStyle.borderWidth / config.output.width) * 100)}cqw ${config.textStyle.borderColor}`,
-              paintOrder: 'stroke fill',
-              textShadow: '0 3px 10px rgba(0,0,0,.35)',
-            }}
-          >
-            {previewCopy.emoji ? (
-              <span className="absolute bottom-[calc(100%+0.28em)] left-0 right-0 block" style={{ WebkitTextStroke: 0, fontSize: '1.05em' }} aria-hidden="true">
-                {previewCopy.emoji}
-              </span>
-            ) : null}
-            {activeText}
-          </div>
-        )}
+        {captionArtwork ? (
+          <img
+            className="ad-preview-copy pointer-events-none absolute inset-0 z-10 h-full w-full"
+            src={captionArtwork}
+            alt={rawActiveText}
+            draggable={false}
+          />
+        ) : null}
         <div className="absolute bottom-3 left-3 right-3 z-20 flex items-center justify-between text-[10px] font-medium text-white/75">
             <span className="rounded-md bg-black/45 px-2 py-1 backdrop-blur-sm">{preset?.ratio ?? `${config.output.width}:${config.output.height}`} · {clipSpeed}×</span>
           <span className="rounded-md bg-black/45 px-2 py-1 backdrop-blur-sm">{hookActive ? 'Gancho' : `${Math.max(1, selectedClipIndex + 1)}/${Math.max(1, clips.length)}`}</span>
         </div>
       </div>
+
+      {captions.isFetching || captionInput !== settledCaptionInput ? <p className="mt-2 text-center text-xs text-white/50" role="status">Atualizando texto da prévia…</p> : null}
+      {captions.isError ? (
+        <div className="mt-2 flex items-center justify-center gap-2 text-xs text-red-200" role="alert">
+          <span>Não foi possível carregar o texto da prévia.</span>
+          <button type="button" className="underline" onClick={() => void captions.refetch()}>Tentar novamente</button>
+        </div>
+      ) : null}
 
       {timelineMusicTracks.map((track, index) => {
         const asset = musicAssetsById.get(track.assetId)
@@ -1097,6 +1246,7 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
             elapsedSeconds={previewElapsed}
             previewDuration={previewDuration}
             playing={playing}
+            timelineReady={activeClipReady && transitionLayersReady && timingReady}
             muted={muted}
             seekVersion={seekVersion}
             retryToken={audioRetryToken}
@@ -1138,14 +1288,28 @@ function PhonePreview({ project, config }: { project: AdProject; config: AdProje
           />
         ))}
       </div>
+      <div className="mt-3 border-t border-white/10 pt-3">
+        <button
+          type="button"
+          onClick={() => { setPlaying(false); onExactPreview() }}
+          disabled={!canRenderExact || exactPreviewPending}
+          className="flex w-full items-center justify-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {exactPreviewPending ? <LoaderCircle size={14} className="animate-spin" /> : <Clapperboard size={14} />}
+          Gerar prévia fiel
+        </button>
+        <p className="mt-1.5 text-center text-[10px] leading-4 text-white/45">Gera uma variação com os efeitos, transições e batidas finais. O vídeo aparece nos resultados abaixo.</p>
+      </div>
+
       <div className="ad-preview-meta">
         <span className="text-orange-100">Variação 1</span>
         <span>{transitionLabel}</span>
-        {transitionSfxLabel ? <span title={`${Math.round(transition.sfxVolume * 100)}% no vídeo final`}>Som de transição: {transitionSfxLabel}</span> : null}
+        {config.timing.mode === 'beat' ? <span>{beatTiming.data?.timingSource === 'beat' ? 'Cortes na batida' : beatTiming.isFetching ? 'Analisando batidas…' : beatTiming.isError ? 'Batidas indisponíveis na prévia' : 'Sem batidas · intervalo fixo'}</span> : null}
+        {transitionSfxLabel ? <span title={`${Math.round(transition.sfxVolume * 100)}% na prévia e no vídeo final`}>Som de transição: {transitionSfxLabel}</span> : null}
         {hasMusic ? <span>{activeMusicTracks.length > 1 ? `${activeMusicTracks.length} trilhas tocando` : 'Trilha pronta'}</span> : null}
         {hookActive ? <span className="text-orange-100">Gancho</span> : null}
-        {(effects.sharpness > 0 || effects.vignette > 0 || effects.grain > 0 || effects.glow > 0) ? <span>Visual aproximado</span> : null}
-        {config.timing.mode === 'beat' ? <span className="text-violet-100">Cortes por batida estimados</span> : null}
+        {(config.colorPreset !== 'none' || effects.brightness !== 0 || effects.contrast !== 1 || effects.saturation !== 1 || effects.temperature !== 0 || effects.sharpness > 0 || effects.vignette > 0 || effects.grain > 0 || effects.glow > 0 || transition.preset === 'dissolve') ? <span title="Use a prévia fiel para conferir os efeitos na qualidade final">Efeitos visuais aproximados</span> : null}
+
       </div>
     </section>
   )
@@ -1576,7 +1740,7 @@ export default function AdLibraryPage() {
     onError: (cause) => setError(apiErrorMessage(cause)),
   })
   const render = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (previewOnly: boolean) => {
       if (!draftName.trim()) throw new Error('Dê um nome ao projeto antes de gerar.')
       if (draft.texts.every((text) => !text.trim())) throw new Error('Adicione pelo menos um texto.')
       const normalizedConfig = { ...draft, texts: draft.texts.map((text) => text.trim()).filter(Boolean) }
@@ -1584,15 +1748,15 @@ export default function AdLibraryPage() {
         name: draftName.trim(),
         config: normalizedConfig,
       })
-      const job = await adProjectApi.render(activeId!)
-      return { job, saved, submittedState: JSON.stringify({ draftName, draft }) }
+      const job = await adProjectApi.render(activeId!, previewOnly ? { ...saved.config, variationCount: 1 } : undefined)
+      return { job, saved, previewOnly, submittedState: JSON.stringify({ draftName, draft }) }
     },
-    onSuccess: async ({ saved, submittedState }) => {
+    onSuccess: async ({ saved, submittedState, previewOnly }) => {
       if (JSON.stringify({ draftName: latestDraftName.current, draft: latestDraft.current }) === submittedState) {
         setDraftName(saved.name)
         setDraft(copyConfig(saved.config))
       }
-      setFeedback('Render iniciado. Você pode acompanhar o progresso abaixo.')
+      setFeedback(previewOnly ? 'Prévia fiel iniciada. Uma variação aparecerá nos resultados abaixo.' : 'Render iniciado. Você pode acompanhar o progresso abaixo.')
       setError(null)
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['ad-project-jobs', activeId] }),
@@ -1809,7 +1973,14 @@ export default function AdLibraryPage() {
               <div className="col-span-2 flex min-h-[520px] items-center justify-center rounded-2xl border border-zinc-200 bg-white"><Spinner /></div>
             ) : (
               <>
-                <PhonePreview project={current} config={draft} />
+                <PhonePreview
+                  key={current.id}
+                  project={current}
+                  config={draft}
+                  onExactPreview={() => render.mutate(true)}
+                  exactPreviewPending={render.isPending || hasActiveJob}
+                  canRenderExact={draft.selectedClipIds.length > 0 && !clipValidationError && !hasActiveJob}
+                />
 
                 <div className="min-w-0 space-y-5">
                   <section className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -2121,7 +2292,7 @@ export default function AdLibraryPage() {
                   <div className="sticky bottom-3 z-30 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white/95 p-3 shadow-xl shadow-zinc-900/10 backdrop-blur">
                     <Button variant="secondary" onClick={() => save.mutate()} disabled={!dirty || save.isPending || Boolean(clipValidationError)}><Save size={16} /> {save.isPending ? 'Salvando…' : dirty ? 'Salvar projeto' : 'Salvo'}</Button>
                     <Button
-                      onClick={() => render.mutate()}
+                      onClick={() => render.mutate(false)}
                       disabled={draft.selectedClipIds.length === 0 || render.isPending || hasActiveJob || Boolean(clipValidationError)}
                       className="bg-[#ee5b47] hover:bg-[#db4c39] disabled:bg-[#f4a397]"
                     >
