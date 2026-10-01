@@ -83,6 +83,16 @@ export const ClassificationProfileInputSchema = z
 
 export type ClassificationProfileInput = z.infer<typeof ClassificationProfileInputSchema>
 
+/** A validated copy keeps all chunks of one import on the same criteria. */
+export const ClassificationProfileSnapshotSchema = ClassificationProfileInputSchema.innerType()
+  .extend({ id: ClassificationProfileIdSchema, builtIn: z.boolean() })
+  .superRefine(({ id: _id, builtIn: _builtIn, ...input }, context) => {
+    const parsed = ClassificationProfileInputSchema.safeParse(input)
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) context.addIssue(issue)
+    }
+  })
+
 export interface ClassificationProfile extends ClassificationProfileInput {
   id: string
   builtIn: boolean

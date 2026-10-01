@@ -162,14 +162,78 @@ com o desconto e a comissão informados no JSON, atribui A, B, C ou D a cada
 produto e mostra as categorias na revisão. A indica alta relevância e boas
 condições comerciais; D indica baixa prioridade. Produtos sem desconto ou taxa
 de comissão informados recebem zero nesses critérios. Se o Jev estiver
-indisponível, a importação falha com uma mensagem para tentar novamente;
-nenhuma categoria é inventada. O catálogo mantém uma classificação separada
+indisponível, os itens afetados aparecem como falhas recuperáveis;
+nenhuma categoria é inventada. Os resultados concluídos continuam disponíveis.
+O catálogo mantém uma classificação separada
 para cada perfil usado no mesmo produto, inclusive após a remoção de um perfil.
 Ao criar uma campanha, escolha qual classificação do nicho usar.
 
-Cada importação aceita até 100 produtos para limitar o tempo e o custo das
-avaliações pagas. As avaliações Jev são iniciadas em paralelo, até o limite
-de 100 produtos por importação.
+Cada sessão aceita até 50 arquivos JSON, com até 5.000 produtos no total e
+32 MB de payload. Selecione vários arquivos de uma vez ou adicione arquivos em
+seleções posteriores; a lista permite remover cada arquivo e informa erros de
+leitura e JSON pelo nome. O JSON colado pode entrar como um payload separado.
+Cada arquivo conserva seu formato original: é possível combinar exportações
+Mercado Livre completas ou compactas com arrays genéricos na mesma sessão.
+
+A interface e o backend validam todos os arquivos antes de iniciar avaliações
+pagas. Produtos repetidos entre arquivos, identificados pela origem e ID ou pelo
+mesmo link, entram uma vez na classificação; a primeira ocorrência é preservada.
+A revisão informa duplicados, itens inválidos e os resultados de cada arquivo.
+Nomes e posições originais acompanham resultados e retries nesta sessão.
+A classificação usa lotes de quatro. O backend mantém no
+máximo quatro avaliações Jev simultâneas por processo e não repete chamadas
+pagas automaticamente. A interface mostra concluídos, falhas, itens ignorados
+e pendentes, permite parar após o lote atual e continuar apenas os pendentes.
+O botão de retry avalia somente falhas recuperáveis. O perfil escolhido fica
+congelado durante a classificação. Uma resposta perdida por falha de rede tem
+desfecho desconhecido e exige uma decisão manual antes de outra avaliação.
+
+Mantenha a página aberta até salvar: a sessão de classificação fica na memória
+da página. O salvamento usa lotes de 100, preserva as seleções que falharam e
+mostra o progresso. A API aceita até 500 produtos por chamada de salvamento.
+A revisão e o catálogo exibem 40 produtos por página. O catálogo informa quantos
+produtos foram carregados e permite carregar os demais; a campanha lê todas as
+páginas do catálogo. A prévia da campanha mostra quatro exemplos.
+
+O endpoint de importação aceita `parseOnly: true` para validar e normalizar até
+5.000 itens sem Jev. Para vários arquivos, envie
+`payloads: [{ "name": "arquivo.json", "json": <conteúdo JSON>, "source": "mercadolivre" }]`.
+O campo `source` é opcional e pertence a cada payload; `json` e `payloads` são
+alternativas exclusivas. A resposta inclui `files`, `provenance`, `duplicates`
+e `duplicateCount`, além dos índices globais. Arquivos com JSON ou estrutura
+inválidos impedem o início da classificação e aparecem pelo nome no erro.
+Para classificar, envie até quatro ofertas normalizadas com
+`partialResults: true`, o `classificationProfileId` e o
+`classificationProfileSnapshot` retornado em `categorization.profileSnapshot`.
+`offerIndexes`, `failedOffers` e `categorization.errors` identificam os resultados
+de cada item. Clientes antigos continuam podendo classificar até 100 itens por
+chamada, com concorrência limitada a quatro; lotes menores evitam requests longos.
+O upload de importação aceita até 32 MB. Use o JSON compacto da extensão quando
+o HTML de evidência do arquivo completo exceder esse limite.
+
+Na extensão de afiliados, informe até 20 palavras-chave ou frases de até 200
+caracteres, separadas por vírgula ou quebra de linha. Escolha qualquer termo
+ou todos os termos. A quantidade desejada conta produtos únicos no conjunto;
+um produto que combina com várias frases entra uma vez. A interface e os
+exports mostram a contagem de cada frase entre os produtos coletados.
+Filtre por palavras-chave e quantidade, ou use os
+controles de cada card para montar uma seleção manual. O formulário também
+permite incluir um produto manualmente. Os JSONs completo e compacto da seleção
+mantêm `cards[]` e funcionam no importador Mercado Livre. Links afiliados
+inseridos manualmente conservam `commissionedUrlStatus: "manual_unverified"` e
+geram um aviso no importador; o backend não os apresenta como verificados.
+
+### Validação de lotes grandes
+
+Após compilar o backend, execute `node scripts/validate-bulk-import.cjs` na raiz.
+O script exige PostgreSQL local, cria um banco temporário, aplica as migrações,
+valida 5.000 itens sem avaliações, testa classificação parcial e retries com um
+avaliador simulado, salva os resultados e verifica catálogo, prévia e histórico.
+O banco é removido ao terminar. `--live` acrescenta duas avaliações Jev pagas com
+a chave local de OpenRouter. `--serve` mantém a API na porta 3100 e o banco
+isolado para QA de navegador, usando o avaliador simulado após o smoke pago.
+Interrompa com Ctrl+C para remover o banco. O relatório de validação fica em
+[docs/bulk-import-validation.md](docs/bulk-import-validation.md).
 
 Na página de produtos, escolha quais resultados quer salvar. O catálogo pertence
 ao usuário logado; salvar novamente o mesmo produto atualiza seus dados e sua

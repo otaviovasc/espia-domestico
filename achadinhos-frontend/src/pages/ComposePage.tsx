@@ -260,7 +260,7 @@ export default function ComposePage() {
 
   // Re-render previews when the template or included offers change (debounced).
   const previewMutation = useMutation({
-    mutationFn: () => campaignApi.preview(includedOffers, effectiveTemplate),
+    mutationFn: () => campaignApi.preview(includedOffers.slice(0, 4), effectiveTemplate),
     onSuccess: (res) => setPreviews(res),
   })
   useEffect(() => {

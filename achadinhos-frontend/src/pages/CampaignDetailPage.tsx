@@ -106,6 +106,10 @@ export default function CampaignDetailPage() {
   // ── Editable local state (seeded from the campaign) ──
   const [name, setName] = useState('')
   const [offers, setOffers] = useState<Offer[]>([])
+  const [offerPage, setOfferPage] = useState(1)
+  const offerPageCount = Math.max(1, Math.ceil(offers.length / 40))
+  const safeOfferPage = Math.min(offerPage, offerPageCount)
+  const pagedOffers = offers.map((offer, index) => ({ offer, index })).slice((safeOfferPage - 1) * 40, safeOfferPage * 40)
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([])
   const [safety, setSafety] = useState<Safety | null>(null)
   const [template, setTemplate] = useState<string | null>(null)
@@ -144,7 +148,7 @@ export default function CampaignDetailPage() {
 
   // Live preview (debounced).
   const previewMutation = useMutation({
-    mutationFn: () => campaignApi.preview(offers, effectiveTemplate),
+    mutationFn: () => campaignApi.preview(offers.slice(0, 4), effectiveTemplate),
     onSuccess: (res) => setPreviews(res),
   })
   useEffect(() => {
@@ -492,8 +496,9 @@ export default function CampaignDetailPage() {
                 <Shuffle size={14} /> Embaralhar
               </Button>
             </div>
+            <div className="my-3 flex items-center justify-between gap-3 text-sm"><Button variant="secondary" disabled={safeOfferPage === 1} onClick={() => setOfferPage(safeOfferPage - 1)}>Anterior</Button><span>Página {safeOfferPage} de {offerPageCount}</span><Button variant="secondary" disabled={safeOfferPage === offerPageCount} onClick={() => setOfferPage(safeOfferPage + 1)}>Próxima</Button></div>
             <div className="max-h-80 space-y-1 overflow-y-auto">
-              {offers.map((o, i) => (
+              {pagedOffers.map(({ offer: o, index: i }) => (
                 <div key={i} className="grid gap-2 rounded-lg px-2 py-2 hover:bg-zinc-50 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)_auto] md:items-start">
                   {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
                   <span className="min-w-0 truncate text-sm">{o.title}</span>
@@ -603,8 +608,10 @@ export default function CampaignDetailPage() {
         {!editable && (
           <Card>
             <h2 className="mb-3 font-semibold">Produtos ({offers.length})</h2>
+
+            <div className="my-3 flex items-center justify-between gap-3 text-sm"><Button variant="secondary" disabled={safeOfferPage === 1} onClick={() => setOfferPage(safeOfferPage - 1)}>Anterior</Button><span>Página {safeOfferPage} de {offerPageCount}</span><Button variant="secondary" disabled={safeOfferPage === offerPageCount} onClick={() => setOfferPage(safeOfferPage + 1)}>Próxima</Button></div>
             <div className="max-h-80 space-y-1 overflow-y-auto">
-              {offers.map((o, i) => {
+              {pagedOffers.map(({ offer: o, index: i }) => {
                 const offerGroups = deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []
                 const hasUnsent =
                   offerGroups.length === 0 || offerGroups.some((g) => g.status !== 'sent')

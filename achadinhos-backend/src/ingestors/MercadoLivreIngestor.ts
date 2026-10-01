@@ -1,4 +1,4 @@
-import type { OfferInput } from '@/dtos/campaign'
+import { OfferSchema, type OfferInput } from '@/dtos/campaign'
 import type { SourceIngestor, IngestResult, IngestWarning } from './SourceIngestor'
 
 /**
@@ -68,17 +68,23 @@ export class MercadoLivreIngestor implements SourceIngestor {
     if (!isMlPayload(payload)) {
       return {
         offers: [],
+        offerIndexes: [],
         warnings: [{ index: -1, message: 'Payload não reconhecido como Mercado Livre' }],
         totalSeen: 0,
       }
     }
     const cards = payload.cards ?? []
     const offers: OfferInput[] = []
+    const offerIndexes: number[] = []
     const warnings: IngestWarning[] = []
 
     cards.forEach((card, index) => {
+      if (!card || typeof card !== 'object') {
+        warnings.push({ index, message: 'Item não é um objeto' })
+        return
+      }
       const productId = card.productId ?? undefined
-      const title = (card.title ?? '').trim()
+      const title = typeof card.title === 'string' ? card.title.trim() : ''
       if (!title) {
         warnings.push({ index, productId, message: 'Sem título — item ignorado' })
         return
@@ -109,17 +115,38 @@ export class MercadoLivreIngestor implements SourceIngestor {
           message: `"${title.slice(0, 40)}" usa o link do produto (sem comissão). Gere o link afiliado no ML.`,
         })
       }
+      const commissionedUrlStatus = card.commissionedUrlStatus ?? undefined
+      const verifiedStatuses = [
+        'generated_from_page_state',
+        'generated',
+        'generated_from_clipboard',
+        'generated_from_copy_event',
+        'present_on_card',
+      ]
+      if (
+        commissioned &&
+        commissionedUrlStatus &&
+        !verifiedStatuses.includes(commissionedUrlStatus)
+      ) {
+        warnings.push({
+          index,
+          productId,
+          message: `"${title.slice(0, 40)}" tem link afiliado fornecido sem verificação de atribuição (${commissionedUrlStatus}). Confira o link antes de divulgar.`,
+        })
+      }
 
       // Image: "compacto" has imageUrls[]; "completo" has visible.images[].src.
       const image =
-        card.imageUrls?.find((u) => !!u) ??
-        card.visible?.images?.find((img) => img?.src)?.src ??
+        (Array.isArray(card.imageUrls) ? card.imageUrls.find((u) => !!u) : undefined) ??
+        (Array.isArray(card.visible?.images)
+          ? card.visible.images.find((img) => img?.src)?.src
+          : undefined) ??
         undefined
 
       const commissionPercent =
         card.commissionPercent ?? card.visible?.commissionPercent ?? undefined
 
-      offers.push({
+      const parsed = OfferSchema.safeParse({
         title,
         discountedPrice,
         originalPrice: pricing?.originalAmount ?? undefined,
@@ -132,9 +159,22 @@ export class MercadoLivreIngestor implements SourceIngestor {
         productId,
         source: this.id,
         commissioned,
+        commissionedUrlStatus,
       })
+      if (!parsed.success) {
+        warnings.push({
+          index,
+          productId,
+          message: parsed.error.errors
+            .map((error) => `${error.path.join('.')}: ${error.message}`)
+            .join('; '),
+        })
+        return
+      }
+      offers.push(parsed.data)
+      offerIndexes.push(index)
     })
 
-    return { offers, warnings, totalSeen: cards.length }
+    return { offers, offerIndexes, warnings, totalSeen: cards.length }
   }
 }

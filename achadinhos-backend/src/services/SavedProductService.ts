@@ -143,6 +143,7 @@ export class SavedProductService {
       const savedModels: SavedProduct[] = []
       let created = 0
       let updated = 0
+      const profileNames = new Map<string, string>()
 
       for (const offer of offers) {
         // Catalog identity is assigned by this service, never trusted from imports.
@@ -152,7 +153,11 @@ export class SavedProductService {
         const productId = offer.productId?.trim() || null
         const affiliateUrl = offer.affiliateUrl.trim()
         const profileId = offer.classificationProfileId ?? DEFAULT_CLASSIFICATION_PROFILE.id
-        const profileName = await this.profileName(userId, profileId, transaction)
+        let profileName = profileNames.get(profileId)
+        if (!profileName) {
+          profileName = await this.profileName(userId, profileId, transaction)
+          profileNames.set(profileId, profileName)
+        }
         const affiliateUrlHash = createHash('sha256').update(affiliateUrl).digest('hex')
         const normalized = Object.fromEntries(
           Object.entries({

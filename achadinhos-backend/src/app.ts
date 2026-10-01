@@ -38,6 +38,9 @@ export function createApp(): Application {
       credentials: true,
     }),
   )
+  // Full marketplace exports include card HTML. Only ingestion accepts that
+  // larger payload; all other API bodies retain the existing 2 MB limit.
+  app.use(`${env.API_PREFIX}/campaigns/import-offers`, express.json({ limit: '32mb' }))
   app.use(express.json({ limit: '2mb' }))
   app.use(express.urlencoded({ extended: true }))
   app.use(cookieParser())

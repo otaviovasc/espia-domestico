@@ -11,6 +11,9 @@ const {
   categoryForSignals,
   commercialSignals,
   buildRelevanceQuestion,
+  CLASSIFICATION_CONCURRENCY,
+  MAX_CLASSIFICATION_BATCH,
+  MAX_LEGACY_CLASSIFICATION_ITEMS,
 } = require('../dist/services/OfferCategorizationService.js')
 const { ClassificationProfileInputSchema } = require('../dist/dtos/classificationProfile.js')
 const { CampaignController } = require('../dist/controllers/CampaignController.js')
@@ -68,7 +71,7 @@ test('categorization preserves input order under concurrent Jev responses', asyn
   assert.deepEqual(result.counts, { A: 0, B: 1, C: 1, D: 1 })
 })
 
-test('a failed Jev response is reported after the parallel batch starts', async () => {
+test('legacy failure stops scheduling new paid evaluations and bounds in-flight work', async () => {
   const seen = []
   const input = Array.from({ length: 8 }, (_, index) => offer(`item ${index}`))
   await assert.rejects(
@@ -80,11 +83,13 @@ test('a failed Jev response is reported after the parallel batch starts', async 
     }),
     /provider unavailable/,
   )
-  assert.equal(seen.length, input.length)
+  assert.equal(seen.length, CLASSIFICATION_CONCURRENCY)
 })
 
-test('the full 100-product import can evaluate concurrently', async () => {
-  const input = Array.from({ length: MAX_IMPORT_ITEMS }, (_, index) => offer(`item ${index}`))
+test('the legacy 100-product import uses four concurrent evaluations and preserves every result', async () => {
+  const input = Array.from({ length: MAX_LEGACY_CLASSIFICATION_ITEMS }, (_, index) =>
+    offer(`item ${index}`),
+  )
   let started = 0
   let release
   const gate = new Promise((resolve) => {
@@ -96,9 +101,9 @@ test('the full 100-product import can evaluate concurrently', async () => {
     return 80
   })
   await new Promise((resolve) => setImmediate(resolve))
-  assert.equal(started, MAX_IMPORT_ITEMS)
+  assert.equal(started, CLASSIFICATION_CONCURRENCY)
   release()
-  assert.equal((await running).offers.length, MAX_IMPORT_ITEMS)
+  assert.equal((await running).offers.length, MAX_LEGACY_CLASSIFICATION_ITEMS)
 })
 
 test('Mercado Livre complete payload signals survive normalization', () => {
@@ -138,13 +143,173 @@ test('generic import preserves the uncommissioned flag before scoring', () => {
   assert.equal(commercialSignals(result.offers[0]).commissionRate, 0)
 })
 
+test('manual affiliate URL evidence stays unverified through marketplace and normalized batch imports', () => {
+  const parsed = new OfferImportService().parse({
+    schemaVersion: 1,
+    cards: [
+      {
+        title: 'manual link',
+        pricing: { currentAmount: 100 },
+        commissionedUrl: 'https://meli.la/manual',
+        commissionedUrlStatus: 'manual_unverified',
+      },
+    ],
+  })
+  assert.equal(parsed.offers[0].commissioned, true)
+  assert.equal(parsed.offers[0].commissionedUrlStatus, 'manual_unverified')
+  assert.match(parsed.errors[0].message, /sem verificação de atribuição/)
+  const normalized = new OfferImportService().parse(parsed.offers)
+  assert.equal(normalized.offers[0].commissionedUrlStatus, 'manual_unverified')
+  assert.deepEqual(parsed.offerIndexes, [0])
+})
+
 test('imports above the paid evaluation limit are rejected before categorization', () => {
   const cards = Array.from({ length: MAX_IMPORT_ITEMS + 1 }, (_, index) => ({
     title: `Produto ${index}`,
     price: 100,
     url: 'https://example.com/product',
   }))
-  assert.throws(() => new OfferImportService().parse(cards), /no máximo 100 produtos/)
+  assert.throws(() => new OfferImportService().parse(cards), /no máximo 5000 produtos/)
+})
+
+test('a 5000-item mixed import reports original indexes and all invalid items before paid work', () => {
+  const input = Array.from({ length: MAX_IMPORT_ITEMS }, (_, index) =>
+    index % 5 === 0 ? null : offer(`item ${index}`),
+  )
+  const result = new OfferImportService().parse(input)
+  assert.equal(result.totalSeen, 5000)
+  assert.equal(result.offers.length, 4000)
+  assert.equal(result.errors.length, 1000)
+  assert.deepEqual(result.offerIndexes.slice(0, 5), [1, 2, 3, 4, 6])
+  assert.equal(result.offerIndexes.at(-1), 4999)
+})
+
+test('parse-only supports all-invalid data for visible skip reasons', () => {
+  const result = new OfferImportService().parse([null, {}], undefined, true)
+  assert.equal(result.offers.length, 0)
+  assert.equal(result.errors.length, 2)
+  assert.equal(result.totalSeen, 2)
+})
+
+test('marketplace ingestion validates malformed URLs, images, NaN prices and non-object cards', () => {
+  const cards = [
+    null,
+    { title: 'bad link', pricing: { currentAmount: 100 }, commissionedUrl: 'broken' },
+    {
+      title: 'bad price',
+      pricing: { currentAmount: NaN },
+      commissionedUrl: 'https://meli.la/product',
+    },
+    { title: 'valid', pricing: { currentAmount: 100 }, commissionedUrl: 'https://meli.la/product' },
+    {
+      title: 'bad image',
+      pricing: { currentAmount: 100 },
+      commissionedUrl: 'https://meli.la/product',
+      imageUrls: ['broken'],
+    },
+  ]
+  const result = new MercadoLivreIngestor().ingest({ schemaVersion: 1, cards })
+  assert.deepEqual(result.offerIndexes, [3])
+  assert.equal(result.offers.length, 1)
+  assert.deepEqual(
+    result.warnings.map(({ index }) => index),
+    [0, 1, 2, 4],
+  )
+})
+
+test('partial classification keeps ordered successes and retries only failed offers', async () => {
+  const input = Array.from({ length: MAX_CLASSIFICATION_BATCH }, (_, index) =>
+    offer(`item ${index}`),
+  )
+  const initialCalls = []
+  const first = await categorizeOffers(
+    input,
+    async (item) => {
+      initialCalls.push(item.title)
+      if (item.title === 'item 1') throw new Error('provider secret should never be returned')
+      await new Promise((resolve) => setTimeout(resolve, item.title === 'item 0' ? 5 : 1))
+      return 100
+    },
+    undefined,
+    { partialResults: true },
+  )
+  assert.deepEqual(first.offerIndexes, [0, 2, 3])
+  assert.equal(first.errors.length, 1)
+  assert.equal(first.errors[0].index, 1)
+  assert.equal(first.errors[0].retryable, true)
+  assert.doesNotMatch(first.errors[0].message, /provider secret/)
+  assert.equal(
+    Object.values(first.counts).reduce((sum, count) => sum + count, 0),
+    3,
+  )
+  const retryCalls = []
+  const retried = await categorizeOffers(
+    first.failedOffers.map(({ offer }) => offer),
+    async (item) => {
+      retryCalls.push(item.title)
+      return 100
+    },
+    undefined,
+    { partialResults: true },
+  )
+  assert.equal(retried.offers.length, 1)
+  assert.deepEqual(retryCalls, ['item 1'])
+  assert.equal(initialCalls.length, 4)
+})
+
+test('paid batch caps and entire-batch validation run before any evaluation starts', async () => {
+  let calls = 0
+  const evaluator = async () => {
+    calls++
+    return 100
+  }
+  await assert.rejects(
+    categorizeOffers(
+      Array.from({ length: 5 }, () => offer('item')),
+      evaluator,
+      undefined,
+      { partialResults: true },
+    ),
+    /no máximo 4/,
+  )
+  await assert.rejects(
+    categorizeOffers(
+      Array.from({ length: 101 }, () => offer('item')),
+      evaluator,
+    ),
+    /no máximo 100/,
+  )
+  await assert.rejects(
+    categorizeOffers([offer('valid'), { ...offer('invalid'), discountedPrice: -1 }], evaluator),
+    /Preço com desconto/,
+  )
+  assert.equal(calls, 0)
+})
+
+test('the paid evaluation bound applies across concurrent requests without an unbounded queue', async () => {
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  let active = 0
+  let peak = 0
+  const evaluator = async () => {
+    active++
+    peak = Math.max(peak, active)
+    await gate
+    active--
+    return 100
+  }
+  const batch = Array.from({ length: 4 }, () => offer('item'))
+  const first = categorizeOffers(batch, evaluator, undefined, { partialResults: true })
+  await new Promise((resolve) => setImmediate(resolve))
+  const busy = await categorizeOffers(batch, evaluator, undefined, { partialResults: true })
+  assert.equal(busy.offers.length, 0)
+  assert.equal(busy.errors.length, 4)
+  assert.ok(busy.errors.every((error) => error.code === 'CATEGORIZATION_BUSY' && error.retryable))
+  release()
+  assert.equal((await first).offers.length, 4)
+  assert.equal(peak, CLASSIFICATION_CONCURRENCY)
 })
 
 const sportsProfile = {
@@ -240,4 +405,164 @@ test('import resolves the selected user profile and snapshots it on categorized 
   assert.deepEqual(response.data.categorization.profile, { id: '42', name: 'Corrida' })
   assert.equal(response.data.offers[0].classificationProfileId, '42')
   assert.equal(response.data.offers[0].classificationProfileName, 'Corrida')
+})
+
+function importController(profile, evaluator) {
+  return new CampaignController(
+    {},
+    new OfferImportService(),
+    {
+      async getForUser(userId, id) {
+        assert.equal(userId, 7)
+        assert.equal(id, profile.id)
+        return profile
+      },
+    },
+    {
+      categorize(offers, selectedProfile, options) {
+        return categorizeOffers(offers, evaluator, selectedProfile, options)
+      },
+    },
+  )
+}
+
+async function importRequest(controller, body) {
+  let response
+  await controller.importOffers(
+    { user: { userId: 7 }, body },
+    {
+      json(value) {
+        response = value
+      },
+    },
+  )
+  return response.data
+}
+
+test('parse-only controller performs no evaluations and returns full profile criteria', async () => {
+  let evaluations = 0
+  const controller = importController(sportsProfile, async () => {
+    evaluations++
+    return 100
+  })
+  const result = await importRequest(controller, {
+    json: Array.from({ length: 5000 }, (_, index) => offer(`item ${index}`)),
+    parseOnly: true,
+    classificationProfileId: '42',
+  })
+  assert.equal(result.offers.length, 5000)
+  assert.equal(result.offerIndexes.length, 5000)
+  assert.equal(result.categorization.method, 'pending')
+  assert.deepEqual(result.categorization.profileSnapshot, sportsProfile)
+  assert.equal(evaluations, 0)
+  const empty = await importRequest(controller, {
+    json: [null],
+    parseOnly: true,
+    classificationProfileId: '42',
+  })
+  assert.equal(empty.errors.length, 1)
+  assert.equal(empty.offers.length, 0)
+})
+
+test('partial controller maps successes and failed offers to original raw indexes', async () => {
+  const controller = importController(sportsProfile, async (item) => {
+    if (item.title === 'failed') throw new Error('provider down')
+    return 100
+  })
+  const result = await importRequest(controller, {
+    json: [offer('success'), null, offer('failed'), offer('last')],
+    partialResults: true,
+    classificationProfileId: '42',
+  })
+  assert.deepEqual(result.offerIndexes, [0, 3])
+  assert.equal(result.errors[0].index, 1)
+  assert.equal(result.categorization.errors[0].index, 2)
+  assert.equal(result.failedOffers[0].index, 2)
+  assert.equal(result.failedOffers[0].offer.title, 'failed')
+  assert.equal(result.previews.length, 2)
+})
+
+test('profile criteria freeze across batches while selected profile ownership and ID stay enforced', async () => {
+  const updatedProfile = {
+    ...sportsProfile,
+    nicheDescription: 'Perfil alterado durante a importação',
+  }
+  let received
+  let evaluations = 0
+  const controller = importController(updatedProfile, async (_, profile) => {
+    evaluations++
+    received = profile
+    return 100
+  })
+  const body = {
+    json: [offer('Tênis')],
+    partialResults: true,
+    classificationProfileId: '42',
+    classificationProfileSnapshot: sportsProfile,
+  }
+  await importRequest(controller, body)
+  assert.equal(received.nicheDescription, sportsProfile.nicheDescription)
+  await assert.rejects(
+    importRequest(controller, {
+      ...body,
+      classificationProfileSnapshot: { ...sportsProfile, id: '43' },
+    }),
+    /snapshot deve corresponder/,
+  )
+  await assert.rejects(
+    importRequest(controller, {
+      ...body,
+      classificationProfileSnapshot: {
+        ...sportsProfile,
+        weights: { relevance: 90, discount: 90, commission: 90 },
+      },
+    }),
+    /somar 100/,
+  )
+  assert.equal(evaluations, 1)
+})
+
+test('legacy paid controller rejects 101 products and invalid templates without paying', async () => {
+  let evaluations = 0
+  const controller = importController(sportsProfile, async () => {
+    evaluations++
+    return 100
+  })
+  await assert.rejects(
+    importRequest(controller, {
+      json: Array.from({ length: 101 }, () => offer('item')),
+      classificationProfileId: '42',
+    }),
+    /no máximo 100/,
+  )
+  await assert.rejects(
+    importRequest(controller, {
+      json: [offer('item')],
+      template: 'x'.repeat(4001),
+      classificationProfileId: '42',
+    }),
+  )
+  assert.equal(evaluations, 0)
+})
+
+test('default profile snapshots retain the built-in criteria and cannot be modified', async () => {
+  const { DEFAULT_CLASSIFICATION_PROFILE } = require('../dist/dtos/classificationProfile.js')
+  let evaluations = 0
+  const controller = importController(DEFAULT_CLASSIFICATION_PROFILE, async () => {
+    evaluations++
+    return 100
+  })
+  await importRequest(controller, {
+    json: [offer('item')],
+    partialResults: true,
+    classificationProfileSnapshot: DEFAULT_CLASSIFICATION_PROFILE,
+  })
+  await assert.rejects(
+    importRequest(controller, {
+      json: [offer('item')],
+      classificationProfileSnapshot: { ...DEFAULT_CLASSIFICATION_PROFILE, name: 'Changed' },
+    }),
+    /não pode ser alterado/,
+  )
+  assert.equal(evaluations, 1)
 })

@@ -1,7 +1,7 @@
-import type { OfferInput } from '@/dtos/campaign'
+import { OfferSchema, type OfferInput } from '@/dtos/campaign'
 import { env } from '@/config/env'
 import { AppError } from '@/middleware/Error/AppError'
-import { MAX_IMPORT_ITEMS } from '@/services/OfferImportService'
+import { BadRequestError } from '@/middleware/Error/AppError'
 import {
   DEFAULT_CLASSIFICATION_PROFILE,
   type ClassificationProfile,
@@ -15,6 +15,29 @@ export type RelevanceEvaluator = (
 ) => Promise<number>
 
 const MODEL = 'typesafe/jev-1.13'
+export const CLASSIFICATION_CONCURRENCY = 4
+export const MAX_CLASSIFICATION_BATCH = 4
+export const MAX_LEGACY_CLASSIFICATION_ITEMS = 100
+let activeEvaluations = 0
+
+export interface CategorizationError {
+  index: number
+  message: string
+  code: string
+  retryable: boolean
+}
+
+export interface CategorizationResult {
+  offers: OfferInput[]
+  offerIndexes: number[]
+  counts: Record<OfferCategory, number>
+  errors: CategorizationError[]
+  failedOffers: { index: number; offer: OfferInput }[]
+}
+
+export interface CategorizationOptions {
+  partialResults?: boolean
+}
 
 export interface RelevanceQuestion {
   type: 'score'
@@ -84,7 +107,8 @@ export async function evaluateProfileRelevance(
       niche_relevance: buildRelevanceQuestion(profile),
     },
     abortSignal: AbortSignal.timeout(20_000),
-    maxRetries: 1,
+    // A retry is an explicit user decision because each request can incur cost.
+    maxRetries: 0,
   })
 
   const score = result.answers.niche_relevance.score
@@ -150,22 +174,39 @@ export async function categorizeOffers(
   offers: OfferInput[],
   evaluateRelevance: RelevanceEvaluator = evaluateProfileRelevance,
   profile: ClassificationProfile = DEFAULT_CLASSIFICATION_PROFILE,
-): Promise<{ offers: OfferInput[]; counts: Record<OfferCategory, number> }> {
-  const categorized: OfferInput[] = new Array(offers.length)
+  options: CategorizationOptions = {},
+): Promise<CategorizationResult> {
+  const limit = options.partialResults ? MAX_CLASSIFICATION_BATCH : MAX_LEGACY_CLASSIFICATION_ITEMS
+  if (offers.length > limit)
+    throw BadRequestError(`Classifique no máximo ${limit} produtos por lote.`)
+  // Validate the entire batch before the first paid request, including direct callers.
+  const validated = offers.map((offer) => OfferSchema.parse(offer))
+  const categorized: (OfferInput | undefined)[] = new Array(offers.length)
+  const errors: CategorizationError[] = []
   const counts: Record<OfferCategory, number> = { A: 0, B: 0, C: 0, D: 0 }
   let next = 0
   let hasError = false
   let firstError: unknown
 
-  // Start every allowed product immediately, while retaining the import cap
-  // as the upper bound for callers outside the import route.
+  // The process-wide bound also applies when several users submit at once.
   async function worker(): Promise<void> {
-    while (next < offers.length && !hasError) {
+    while (next < offers.length && (!hasError || options.partialResults)) {
       const index = next++
-      const offer = offers[index]
+      const offer = validated[index]
+      let acquired = false
       try {
-        const relevanceScore = clampPercent(await evaluateRelevance(offer, profile))
-        if (!Number.isFinite(relevanceScore)) throw new Error('Invalid niche relevance score')
+        if (activeEvaluations >= CLASSIFICATION_CONCURRENCY) {
+          throw new AppError(
+            'Classificação ocupada. Tente novamente os itens pendentes.',
+            429,
+            'CATEGORIZATION_BUSY',
+          )
+        }
+        activeEvaluations++
+        acquired = true
+        const evaluatedScore = await evaluateRelevance(offer, profile)
+        if (!Number.isFinite(evaluatedScore)) throw new Error('Invalid niche relevance score')
+        const relevanceScore = clampPercent(evaluatedScore)
         const signals = commercialSignals(offer)
         const category = categoryForSignals(
           relevanceScore,
@@ -185,15 +226,38 @@ export async function categorizeOffers(
       } catch (error) {
         if (!hasError) firstError = error
         hasError = true
+        errors.push({
+          index,
+          message:
+            error instanceof AppError
+              ? error.message
+              : 'Não foi possível classificar este produto. Tente novamente.',
+          code:
+            error instanceof AppError
+              ? (error.code ?? 'CATEGORIZATION_FAILED')
+              : 'CATEGORIZATION_FAILED',
+          retryable:
+            !(error instanceof AppError) || error.statusCode === 429 || error.statusCode >= 500,
+        })
+      } finally {
+        if (acquired) activeEvaluations--
       }
     }
   }
 
   await Promise.all(
-    Array.from({ length: Math.min(MAX_IMPORT_ITEMS, offers.length) }, () => worker()),
+    Array.from({ length: Math.min(CLASSIFICATION_CONCURRENCY, offers.length) }, () => worker()),
   )
-  if (hasError) throw firstError
-  return { offers: categorized, counts }
+  if (hasError && !options.partialResults) throw firstError
+  errors.sort((left, right) => left.index - right.index)
+  const offerIndexes = categorized.flatMap((offer, index) => (offer ? [index] : []))
+  return {
+    offers: offerIndexes.map((index) => categorized[index]!),
+    offerIndexes,
+    counts,
+    errors,
+    failedOffers: errors.map(({ index }) => ({ index, offer: validated[index] })),
+  }
 }
 
 @injectable()
@@ -201,7 +265,8 @@ export class OfferCategorizationService {
   async categorize(
     offers: OfferInput[],
     profile: ClassificationProfile,
+    options: CategorizationOptions = {},
   ): ReturnType<typeof categorizeOffers> {
-    return categorizeOffers(offers, evaluateProfileRelevance, profile)
+    return categorizeOffers(offers, evaluateProfileRelevance, profile, options)
   }
 }

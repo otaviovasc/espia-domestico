@@ -319,16 +319,48 @@ export interface OfferGroupDelivery {
   recoverable: boolean
 }
 
+export interface ImportPayload {
+  name: string
+  json: unknown
+  source?: string
+}
+
+export interface ImportProvenance {
+  index: number
+  fileIndex: number
+  itemIndex: number
+  fileName: string
+}
+
+export interface ImportFileSummary {
+  fileIndex: number
+  name: string
+  source: string
+  totalSeen: number
+  imported: number
+  invalid: number
+  duplicates: number
+  warnings: number
+}
+
 export interface ImportResult {
   source: string
   totalSeen: number
   offers: Offer[]
-  errors: { index: number; message: string }[]
+  offerIndexes?: number[]
+  failedOffers?: { index: number; offer: Offer }[]
+  errors: ({ index: number; message: string } & Partial<ImportProvenance>)[]
+  provenance?: ImportProvenance[]
+  files?: ImportFileSummary[]
+  duplicates?: (ImportProvenance & { duplicateOf: number })[]
+  duplicateCount?: number
   previews: OfferPreview[]
   categorization?: {
-    method: 'jev' | 'fallback'
+    method: 'jev' | 'fallback' | 'pending'
     counts: Record<'A' | 'B' | 'C' | 'D', number>
     profile: Pick<ClassificationProfile, 'id' | 'name'>
+    profileSnapshot?: ClassificationProfile
+    errors?: { index: number; message: string; code: string; retryable: boolean }[]
   }
 }
 
@@ -569,16 +601,24 @@ export const campaignApi = {
   },
   async importOffers(
     json: string | unknown,
-    opts?: { source?: string; template?: string; classificationProfileId?: string },
+    opts?: { source?: string; template?: string; classificationProfileId?: string; classificationProfileSnapshot?: ClassificationProfile; parseOnly?: boolean; partialResults?: boolean },
   ): Promise<ImportResult> {
     return unwrap<ImportResult>(
       await api.post('/campaigns/import-offers', {
         json,
         source: opts?.source,
         template: opts?.template,
-        classificationProfileId: opts?.classificationProfileId,
+          classificationProfileId: opts?.classificationProfileId,
+          classificationProfileSnapshot: opts?.classificationProfileSnapshot,
+          parseOnly: opts?.parseOnly,
+          partialResults: opts?.partialResults,
       }),
     )
+  },
+  async importPayloads(payloads: ImportPayload[], classificationProfileId: string): Promise<ImportResult> {
+    return unwrap<ImportResult>(await api.post('/campaigns/import-offers', {
+      payloads, classificationProfileId, parseOnly: true,
+    }))
   },
   async preview(offers: Offer[], template?: string): Promise<OfferPreview[]> {
     return unwrap<OfferPreview[]>(await api.post('/campaigns/preview', { offers, template }))
@@ -595,11 +635,15 @@ export const campaignApi = {
     offers: Pick<Offer, 'savedProductId' | 'source' | 'productId' | 'affiliateUrl'>[],
     groupIds?: string[],
   ): Promise<Record<string, OfferFlag>> {
-    const batches: Array<Promise<Record<string, OfferFlag>>> = []
-    for (let offset = 0; offset < offers.length; offset += 100) {
-      batches.push(this.checkOffers(offers.slice(offset, offset + 100), groupIds))
+    const flags: Record<string, OfferFlag> = {}
+    for (let offset = 0; offset < offers.length; offset += 400) {
+      const batches = []
+      for (let start = offset; start < Math.min(offset + 400, offers.length); start += 100) {
+        batches.push(this.checkOffers(offers.slice(start, start + 100), groupIds))
+      }
+      Object.assign(flags, ...(await Promise.all(batches)))
     }
-    return Object.assign({}, ...(await Promise.all(batches)))
+    return flags
   },
   async resolveDeliveryClaim(
     identity:

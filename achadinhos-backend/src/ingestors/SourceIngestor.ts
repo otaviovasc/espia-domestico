@@ -9,6 +9,8 @@ export interface IngestWarning {
 
 export interface IngestResult {
   offers: OfferInput[]
+  /** Original raw indexes corresponding to each valid offer. */
+  offerIndexes: number[]
   warnings: IngestWarning[]
   /** Total raw items seen in the payload (before filtering). */
   totalSeen: number

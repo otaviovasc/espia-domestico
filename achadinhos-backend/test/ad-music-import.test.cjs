@@ -28,9 +28,11 @@ function response(statusCode, headers, chunks = []) {
 }
 
 async function waitFor(predicate) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  // Filesystem work can take longer while the renderer tests run in parallel.
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
     if (predicate()) return
-    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setTimeout(resolve, 5))
   }
   assert.fail('timed out waiting for the expected import state')
 }

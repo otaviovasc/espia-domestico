@@ -20,7 +20,7 @@ const SaveSchema = z.object({
       }),
     )
     .min(1)
-    .max(100),
+    .max(500),
 })
 
 function pagination(value: unknown, defaultValue: number, max: number): number {

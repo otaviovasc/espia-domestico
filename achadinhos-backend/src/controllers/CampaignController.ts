@@ -3,7 +3,11 @@ import { injectable, inject } from 'tsyringe'
 import { z } from 'zod'
 import { CampaignService } from '@/services/CampaignService'
 import { computeStallMs } from '@/services/SafeSender'
-import { OfferImportService } from '@/services/OfferImportService'
+import {
+  MAX_IMPORT_FILES,
+  MAX_IMPORT_ITEMS,
+  OfferImportService,
+} from '@/services/OfferImportService'
 import { CreateCampaignSchema, UpdateCampaignSchema, OfferSchema } from '@/dtos/campaign'
 import {
   renderOfferMessage,
@@ -14,18 +18,62 @@ import { listIngestors } from '@/ingestors/registry'
 import { Campaign } from '@/database/models/Campaign'
 import { BadRequestError, UnauthorizedError } from '@/middleware/Error/AppError'
 import { AppError } from '@/middleware/Error/AppError'
-import { categorizeOffers, OfferCategorizationService } from '@/services/OfferCategorizationService'
+import {
+  categorizeOffers,
+  MAX_CLASSIFICATION_BATCH,
+  MAX_LEGACY_CLASSIFICATION_ITEMS,
+  OfferCategorizationService,
+} from '@/services/OfferCategorizationService'
 import { logger } from '@/utils/logger'
 import { ClassificationProfileService } from '@/services/ClassificationProfileService'
-import { ClassificationProfileIdSchema } from '@/dtos/classificationProfile'
+import {
+  ClassificationProfileIdSchema,
+  ClassificationProfileSnapshotSchema,
+  DEFAULT_CLASSIFICATION_PROFILE,
+} from '@/dtos/classificationProfile'
 
-const ImportSchema = z.object({
-  // Either a JSON string or an already-parsed array/object.
-  json: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]),
-  // Optional explicit marketplace id (e.g. 'mercadolivre'); auto-detected if omitted.
-  source: z.string().max(40).optional(),
-  classificationProfileId: ClassificationProfileIdSchema.default('default'),
-})
+const ImportSchema = z
+  .object({
+    // Either a JSON string or an already-parsed array/object.
+    json: z.union([z.string(), z.array(z.unknown()), z.record(z.unknown())]).optional(),
+    payloads: z
+      .array(
+        z
+          .object({
+            name: z.string().trim().min(1).max(255),
+            json: z
+              .unknown()
+              .refine((value) => value !== undefined, 'JSON do arquivo é obrigatório'),
+            source: z.string().max(40).optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(MAX_IMPORT_FILES)
+      .optional(),
+    // Optional explicit marketplace id (e.g. 'mercadolivre'); auto-detected if omitted.
+    source: z.string().max(40).optional(),
+    classificationProfileId: ClassificationProfileIdSchema.default('default'),
+    classificationProfileSnapshot: ClassificationProfileSnapshotSchema.optional(),
+    parseOnly: z.boolean().default(false),
+    partialResults: z.boolean().default(false),
+    template: z.string().max(4000).optional(),
+  })
+  .superRefine((value, context) => {
+    if ((value.json === undefined) === (value.payloads === undefined)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Informe json ou payloads, exclusivamente.',
+      })
+    }
+    if (value.payloads && value.source !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['source'],
+        message: 'Informe a fonte separadamente em cada arquivo de payloads.',
+      })
+    }
+  })
 
 function serializeCampaign(c: Campaign) {
   const editable =
@@ -100,14 +148,63 @@ export class CampaignController {
     if (!parsed.success) {
       throw BadRequestError(parsed.error.errors.map((error) => error.message).join(', '))
     }
-    const profile = await this.classificationProfileService.getForUser(
+    const ownedProfile = await this.classificationProfileService.getForUser(
       userId,
       parsed.data.classificationProfileId,
     )
-    const result = this.offerImportService.parse(parsed.data.json, parsed.data.source)
+    const snapshot = parsed.data.classificationProfileSnapshot
+    if (
+      snapshot &&
+      (snapshot.id !== ownedProfile.id || snapshot.builtIn !== ownedProfile.builtIn)
+    ) {
+      throw BadRequestError('O snapshot deve corresponder ao perfil de classificação selecionado')
+    }
+    if (
+      snapshot?.id === 'default' &&
+      JSON.stringify(snapshot) !==
+        JSON.stringify(ClassificationProfileSnapshotSchema.parse(DEFAULT_CLASSIFICATION_PROFILE))
+    ) {
+      throw BadRequestError('O perfil doméstico padrão não pode ser alterado pelo snapshot')
+    }
+    const profile = snapshot ?? ownedProfile
+    const result = parsed.data.payloads
+      ? this.offerImportService.parsePayloads(parsed.data.payloads)
+      : this.offerImportService.parse(parsed.data.json, parsed.data.source, parsed.data.parseOnly)
+    const rawIndexes = result.offerIndexes ?? result.offers.map((_, index) => index)
+    const provenanceAt = (index: number) => result.provenance?.[index] ?? {}
+    if (parsed.data.parseOnly) {
+      res.json({
+        success: true,
+        data: {
+          ...result,
+          offerIndexes: rawIndexes,
+          failedOffers: [],
+          categorization: {
+            method: 'pending',
+            counts: { A: 0, B: 0, C: 0, D: 0 },
+            errors: [],
+            profile: { id: profile.id, name: profile.name },
+            profileSnapshot: profile,
+            batchSize: MAX_CLASSIFICATION_BATCH,
+          },
+          previews: [],
+        },
+      })
+      return
+    }
+    const classificationLimit = parsed.data.partialResults
+      ? MAX_CLASSIFICATION_BATCH
+      : MAX_LEGACY_CLASSIFICATION_ITEMS
+    if (result.totalSeen > classificationLimit) {
+      throw BadRequestError(
+        `Classifique no máximo ${classificationLimit} produtos por lote. Use parseOnly para preparar uma importação maior.`,
+      )
+    }
     let categorized: Awaited<ReturnType<typeof categorizeOffers>>
     try {
-      categorized = await this.offerCategorizationService.categorize(result.offers, profile)
+      categorized = await this.offerCategorizationService.categorize(result.offers, profile, {
+        partialResults: parsed.data.partialResults,
+      })
     } catch (error) {
       if (error instanceof AppError) throw error
       logger.warn(
@@ -127,11 +224,36 @@ export class CampaignController {
         source: result.source,
         totalSeen: result.totalSeen,
         offers: categorized.offers,
+        ...(result.files
+          ? {
+              files: result.files,
+              duplicates: result.duplicates,
+              duplicateCount: result.duplicateCount,
+              provenance: (
+                categorized.offerIndexes ?? categorized.offers.map((_, index) => index)
+              ).map((index) => result.provenance![index]),
+            }
+          : {}),
+        offerIndexes: (categorized.offerIndexes ?? categorized.offers.map((_, index) => index)).map(
+          (index) => rawIndexes[index],
+        ),
+        failedOffers: (categorized.failedOffers ?? []).map((failure) => ({
+          ...failure,
+          ...provenanceAt(failure.index),
+          index: rawIndexes[failure.index],
+        })),
         errors: result.errors,
         categorization: {
           method: 'jev',
           counts: categorized.counts,
+          errors: (categorized.errors ?? []).map((error) => ({
+            ...error,
+            ...provenanceAt(error.index),
+            index: rawIndexes[error.index],
+          })),
           profile: { id: profile.id, name: profile.name },
+          profileSnapshot: profile,
+          batchSize: MAX_CLASSIFICATION_BATCH,
         },
         previews: categorized.offers.map((offer) => ({
           title: offer.title,
@@ -145,7 +267,7 @@ export class CampaignController {
   async preview(req: Request, res: Response): Promise<void> {
     this.userId(req)
     const schema = z.object({
-      offers: z.array(OfferSchema).min(1),
+      offers: z.array(OfferSchema).min(1).max(MAX_IMPORT_ITEMS),
       template: z.string().max(4000).optional(),
     })
     const parsed = schema.safeParse(req.body)

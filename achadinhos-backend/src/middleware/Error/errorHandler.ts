@@ -47,11 +47,34 @@ export function errorHandler(
     res.status(400).json({
       success: false,
       error: {
-        message: err.code === 'LIMIT_FILE_SIZE' ? 'Arquivo excede o limite permitido' : 'Upload inválido',
+        message:
+          err.code === 'LIMIT_FILE_SIZE' ? 'Arquivo excede o limite permitido' : 'Upload inválido',
         code: 'UPLOAD_ERROR',
       },
     })
     return
+  }
+
+  if (err && typeof err === 'object' && 'type' in err) {
+    if (err.type === 'entity.too.large') {
+      res
+        .status(413)
+        .json({
+          success: false,
+          error: {
+            message:
+              'JSON excede o limite de tamanho permitido. Use uma exportação compacta ou divida o arquivo.',
+            code: 'PAYLOAD_TOO_LARGE',
+          },
+        })
+      return
+    }
+    if (err.type === 'entity.parse.failed') {
+      res
+        .status(400)
+        .json({ success: false, error: { message: 'JSON inválido', code: 'INVALID_JSON' } })
+      return
+    }
   }
 
   logger.error({ err }, 'Unhandled error')

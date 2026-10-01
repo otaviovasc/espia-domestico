@@ -5,12 +5,12 @@ import { Spinner } from '@/components/ui'
 import LoginPage from '@/pages/LoginPage'
 import ConnectionPage from '@/pages/ConnectionPage'
 import ComposePage from '@/pages/ComposePage'
-import ProductCatalogPage from '@/pages/ProductCatalogPage'
 import CampaignsPage from '@/pages/CampaignsPage'
 import CampaignDetailPage from '@/pages/CampaignDetailPage'
 import { lazy, Suspense, type ReactNode } from 'react'
 
 const AdLibraryPage = lazy(() => import('@/pages/AdLibraryPage'))
+const ProductCatalogPage = lazy(() => import('@/pages/ProductCatalogPage'))
 
 function Shell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
@@ -96,7 +96,7 @@ export default function App() {
       />
       <Route path="/connection" element={<Protected><ConnectionPage /></Protected>} />
       <Route path="/compose" element={<Protected><ComposePage /></Protected>} />
-      <Route path="/products" element={<Protected><ProductCatalogPage /></Protected>} />
+      <Route path="/products" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><ProductCatalogPage /></Suspense></Protected>} />
       <Route path="/campaigns" element={<Protected><CampaignsPage /></Protected>} />
       <Route path="/campaigns/:id" element={<Protected><CampaignDetailPage /></Protected>} />
       <Route

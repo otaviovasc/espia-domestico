@@ -9,6 +9,10 @@ const { User, USER_ROLE_ENUM } = require('../dist/database/models/User.js')
 const { Campaign, CAMPAIGN_STATUS_ENUM } = require('../dist/database/models/Campaign.js')
 const { CampaignLog } = require('../dist/database/models/CampaignLog.js')
 const { SavedProduct } = require('../dist/database/models/SavedProduct.js')
+const { ProductGroup } = require('../dist/database/models/ProductGroup.js')
+const {
+  SavedProductGroupMembership,
+} = require('../dist/database/models/SavedProductGroupMembership.js')
 const { ClassificationProfileRecord } = require('../dist/database/models/ClassificationProfile.js')
 const { createApp } = require('../dist/app.js')
 const { generateToken } = require('../dist/middleware/auth.js')
@@ -48,7 +52,7 @@ test('saved product API persists selected categories and isolates users', async 
       affiliateUrl: `https://example.com/legacy-${stamp}-${index}`,
       category: 'B',
     }))
-    await SavedProduct.bulkCreate(
+    const legacyProducts = await SavedProduct.bulkCreate(
       legacyOffers.map((offer, index) => ({
         userId: users[2].id,
         source: null,
@@ -57,6 +61,19 @@ test('saved product API persists selected categories and isolates users', async 
         affiliateUrlHash: createHash('sha256').update(offer.affiliateUrl).digest('hex'),
         offer,
         classifications: {},
+      })),
+    )
+    // Model the group/memberships backfilled by the migration for legacy data.
+    // Runtime saves now use explicit batch groups and never create this group.
+    const legacyDefaultGroup = await ProductGroup.create({
+      userId: users[2].id,
+      name: 'Produtos existentes',
+      isDefault: true,
+    })
+    await SavedProductGroupMembership.bulkCreate(
+      legacyProducts.map((product) => ({
+        savedProductId: product.id,
+        productGroupId: legacyDefaultGroup.id,
       })),
     )
     const customProfile = await ClassificationProfileRecord.create({
@@ -133,16 +150,29 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal(first.body.data.saved[0].offer.category, 'A')
     assert.equal(first.body.data.saved[0].classifications.default.category, 'A')
     assert.equal(first.body.data.saved[0].classifications.default.profileName, 'Doméstico')
-    assert.equal(first.body.data.saved[0].groupIds.length, 1)
+    assert.equal(first.body.data.saved[0].groupIds.length, 0)
     const id = first.body.data.saved[0].id
 
+    const emptyGroups = await apiRequest(0, '/product-groups')
+    assert.equal(emptyGroups.status, 200)
+    assert.deepEqual(emptyGroups.body.data.items, [])
+    const explicitGroup = await apiRequest(0, '/product-groups', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Produtos existentes' }),
+    })
+    assert.equal(explicitGroup.status, 201)
+    const batchGroupId = explicitGroup.body.data.id
+    const explicitMembership = await request(0, '/groups', {
+      method: 'PUT',
+      body: JSON.stringify({ productIds: [id], groupIds: [batchGroupId], mode: 'add' }),
+    })
+    assert.equal(explicitMembership.status, 200)
     const initialGroups = await apiRequest(0, '/product-groups')
     assert.equal(initialGroups.status, 200)
     assert.equal(initialGroups.body.data.items.length, 1)
     assert.equal(initialGroups.body.data.items[0].name, 'Produtos existentes')
-    assert.equal(initialGroups.body.data.items[0].isDefault, true)
+    assert.equal(initialGroups.body.data.items[0].isDefault, false)
     assert.equal(initialGroups.body.data.items[0].productCount, 1)
-    const defaultGroupId = initialGroups.body.data.items[0].id
 
     const legacyGroups = await apiRequest(2, '/product-groups')
     assert.equal(legacyGroups.status, 200)
@@ -377,7 +407,7 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal(groupedList.body.data.total, 1)
     assert.deepEqual(
       groupedList.body.data.items[0].groupIds,
-      [defaultGroupId, summerGroupId].sort((a, b) => a - b),
+      [batchGroupId, summerGroupId].sort((a, b) => a - b),
     )
     const renamedGroup = await apiRequest(0, `/product-groups/${summerGroupId}`, {
       method: 'PATCH',
@@ -395,20 +425,26 @@ test('saved product API persists selected categories and isolates users', async 
       409,
     )
     const otherUserGroups = await apiRequest(1, '/product-groups')
-    const otherDefaultGroupId = otherUserGroups.body.data.items[0].id
+    assert.deepEqual(otherUserGroups.body.data.items, [])
+    const otherUserGroup = await apiRequest(1, '/product-groups', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Lote de outro usuário' }),
+    })
+    assert.equal(otherUserGroup.status, 201)
+    const otherGroupId = otherUserGroup.body.data.id
     assert.equal(
       (
         await request(0, '/groups', {
           method: 'PUT',
-          body: JSON.stringify({ productIds: [id], groupIds: [otherDefaultGroupId], mode: 'add' }),
+          body: JSON.stringify({ productIds: [id], groupIds: [otherGroupId], mode: 'add' }),
         })
       ).status,
       404,
     )
     assert.equal((await request(1, `?groupId=${summerGroupId}`)).status, 404)
     assert.equal(
-      (await apiRequest(0, `/product-groups/${defaultGroupId}`, { method: 'DELETE' })).status,
-      400,
+      (await apiRequest(0, `/product-groups/${batchGroupId}`, { method: 'DELETE' })).status,
+      200,
     )
     assert.equal(
       (await apiRequest(0, `/product-groups/${summerGroupId}`, { method: 'DELETE' })).status,
@@ -617,6 +653,26 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal((await request(0, `/${genericId}`, { method: 'DELETE' })).status, 200)
     assert.equal((await request(0, `/${idlessId}`, { method: 'DELETE' })).status, 200)
     assert.equal((await request(0)).body.data.total, 101)
+    const largeBatch = Array.from({ length: 501 }, (_, index) => ({
+      ...offer,
+      productId: `LARGE-${stamp}-${index}`,
+      affiliateUrl: `https://example.com/large-${stamp}-${index}`,
+    }))
+    const tooLarge = await request(0, '', {
+      method: 'POST',
+      body: JSON.stringify({ offers: largeBatch }),
+    })
+    assert.equal(tooLarge.status, 400)
+    assert.equal((await request(0)).body.data.total, 101)
+    const fullBatch = await request(0, '', {
+      method: 'POST',
+      body: JSON.stringify({ offers: largeBatch.slice(0, 500) }),
+    })
+    assert.equal(fullBatch.status, 200)
+    assert.equal(fullBatch.body.data.created, 500)
+    assert.equal(fullBatch.body.data.saved.length, 500)
+    assert.equal((await request(0)).body.data.total, 601)
+    assert.equal((await request(1)).body.data.total, 0)
   } finally {
     if (server)
       await new Promise((resolve, reject) =>
