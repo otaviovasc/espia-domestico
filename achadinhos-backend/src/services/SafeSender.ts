@@ -72,17 +72,19 @@ function shuffle<T>(input: T[]): T[] {
 
 /**
  * Expand offers × groups into a flat task list. Order is offer-major so each
- * group receives offer 1, then offer 2, etc. Groups are optionally shuffled to
- * avoid always hitting the same group first.
+ * group receives offer 1, then offer 2, etc. Offers and groups are optionally
+ * shuffled (per run) to avoid always sending in the same order.
  */
 export function buildTasks(
   offers: CampaignOffer[],
   groups: CampaignGroup[],
   safety: CampaignSafety,
 ): SendTask[] {
+  // `?? true`: campaigns saved before this flag existed mix products by default.
+  const orderedOffers = (safety.shuffleOffers ?? true) ? shuffle(offers) : offers
   const orderedGroups = safety.shuffleGroups ? shuffle(groups) : groups
   const tasks: SendTask[] = []
-  for (const offer of offers) {
+  for (const offer of orderedOffers) {
     for (const group of orderedGroups) {
       tasks.push({ group, offer })
     }
@@ -100,7 +102,7 @@ export function buildTasks(
  *   rolling hour, wait until the window frees up.
  * - Warmup ramp: after every warmupBatchSize messages, take a longer pause
  *   (maxDelaySeconds × warmupPauseFactor).
- * - Group shuffle (applied in buildTasks).
+ * - Offer/group shuffle (applied in buildTasks).
  *
  * Each send goes through UAZAPI with a group JID (…@g.us) as the target and
  * uses async:true so it enters the instance's own send queue.

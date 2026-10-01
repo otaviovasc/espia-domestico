@@ -45,6 +45,7 @@ export const SafetySchema = z.object({
   minDelaySeconds: z.number().int().min(1).max(3600).default(8),
   maxDelaySeconds: z.number().int().min(1).max(3600).default(25),
   shuffleGroups: z.boolean().default(true),
+  shuffleOffers: z.boolean().default(true),
   maxPerHour: z.number().int().min(0).max(10000).default(120),
   warmupBatchSize: z.number().int().min(0).max(1000).default(0),
   warmupPauseFactor: z.number().min(1).max(20).default(3),

@@ -207,6 +207,15 @@ export function SafetyControls({
         Embaralhar ordem dos grupos
       </label>
 
+      <label className="flex items-center gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={safety.shuffleOffers ?? true}
+          onChange={(e) => onChange({ ...safety, shuffleOffers: e.target.checked })}
+        />
+        Embaralhar ordem dos produtos
+      </label>
+
       {/* Live summary */}
       <div className="flex items-start gap-2 rounded-lg bg-zinc-50 p-3 text-sm text-zinc-600">
         <Clock size={16} className="mt-0.5 shrink-0 text-violet-500" />

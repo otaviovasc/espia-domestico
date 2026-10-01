@@ -261,6 +261,7 @@ Bateria de 30h, cancelamento de ruído
 - **Limite por hora** (`maxPerHour`): pausa ao atingir o teto na janela de 1h.
 - **Aquecimento** (`warmupBatchSize` + `warmupPauseFactor`): pausas mais longas a cada N mensagens.
 - **Embaralhar grupos** (`shuffleGroups`): não envia sempre na mesma ordem.
+- **Embaralhar produtos** (`shuffleOffers`): mistura a ordem dos produtos a cada envio.
 - Os envios usam a fila assíncrona da própria UAZAPI (`async: true`).
 
 ## API (resumo)

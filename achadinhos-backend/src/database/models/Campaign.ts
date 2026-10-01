@@ -61,6 +61,8 @@ export interface CampaignSafety {
   maxDelaySeconds: number
   /** Shuffle group order before sending. */
   shuffleGroups: boolean
+  /** Shuffle product order before sending (default on; missing = on). */
+  shuffleOffers: boolean
   /** Max messages sent per hour across the whole campaign (0 = unlimited). */
   maxPerHour: number
   /**

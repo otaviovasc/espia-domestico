@@ -38,6 +38,7 @@ const DEFAULT_SAFETY: Safety = {
   minDelaySeconds: 8,
   maxDelaySeconds: 25,
   shuffleGroups: true,
+  shuffleOffers: true,
   maxPerHour: 120,
   warmupBatchSize: 0,
   warmupPauseFactor: 3,

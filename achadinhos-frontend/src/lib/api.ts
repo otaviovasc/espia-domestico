@@ -217,6 +217,7 @@ export interface Safety {
   minDelaySeconds: number
   maxDelaySeconds: number
   shuffleGroups: boolean
+  shuffleOffers: boolean
   maxPerHour: number
   warmupBatchSize: number
   warmupPauseFactor: number

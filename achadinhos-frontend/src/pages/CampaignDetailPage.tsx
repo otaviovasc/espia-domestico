@@ -7,6 +7,7 @@ import {
   Ban,
   Pause,
   RotateCw,
+  Shuffle,
   Save,
   CheckCircle2,
   XCircle,
@@ -124,7 +125,8 @@ export default function CampaignDetailPage() {
     setName(c.name)
     setOffers(c.offers)
     setGroups(c.groups)
-    setSafety(c.safety)
+    // Campaigns saved before shuffleOffers existed mix products by default.
+    setSafety({ ...c.safety, shuffleOffers: c.safety.shuffleOffers ?? true })
     setTemplate(c.messageTemplate)
     setSendImages(c.sendImages)
     setAllowResend(c.allowResend ?? false)
@@ -470,7 +472,26 @@ export default function CampaignDetailPage() {
 
           {/* Offers */}
           <Card>
-            <h2 className="mb-3 font-semibold">Produtos ({offers.length})</h2>
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-semibold">Produtos ({offers.length})</h2>
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  setOffers((prev) => {
+                    const next = [...prev]
+                    for (let i = next.length - 1; i > 0; i--) {
+                      const j = Math.floor(Math.random() * (i + 1))
+                      ;[next[i], next[j]] = [next[j], next[i]]
+                    }
+                    return next
+                  })
+                }
+                disabled={offers.length < 2}
+                title="Mistura a ordem dos produtos agora (clique em Salvar para gravar)"
+              >
+                <Shuffle size={14} /> Embaralhar
+              </Button>
+            </div>
             <div className="max-h-80 space-y-1 overflow-y-auto">
               {offers.map((o, i) => (
                 <div key={i} className="grid gap-2 rounded-lg px-2 py-2 hover:bg-zinc-50 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)_auto] md:items-start">
