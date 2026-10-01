@@ -84,6 +84,18 @@ export class ConnectionService {
     return connection ? this.connectionScope(connection) : null
   }
 
+  /**
+   * Resolve a connection by its public uuid (used by the UAZAPI webhook, which
+   * carries no authenticated user). Returns the scope used to isolate stored
+   * messages, or null when the connection is unknown / not provisioned.
+   */
+  async resolveScopeByUuid(uuid: string): Promise<string | null> {
+    if (!uuid) return null
+    const connection = await Connection.findOne({ where: { uuid } })
+    if (!connection) return null
+    return this.connectionScope(connection)
+  }
+
   private toStatusResult(
     connection: Connection,
     pairingCode: string | null = null,

@@ -594,6 +594,49 @@ export const groupApi = {
   },
 }
 
+// ── Group messages (two-way) ────────────────────────
+export interface GroupMessage {
+  id: number
+  groupId: string
+  groupName: string | null
+  direction: 'in' | 'out'
+  sender: string | null
+  senderName: string | null
+  fromMe: boolean
+  text: string | null
+  mediaType: string | null
+  mediaUrl: string | null
+  timestamp: string
+}
+
+export const groupMessageApi = {
+  async list(groupId: string, opts?: { limit?: number; before?: string }): Promise<GroupMessage[]> {
+    return unwrap<GroupMessage[]>(
+      await api.get(`/groups/${encodeURIComponent(groupId)}/messages`, {
+        params: { limit: opts?.limit, before: opts?.before },
+      }),
+    )
+  },
+  async sendText(groupId: string, text: string): Promise<GroupMessage> {
+    return unwrap<GroupMessage>(
+      await api.post(`/groups/${encodeURIComponent(groupId)}/messages`, { text }),
+    )
+  },
+  async sendOffer(
+    groupId: string,
+    offer: Offer,
+    opts?: { sendImage?: boolean; template?: string | null },
+  ): Promise<GroupMessage> {
+    return unwrap<GroupMessage>(
+      await api.post(`/groups/${encodeURIComponent(groupId)}/messages`, {
+        offer,
+        sendImage: opts?.sendImage,
+        template: opts?.template,
+      }),
+    )
+  },
+}
+
 // ── Campaigns ───────────────────────────────────────
 export const campaignApi = {
   async meta(): Promise<CampaignMeta> {

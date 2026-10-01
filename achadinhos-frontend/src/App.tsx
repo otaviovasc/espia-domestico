@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
-import { Clapperboard, Send, History, LogOut, Smartphone, Tags } from 'lucide-react'
+import { Clapperboard, Send, History, LogOut, Smartphone, Tags, MessagesSquare } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui'
 import LoginPage from '@/pages/LoginPage'
@@ -11,6 +11,7 @@ import { lazy, Suspense, type ReactNode } from 'react'
 
 const AdLibraryPage = lazy(() => import('@/pages/AdLibraryPage'))
 const ProductCatalogPage = lazy(() => import('@/pages/ProductCatalogPage'))
+const GroupMessagesPage = lazy(() => import('@/pages/GroupMessagesPage'))
 
 function Shell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
@@ -40,6 +41,9 @@ function Shell({ children }: { children: ReactNode }) {
           </NavLink>
           <NavLink to="/compose" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
             <Send size={18} /> Nova campanha
+          </NavLink>
+          <NavLink to="/messages" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
+            <MessagesSquare size={18} /> Mensagens
           </NavLink>
           <NavLink to="/products" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
             <Tags size={18} /> Produtos
@@ -96,6 +100,7 @@ export default function App() {
       />
       <Route path="/connection" element={<Protected><ConnectionPage /></Protected>} />
       <Route path="/compose" element={<Protected><ComposePage /></Protected>} />
+      <Route path="/messages" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><GroupMessagesPage /></Suspense></Protected>} />
       <Route path="/products" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><ProductCatalogPage /></Suspense></Protected>} />
       <Route path="/campaigns" element={<Protected><CampaignsPage /></Protected>} />
       <Route path="/campaigns/:id" element={<Protected><CampaignDetailPage /></Protected>} />

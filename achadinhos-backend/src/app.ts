@@ -18,6 +18,7 @@ import { savedProductRoutes } from '@/routes/savedProductRoutes'
 import { classificationProfileRoutes } from '@/routes/classificationProfileRoutes'
 import { productGroupRoutes } from '@/routes/productGroupRoutes'
 import { adProjectRoutes } from '@/routes/adProjectRoutes'
+import { webhookRoutes } from '@/routes/webhookRoutes'
 
 export function createApp(): Application {
   const app = express()
@@ -59,6 +60,7 @@ export function createApp(): Application {
   const prefix = env.API_PREFIX
   app.use(`${prefix}/health`, healthRoutes)
   app.use(`${prefix}/auth`, authRoutes)
+  app.use(`${prefix}/webhook`, webhookRoutes)
   app.use(`${prefix}/connection`, connectionRoutes)
   app.use(`${prefix}/groups`, groupRoutes)
   app.use(`${prefix}/campaigns`, campaignRoutes)

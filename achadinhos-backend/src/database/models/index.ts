@@ -10,6 +10,7 @@ import { SavedProductGroupMembership } from './SavedProductGroupMembership'
 import { AdProject } from './AdProject'
 import { AdAsset } from './AdAsset'
 import { AdRenderJob } from './AdRenderJob'
+import { GroupMessage } from './GroupMessage'
 
 /**
  * Register model associations. Call once at boot before serving requests.
@@ -68,4 +69,5 @@ export {
   AdProject,
   AdAsset,
   AdRenderJob,
+  GroupMessage,
 }
