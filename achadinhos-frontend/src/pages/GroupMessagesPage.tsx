@@ -8,11 +8,13 @@ import {
   Tag,
   X,
   ImageIcon,
+  FileJson,
 } from 'lucide-react'
 import {
   groupApi,
   groupMessageApi,
   savedProductApi,
+  campaignApi,
   apiErrorMessage,
   type Group,
   type GroupMessage,
@@ -20,6 +22,7 @@ import {
   type SavedProduct,
 } from '@/lib/api'
 import { Button, Card, Badge, Spinner, Input } from '@/components/ui'
+import { WhatsAppBubble } from '@/components/WhatsAppBubble'
 
 function timeLabel(iso: string): string {
   const d = new Date(iso)
@@ -92,14 +95,8 @@ function MessageRow({ msg }: { msg: GroupMessage }) {
   )
 }
 
-/** Modal to pick a saved product to send as a formatted offer. */
-function OfferPicker({
-  onPick,
-  onClose,
-}: {
-  onPick: (offer: Offer) => void
-  onClose: () => void
-}) {
+/** Catalog list used inside the sender modal. */
+function CatalogList({ onSelect }: { onSelect: (offer: Offer) => void }) {
   const [search, setSearch] = useState('')
   const query = useQuery({
     queryKey: ['saved-products', 'picker'],
@@ -113,60 +110,193 @@ function OfferPicker({
   }, [items, search])
 
   return (
+    <>
+      <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-200 px-2">
+        <Search size={16} className="text-zinc-400" />
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Buscar produto do catálogo"
+          className="w-full py-2 text-sm outline-none"
+        />
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {query.isLoading && (
+          <div className="flex justify-center py-8">
+            <Spinner />
+          </div>
+        )}
+        {query.isError && <p className="text-sm text-red-600">{apiErrorMessage(query.error)}</p>}
+        {!query.isLoading && filtered.length === 0 && (
+          <p className="py-8 text-center text-sm text-zinc-500">
+            Nenhum produto no catálogo. Salve produtos na página Produtos.
+          </p>
+        )}
+        <div className="space-y-2">
+          {filtered.map((p) => (
+            <button
+              key={p.id}
+              onClick={() => onSelect(p.offer)}
+              className="flex w-full items-center gap-3 rounded-lg border border-zinc-200 p-2 text-left hover:border-violet-400 hover:bg-violet-50"
+            >
+              {p.offer.imageUrl && (
+                <img
+                  src={p.offer.imageUrl}
+                  alt=""
+                  className="h-12 w-12 shrink-0 rounded-md object-cover"
+                  loading="lazy"
+                />
+              )}
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{p.offer.title}</div>
+                <div className="text-xs text-zinc-500">
+                  R$ {p.offer.discountedPrice.toFixed(2).replace('.', ',')}
+                </div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
+
+/** Paste a product JSON, parse it (no AI), and preview before sending. */
+function PasteJson({ onSelect }: { onSelect: (offer: Offer) => void }) {
+  const [raw, setRaw] = useState('')
+  const [offers, setOffers] = useState<Offer[]>([])
+  const [error, setError] = useState<string | null>(null)
+
+  const parseMutation = useMutation({
+    // parseOnly normalizes aliases/prices without any paid AI call.
+    mutationFn: () => campaignApi.importOffers(raw, { parseOnly: true }),
+    onSuccess: (res) => {
+      setOffers(res.offers)
+      setError(
+        res.offers.length === 0
+          ? 'Nenhum produto válido encontrado no JSON.'
+          : null,
+      )
+    },
+    onError: (e) => {
+      setOffers([])
+      setError(apiErrorMessage(e))
+    },
+  })
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {offers.length === 0 ? (
+        <>
+          <textarea
+            value={raw}
+            onChange={(e) => setRaw(e.target.value)}
+            placeholder='Cole aqui o JSON do produto (um objeto ou um array). Ex.: [{"title":"...","por":99.9,"link":"https://..."}]'
+            className="min-h-[200px] flex-1 resize-none rounded-lg border border-zinc-300 p-3 font-mono text-xs outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+          />
+          {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+          <Button
+            className="mt-3 self-start"
+            onClick={() => parseMutation.mutate()}
+            disabled={parseMutation.isPending || !raw.trim()}
+          >
+            {parseMutation.isPending ? 'Lendo…' : 'Pré-visualizar'}
+          </Button>
+        </>
+      ) : (
+        <>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm text-zinc-500">
+              {offers.length} produto{offers.length === 1 ? '' : 's'} — escolha para enviar
+            </span>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setOffers([])
+                setError(null)
+              }}
+            >
+              Editar JSON
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
+            {offers.map((offer, i) => (
+              <OfferPreviewCard key={i} offer={offer} onSend={() => onSelect(offer)} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** A single parsed offer: WhatsApp preview + a send button. */
+function OfferPreviewCard({ offer, onSend }: { offer: Offer; onSend: () => void }) {
+  const previewQuery = useQuery({
+    queryKey: ['offer-preview', offer.affiliateUrl, offer.title, offer.discountedPrice],
+    queryFn: async () => {
+      const [p] = await campaignApi.preview([offer])
+      return p?.message ?? ''
+    },
+  })
+  return (
+    <div className="rounded-lg border border-zinc-200 p-3">
+      {previewQuery.isLoading ? (
+        <div className="flex justify-center py-6">
+          <Spinner />
+        </div>
+      ) : (
+        <WhatsAppBubble
+          message={previewQuery.data ?? ''}
+          imageUrl={offer.imageUrl}
+          showImage={Boolean(offer.imageUrl)}
+        />
+      )}
+      <div className="mt-3 flex justify-end">
+        <Button onClick={onSend}>
+          <Send size={16} /> Enviar este
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** Modal to send an offer: pick from catalog OR paste a JSON and preview it. */
+function OfferSender({
+  onSelect,
+  onClose,
+}: {
+  onSelect: (offer: Offer) => void
+  onClose: () => void
+}) {
+  const [tab, setTab] = useState<'catalog' | 'json'>('catalog')
+  const tabClass = (active: boolean) =>
+    `flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition ${
+      active ? 'bg-violet-600 text-white' : 'text-zinc-600 hover:bg-zinc-100'
+    }`
+
+  return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <Card className="flex max-h-[80vh] w-full max-w-lg flex-col">
+      <Card className="flex max-h-[85vh] w-full max-w-lg flex-col">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="font-semibold">Escolher oferta</h3>
+          <h3 className="font-semibold">Enviar oferta</h3>
           <button onClick={onClose} className="text-zinc-400 hover:text-zinc-700">
             <X size={20} />
           </button>
         </div>
-        <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-200 px-2">
-          <Search size={16} className="text-zinc-400" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar produto do catálogo"
-            className="w-full py-2 text-sm outline-none"
-          />
+        <div className="mb-3 flex gap-1">
+          <button onClick={() => setTab('catalog')} className={tabClass(tab === 'catalog')}>
+            <Tag size={15} /> Catálogo
+          </button>
+          <button onClick={() => setTab('json')} className={tabClass(tab === 'json')}>
+            <FileJson size={15} /> Colar JSON
+          </button>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          {query.isLoading && (
-            <div className="flex justify-center py-8">
-              <Spinner />
-            </div>
-          )}
-          {query.isError && <p className="text-sm text-red-600">{apiErrorMessage(query.error)}</p>}
-          {!query.isLoading && filtered.length === 0 && (
-            <p className="py-8 text-center text-sm text-zinc-500">
-              Nenhum produto no catálogo. Salve produtos na página Produtos.
-            </p>
-          )}
-          <div className="space-y-2">
-            {filtered.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => onPick(p.offer)}
-                className="flex w-full items-center gap-3 rounded-lg border border-zinc-200 p-2 text-left hover:border-violet-400 hover:bg-violet-50"
-              >
-                {p.offer.imageUrl && (
-                  <img
-                    src={p.offer.imageUrl}
-                    alt=""
-                    className="h-12 w-12 shrink-0 rounded-md object-cover"
-                    loading="lazy"
-                  />
-                )}
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{p.offer.title}</div>
-                  <div className="text-xs text-zinc-500">
-                    R$ {p.offer.discountedPrice.toFixed(2).replace('.', ',')}
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
+        {tab === 'catalog' ? (
+          <CatalogList onSelect={onSelect} />
+        ) : (
+          <PasteJson onSelect={onSelect} />
+        )}
       </Card>
     </div>
   )
@@ -339,8 +469,8 @@ export default function GroupMessagesPage() {
                 <Button
                   variant="secondary"
                   onClick={() => setPickerOpen(true)}
-                  disabled={sending || selected.announceOnly}
-                  title={selected.announceOnly ? 'Apenas administradores podem postar' : 'Enviar oferta'}
+                  disabled={sending}
+                  title="Enviar oferta"
                 >
                   <Tag size={16} /> Oferta
                 </Button>
@@ -353,16 +483,12 @@ export default function GroupMessagesPage() {
                       sendTextMutation.mutate(text.trim())
                     }
                   }}
-                  placeholder={
-                    selected.announceOnly
-                      ? 'Somente administradores podem enviar'
-                      : 'Escreva uma mensagem…'
-                  }
-                  disabled={sending || selected.announceOnly}
+                  placeholder="Escreva uma mensagem…"
+                  disabled={sending}
                 />
                 <Button
                   onClick={() => text.trim() && sendTextMutation.mutate(text.trim())}
-                  disabled={sending || !text.trim() || selected.announceOnly}
+                  disabled={sending || !text.trim()}
                 >
                   <Send size={16} />
                   {sendTextMutation.isPending ? 'Enviando…' : 'Enviar'}
@@ -382,9 +508,9 @@ export default function GroupMessagesPage() {
       </div>
 
       {pickerOpen && (
-        <OfferPicker
+        <OfferSender
           onClose={() => setPickerOpen(false)}
-          onPick={(offer) => sendOfferMutation.mutate(offer)}
+          onSelect={(offer) => sendOfferMutation.mutate(offer)}
         />
       )}
     </div>
