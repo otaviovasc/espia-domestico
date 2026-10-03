@@ -168,6 +168,12 @@ O catálogo mantém uma classificação separada
 para cada perfil usado no mesmo produto, inclusive após a remoção de um perfil.
 Ao criar uma campanha, escolha qual classificação do nicho usar.
 
+Ao investigar uma relevância inesperadamente baixa, confira o perfil ativo e se
+as instruções incluem a categoria do produto: o avaliador usa esses critérios e
+pode pontuar baixo uma categoria omitida. Analise a relevância em separado dos
+sinais comerciais; alta afinidade não garante faixa A se os limites de desconto
+ou comissão do perfil não forem atingidos.
+
 Cada sessão aceita até 50 arquivos JSON, com até 5.000 produtos no total e
 32 MB de payload. Selecione vários arquivos de uma vez ou adicione arquivos em
 seleções posteriores; a lista permite remover cada arquivo e informa erros de
