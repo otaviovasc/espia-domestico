@@ -349,23 +349,22 @@ body {
 
 .ad-stage-panel {
   position: sticky;
-  top: 0;
+  top: 1rem;
   min-width: 0;
   overflow: hidden;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 1rem;
   background: #171725;
-  padding: 1rem;
-  box-shadow: 0 14px 34px rgba(23, 23, 42, 0.16);
+  padding: 0;
+  box-shadow: 0 6px 20px rgba(23, 23, 42, 0.1);
 }
 
 .ad-preview-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  margin-bottom: 0.9rem;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
 }
 
 .ad-preview-toolbar-actions {
@@ -378,8 +377,8 @@ body {
 
 .ad-preview-tool-button {
   display: inline-flex;
-  min-width: 2rem;
-  min-height: 2rem;
+  min-width: 2.25rem;
+  min-height: 2.25rem;
   align-items: center;
   justify-content: center;
   gap: 0.35rem;
@@ -414,7 +413,7 @@ body {
 }
 
 .ad-preview-audio-status {
-  margin: -0.35rem 0 0.75rem;
+  margin: 0 0.75rem 0.5rem;
   border-radius: 0.55rem;
   background: rgba(251, 191, 36, 0.12);
   padding: 0.45rem 0.6rem;
@@ -440,13 +439,77 @@ body {
   position: relative;
   container-type: inline-size;
   margin-inline: auto;
-  width: min(100%, 20.5rem);
+  width: min(100%, calc((100dvh - 13rem) * var(--ad-preview-ratio, 0.5625)));
   overflow: hidden;
-  outline: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 1rem;
   background: #0d0d15;
-  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.32);
 }
+
+.ad-editor-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 1rem;
+}
+
+@media (min-width: 1024px) {
+  .ad-editor-workspace { grid-template-columns: minmax(280px, 0.95fr) minmax(360px, 1fr); }
+}
+
+.ad-carousel-canvas {
+  width: min(100%, calc((100dvh - 16rem) * var(--ad-preview-ratio, 0.8)));
+  margin-inline: auto;
+}
+
+.ad-preview-transport {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.ad-preview-time {
+  padding-inline: 0.35rem;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 0.65rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ad-preview-filmstrip {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-x: auto;
+  padding: 0 0.75rem 0.5rem;
+  scrollbar-width: thin;
+}
+
+.ad-preview-filmstrip:empty { display: none; }
+
+.ad-preview-scene {
+  flex: 0 0 auto;
+  min-width: 2rem;
+  min-height: 2rem;
+  border-radius: 0.4rem;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.7rem;
+}
+
+.ad-preview-scene:hover, .ad-preview-scene-active { background: rgba(255, 255, 255, 0.14); color: #fff; }
+.ad-preview-scene:focus-visible, .ad-preview-details summary:focus-visible, .ad-preview-render-button:focus-visible { outline: 2px solid #c4b5fd; outline-offset: -2px; }
+
+.ad-preview-footer { display: flex; align-items: flex-start; gap: 0.5rem; padding: 0.25rem 0.75rem 0.5rem; }
+.ad-preview-details { flex: 1; min-width: 0; color: rgba(255, 255, 255, 0.55); font-size: 0.7rem; }
+.ad-preview-details summary { cursor: pointer; padding-block: 0.5rem; }
+.ad-preview-details p { margin-block: 0.5rem; line-height: 1.5; }
+.ad-carousel-details { padding: 0 0.75rem 0.35rem; }
+.ad-preview-render-button { display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; flex: 0 0 auto; padding: 0.5rem 0.6rem; border-radius: 0.4rem; color: #fff; font-size: 0.7rem; background: rgba(255, 255, 255, 0.1); }
+.ad-preview-render-button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.18); }
+.ad-preview-render-button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.ad-stage-panel.ad-stage-expanded { position: fixed; inset: 0; z-index: 100; width: 100%; height: 100dvh; overflow-y: auto; border: 0; border-radius: 0; }
+.ad-stage-expanded .ad-phone-stage, .ad-stage-expanded .ad-carousel-canvas { width: min(100%, calc((100dvh - 16rem) * var(--ad-preview-ratio, 0.5625))); }
+.ad-stage-expanded .ad-preview-transport, .ad-stage-expanded .ad-preview-filmstrip, .ad-stage-expanded .ad-preview-footer, .ad-stage-expanded .ad-carousel-details { max-width: 60rem; margin-inline: auto; }
 
 .ad-preview-transition {
   position: absolute;
@@ -470,7 +533,8 @@ body {
 }
 
 .ad-preview-timeline {
-  margin-top: 0.9rem;
+  flex: 1;
+  min-width: 0;
 }
 
 .ad-preview-meta {
@@ -578,33 +642,16 @@ body {
   height: 1.4rem;
 }
 
-@media (max-width: 1279px) {
+@media (max-width: 1023px) {
   .ad-stage-panel {
     position: relative;
   }
 }
 
 @media (max-width: 479px) {
-  .ad-stage-panel {
-    padding: 0.75rem;
-  }
-
-  .ad-preview-toolbar {
-    align-items: flex-start;
-  }
-
-  .ad-preview-toolbar-actions {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-  }
-
-  .ad-preview-sound-button span {
-    display: none;
-  }
-
-  .ad-preview-sound-button {
-    padding-inline: 0.4rem;
-  }
+  .ad-preview-tool-button { min-width: 2.5rem; min-height: 2.5rem; }
+  .ad-preview-toolbar { padding: 0.25rem 0.5rem; }
+  .ad-preview-transport { padding-inline: 0.25rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

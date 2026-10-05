@@ -11,6 +11,7 @@ import type { AdProjectConfig } from '@/dtos/adProject'
 export class AdProject extends Model<InferAttributes<AdProject>, InferCreationAttributes<AdProject>> {
   declare id: CreationOptional<number>
   declare userId: number
+  declare revision: CreationOptional<number>
   declare name: string
   declare config: AdProjectConfig
   declare createdAt: CreationOptional<Date>
@@ -21,6 +22,7 @@ AdProject.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     userId: { type: DataTypes.INTEGER, allowNull: false, field: 'user_id' },
+    revision: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
     name: { type: DataTypes.STRING(120), allowNull: false },
     config: { type: DataTypes.JSONB, allowNull: false },
     createdAt: { type: DataTypes.DATE, field: 'created_at' },

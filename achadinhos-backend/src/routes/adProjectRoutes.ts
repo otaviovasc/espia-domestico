@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit'
 import multer from 'multer'
 import { container } from 'tsyringe'
 import { env } from '@/config/env'
+import { AdStudioController } from '@/controllers/AdStudioController'
 import { AdProjectController } from '@/controllers/AdProjectController'
 import { authenticate } from '@/middleware/auth'
 import { adUploadTempDir } from '@/services/AdMediaService'
@@ -29,6 +30,7 @@ const upload = multer({
 
 const adProjectRoutes = Router()
 const controller = container.resolve(AdProjectController)
+const studio = container.resolve(AdStudioController)
 const musicImportLimit = rateLimit({
   windowMs: 10 * 60 * 1000,
   limit: 12,
@@ -37,6 +39,16 @@ const musicImportLimit = rateLimit({
 })
 
 adProjectRoutes.use(authenticate)
+adProjectRoutes.get('/studio/:kind', (req, res) => studio.list(req, res))
+adProjectRoutes.post('/studio/:kind', (req, res) => studio.save(req, res))
+adProjectRoutes.delete('/studio/records/:recordId', (req, res) => studio.remove(req, res))
+adProjectRoutes.patch('/studio/library/:recordId', (req, res) => studio.editMedia(req, res))
+adProjectRoutes.post('/studio/copy/suggest', musicImportLimit, (req, res) => studio.copy(req, res))
+adProjectRoutes.post('/:id/assets/:assetId/library', (req, res) => studio.saveMedia(req, res))
+adProjectRoutes.post('/:id/library/attach', (req, res) => studio.attach(req, res))
+adProjectRoutes.post('/:id/products/import', musicImportLimit, (req, res) => studio.products(req, res))
+adProjectRoutes.post('/:id/variants', (req, res) => studio.variant(req, res))
+adProjectRoutes.get('/:id/render-jobs/:jobId/bundle', (req, res) => studio.bundle(req, res))
 adProjectRoutes.get('/', (req, res) => controller.list(req, res))
 adProjectRoutes.post('/', (req, res) => controller.create(req, res))
 adProjectRoutes.get('/preview/sfx/:preset', (req, res) => controller.previewSfx(req, res))

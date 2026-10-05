@@ -3,10 +3,17 @@ import { useQuery } from '@tanstack/react-query'
 import {
   ArrowDown,
   ArrowUp,
+  Copy,
   ChevronLeft,
   ChevronRight,
   Image,
   Plus,
+  Maximize2,
+  Minimize2,
+  Play,
+  Pause,
+  Volume2,
+  VolumeX,
   Trash2,
 } from 'lucide-react'
 import {
@@ -16,6 +23,8 @@ import {
   type AdProject,
   type AdProjectConfig,
 } from '@/lib/api'
+import { usePreviewFullscreen } from '@/hooks/usePreviewFullscreen'
+import { DEFAULT_CLIP_EDIT } from '@/lib/adClipConfig'
 import { Button } from '@/components/ui'
 import { previewClipGeometry } from '@/lib/adPreviewFraming'
 
@@ -24,13 +33,27 @@ function CarouselMedia({
   asset,
   config,
   durationSeconds,
+  edit,
+  playing,
+  muted,
+  onFinished,
 }: {
   projectId: number
   asset: AdAsset
   config: AdProjectConfig
   durationSeconds: number
+  edit: AdCarouselSlide['edit']
+  playing: boolean
+  muted: boolean
+  onFinished: () => void
 }) {
   const background = useRef<HTMLVideoElement>(null)
+  const foreground = useRef<HTMLVideoElement>(null)
+  const started = useRef(0)
+  const changes = { ...DEFAULT_CLIP_EDIT, ...edit }
+  useEffect(() => {
+    if (foreground.current) { foreground.current.volume = changes.volume ?? 1; foreground.current.playbackRate = changes.speed }
+  }, [changes.volume, changes.speed])
   const [url, setUrl] = useState('')
   const [mediaError, setMediaError] = useState(false)
   useEffect(() => {
@@ -53,14 +76,22 @@ function CarouselMedia({
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
   }, [projectId, asset.id])
-  const framing = config.framing
+  useEffect(() => {
+    const video = foreground.current
+    if (!video || !url) return
+    if (playing) {
+      if (video.paused) started.current = performance.now()
+      void video.play().catch(onFinished)
+    } else video.pause()
+  }, [playing, url, onFinished])
+  const framing = changes.framingOverride ? { ...config.framing, focusX: changes.focusX, focusY: changes.focusY } : config.framing
   const geometry = previewClipGeometry(
     config.output,
     asset,
     framing.mode,
     framing.focusX,
     framing.focusY,
-    1,
+    changes.framingOverride ? changes.zoom : 1,
   )
   const backgroundGeometry = previewClipGeometry(
     config.output,
@@ -84,6 +115,8 @@ function CarouselMedia({
     )
   return (
     <>
+      <style>{`@keyframes ad-zoom-in {from {transform:scale(1)} to {transform:scale(1.12)}} @keyframes ad-zoom-out {from {transform:scale(1.12)} to {transform:scale(1)}} @keyframes ad-pan-left {from {transform:scale(1.12) translateX(5.35%)} to {transform:scale(1.12) translateX(-5.35%)}} @keyframes ad-pan-right {from {transform:scale(1.12) translateX(-5.35%)} to {transform:scale(1.12) translateX(5.35%)}}`}</style>
+      <div className="absolute inset-0" style={asset.kind === 'image' && changes.motion && changes.motion !== 'none' ? { animation: `ad-${changes.motion} ${durationSeconds}s linear forwards`, animationPlayState: playing ? 'running' : 'paused', transformOrigin: `${framing.focusX}% ${framing.focusY}%` } : undefined}>
       {framing.mode === 'contain-blur' ? (
         asset.kind === 'image' ? (
           <img
@@ -118,11 +151,15 @@ function CarouselMedia({
         />
       ) : (
         <video
+          ref={foreground}
           src={url}
-          controls
+          muted={muted}
           playsInline
           loop={asset.durationSeconds < durationSeconds}
+          onLoadedMetadata={(event) => { event.currentTarget.currentTime = changes.trimStart; event.currentTarget.playbackRate = changes.speed; event.currentTarget.volume = changes.volume ?? 1 }}
           onPlay={() => {
+            started.current = performance.now()
+            if (background.current && foreground.current) background.current.currentTime = foreground.current.currentTime
             void background.current?.play().catch(() => undefined)
           }}
           onPause={() => background.current?.pause()}
@@ -137,13 +174,16 @@ function CarouselMedia({
               ) > 0.2
             )
               background.current.currentTime = event.currentTarget.currentTime
-            if (event.currentTarget.currentTime >= durationSeconds) {
+            if (event.currentTarget.currentTime >= (changes.trimEnd ?? asset.durationSeconds) - 0.05) event.currentTarget.currentTime = changes.trimStart
+            if (playing && !event.currentTarget.paused && started.current > 0 && performance.now() - started.current >= durationSeconds * 1000) {
               event.currentTarget.pause()
-              event.currentTarget.currentTime = 0
+              event.currentTarget.currentTime = changes.trimStart
+              onFinished()
             }
           }}
         />
       )}
+      </div>
     </>
   )
 }
@@ -159,6 +199,9 @@ export function CarouselPreview({
   index: number
   onIndexChange: (index: number) => void
 }) {
+  const { ref, expanded, toggle } = usePreviewFullscreen()
+  const [playingIndex, setPlayingIndex] = useState<number | null>(null)
+  const [muted, setMuted] = useState(true)
   const slides = config.carousel?.slides ?? []
   const selectedIndex = Math.min(index, Math.max(0, slides.length - 1))
   const slide = slides[selectedIndex]
@@ -166,7 +209,7 @@ export function CarouselPreview({
   const captionInput = JSON.stringify({
     texts: slide?.text.trim() ? [slide.text.trim()] : [],
     output: config.output,
-    textStyle: config.textStyle,
+    textStyle: slide?.textStyle ?? config.textStyle,
   })
   const [settledInput, setSettledInput] = useState(captionInput)
   useEffect(() => {
@@ -184,17 +227,16 @@ export function CarouselPreview({
     (item) => item.text === slide?.text.trim(),
   )
   return (
-    <section className="ad-stage-panel">
-      <div className="p-5 text-white">
-        <h2 className="font-semibold">Prévia do carrossel</h2>
-        <p className="mt-1 text-xs text-white/60">
-          {config.output.width}×{config.output.height} · {slides.length} de 20
-          slides
-        </p>
+    <section ref={ref} className={`ad-stage-panel ${expanded ? 'ad-stage-expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label="Prévia do carrossel" style={{ '--ad-preview-ratio': config.output.width / config.output.height } as React.CSSProperties}>
+      <div className="ad-preview-toolbar">
+        <h2 className="text-sm font-semibold text-white">Prévia <span className="ml-2 text-xs font-normal text-white/50">{config.output.width === config.output.height ? '1:1' : '4:5'}</span></h2>
+        <button type="button" onClick={() => void toggle()} className="ad-preview-tool-button" aria-label={expanded ? 'Reduzir prévia' : 'Ampliar prévia'} title={expanded ? 'Reduzir prévia' : 'Ampliar prévia'}>
+          {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+        </button>
       </div>
-      <div className="mx-auto w-full max-w-[360px] px-4">
+      <div className="ad-carousel-canvas">
         <div
-          className="relative overflow-hidden rounded-xl"
+          className="relative overflow-hidden"
           style={{
             aspectRatio: `${config.output.width}/${config.output.height}`,
             backgroundColor: config.framing.backgroundColor,
@@ -208,6 +250,10 @@ export function CarouselPreview({
               asset={asset}
               config={config}
               durationSeconds={slide.durationSeconds}
+              edit={slide.edit}
+              playing={playingIndex === selectedIndex}
+              muted={muted}
+              onFinished={() => setPlayingIndex(null)}
             />
           ) : (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center text-sm text-white/60">
@@ -228,34 +274,41 @@ export function CarouselPreview({
             Não foi possível carregar a prévia do texto.
           </p>
         ) : null}
-        <div className="my-4 flex items-center justify-between text-white">
-          <button
-            type="button"
-            aria-label="Slide anterior"
-            disabled={selectedIndex === 0}
-            onClick={() => onIndexChange(selectedIndex - 1)}
-            className="rounded-lg p-2 hover:bg-white/10 disabled:opacity-30"
-          >
-            <ChevronLeft size={20} />
-          </button>
-          <span className="text-sm">
-            {slides.length ? selectedIndex + 1 : 0} / {slides.length}
-          </span>
-          <button
-            type="button"
-            aria-label="Próximo slide"
-            disabled={selectedIndex >= slides.length - 1}
-            onClick={() => onIndexChange(selectedIndex + 1)}
-            className="rounded-lg p-2 hover:bg-white/10 disabled:opacity-30"
-          >
-            <ChevronRight size={20} />
-          </button>
-        </div>
-        <p className="pb-5 text-xs leading-5 text-white/60">
-          Exporte os slides e selecione os arquivos numerados nessa ordem no
-          Instagram. Imagens viram JPG; vídeos viram MP4 com o áudio original.
-        </p>
       </div>
+      {(asset?.kind === 'clip' || (slide?.edit?.motion && slide.edit.motion !== 'none')) ? <div className="ad-preview-transport">
+        <button type="button" className="ad-preview-tool-button" onClick={() => setPlayingIndex(playingIndex === selectedIndex ? null : selectedIndex)}
+          aria-label={playingIndex === selectedIndex ? 'Pausar slide' : 'Reproduzir slide'} title={playingIndex === selectedIndex ? 'Pausar slide' : 'Reproduzir slide'}>
+          {playingIndex === selectedIndex ? <Pause size={16} /> : <Play size={16} />}
+        </button>
+        {asset?.kind === 'clip' ? <button type="button" className="ad-preview-tool-button" disabled={slide?.edit?.volume === 0} onClick={() => setMuted(!muted)}
+          aria-label={slide?.edit?.volume === 0 ? 'Slide sem áudio' : muted ? 'Ligar áudio do slide' : 'Desligar áudio do slide'} title={slide?.edit?.volume === 0 ? 'O áudio está desativado nos ajustes deste slide' : muted ? 'Ligar áudio do slide' : 'Desligar áudio do slide'} aria-pressed={!muted}>
+          {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
+        </button> : null}
+        <span className="ml-auto pr-2 text-xs text-white/50">{slide?.durationSeconds}s</span>
+      </div> : null}
+      <div className="ad-preview-transport">
+        <button type="button" aria-label="Slide anterior" disabled={selectedIndex === 0}
+          onClick={() => onIndexChange(selectedIndex - 1)} className="ad-preview-tool-button">
+          <ChevronLeft size={20} />
+        </button>
+        <span className="min-w-0 flex-1 truncate text-center text-xs text-white/65" title={asset?.originalName}>
+          {slides.length ? selectedIndex + 1 : 0} / {slides.length}{asset ? ` · ${asset.originalName}` : ''}
+        </span>
+        <button type="button" aria-label="Próximo slide" disabled={selectedIndex >= slides.length - 1}
+          onClick={() => onIndexChange(selectedIndex + 1)} className="ad-preview-tool-button">
+          <ChevronRight size={20} />
+        </button>
+      </div>
+      <div className="ad-preview-filmstrip" aria-label="Slides do carrossel">
+        {slides.map((item, i) => <button key={`${item.assetId}:${i}`} type="button" onClick={() => onIndexChange(i)}
+          aria-label={`Ver slide ${i + 1}`} aria-pressed={i === selectedIndex}
+          className={`ad-preview-scene ${i === selectedIndex ? 'ad-preview-scene-active' : ''}`}>{i + 1}</button>)}
+      </div>
+      <details className="ad-preview-details ad-carousel-details">
+        <summary>Detalhes da exportação</summary>
+        <p>{config.output.width} × {config.output.height}. Os arquivos numerados seguem a ordem dos slides.</p>
+        <p>Imagens estáticas viram JPG; imagens com movimento e vídeos viram MP4. Baixe o ZIP em Arquivos gerados.</p>
+      </details>
     </section>
   )
 }
@@ -282,6 +335,7 @@ export function CarouselEditor({
   uploadVideos: ReactNode
 }) {
   const carousel = config.carousel ?? { slides: [], caption: '' }
+  const dragIndex = useRef<number | null>(null)
   const [captionCopied, setCaptionCopied] = useState(false)
   const [captionCopyError, setCaptionCopyError] = useState(false)
   function slidesChanged(slides: AdCarouselSlide[]) {
@@ -320,6 +374,17 @@ export function CarouselEditor({
             const asset = assets.find((item) => item.id === slide.assetId)
             return (
               <li
+                draggable={!uploading}
+                onDragStart={() => { dragIndex.current = index }}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  const from = dragIndex.current; dragIndex.current = null
+                  if (from === null || from === index || uploading) return
+                  const slides = [...carousel.slides]; const [moved] = slides.splice(from, 1); slides.splice(index, 0, moved)
+                  slidesChanged(slides); onPreview(index)
+                }}
+                onDragEnd={() => { dragIndex.current = null }}
                 key={`${index}:${slide.assetId}`}
                 className="rounded-xl border border-zinc-200 p-3"
               >
@@ -349,6 +414,7 @@ export function CarouselEditor({
                   >
                     <ArrowDown size={16} />
                   </button>
+                  <button type="button" aria-label={`Duplicar slide ${index + 1}`} disabled={uploading || carousel.slides.length >= 20} className="rounded p-1.5 disabled:opacity-25" onClick={() => { const slides = [...carousel.slides]; slides.splice(index + 1, 0, structuredClone(slide)); slidesChanged(slides); onPreview(index + 1) }}><Copy size={16} /></button>
                   <button
                     type="button"
                     aria-label={`Remover slide ${index + 1}`}
@@ -396,6 +462,18 @@ export function CarouselEditor({
                     </span>
                   </label>
                 ) : null}
+                <details className="mt-3 text-xs">
+                  <summary className="cursor-pointer font-medium text-violet-700">Recorte, áudio e enquadramento</summary>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {asset?.kind === 'clip' ? <>{(['trimStart', 'trimEnd'] as const).map((key) => <label key={key}>{key === 'trimStart' ? 'Início do recorte (s)' : 'Fim do recorte (s)'}<input className="mt-1 w-full rounded border border-zinc-300 p-2" type="number" min={0} max={asset.durationSeconds} step={0.1} value={slide.edit?.[key] ?? (key === 'trimEnd' ? asset.durationSeconds : 0)} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, [key]: Number(e.target.value) } })} /></label>)}<label>Volume<input type="range" min={0} max={1} step={0.05} value={slide.edit?.volume ?? 1} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, volume: Number(e.target.value) } })} /></label><Button variant="secondary" onClick={() => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, volume: slide.edit?.volume === 0 ? 1 : 0 } })}>{slide.edit?.volume === 0 ? 'Ativar áudio' : 'Silenciar'}</Button></> : <label>Movimento da imagem (exporta MP4)<select className="mt-1 w-full rounded border border-zinc-300 p-2" value={slide.edit?.motion ?? 'none'} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, motion: e.target.value as NonNullable<AdCarouselSlide['edit']>['motion'] } })}><option value="none">Imagem estática JPG</option><option value="zoom-in">Zoom gradual</option><option value="zoom-out">Afastar gradual</option><option value="pan-left">Panorâmica esquerda</option><option value="pan-right">Panorâmica direita</option></select></label>}
+                    <label className="col-span-full"><input type="checkbox" checked={slide.edit?.framingOverride ?? false} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, framingOverride: e.target.checked } })} /> Enquadramento próprio</label>
+                    {slide.edit?.framingOverride ? (['focusX', 'focusY', 'zoom'] as const).map((key) => <label key={key}>{key === 'focusX' ? 'Foco horizontal' : key === 'focusY' ? 'Foco vertical' : 'Zoom'}<input type="range" min={key === 'zoom' ? 1 : 0} max={key === 'zoom' ? 3 : 100} step={key === 'zoom' ? 0.05 : 1} value={slide.edit![key]} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, [key]: Number(e.target.value) } })} /></label>) : null}
+                    <label>Cor do texto<input type="color" className="ml-2" value={slide.textStyle?.fontColor ?? config.textStyle.fontColor} onChange={(e) => edit(index, { textStyle: { ...config.textStyle, ...slide.textStyle, fontColor: e.target.value } })} /></label>
+                    <label>Posição do texto<input type="range" min={15} max={85} value={slide.textStyle?.positionY ?? config.textStyle.positionY} onChange={(e) => edit(index, { textStyle: { ...config.textStyle, ...slide.textStyle, positionY: Number(e.target.value) } })} /></label>
+                  </div>
+                  <Button variant="secondary" className="mt-2" onClick={() => slidesChanged(carousel.slides.map((s) => ({ ...s, textStyle: slide.textStyle ?? config.textStyle })))}>Aplicar estilo de texto a todos</Button>
+                  <Button variant="secondary" className="mt-2" onClick={() => slidesChanged(carousel.slides.map((s) => ({ ...s, textStyle: undefined })))}>Usar estilo global em todos</Button>
+                </details>
               </li>
             )
           })}

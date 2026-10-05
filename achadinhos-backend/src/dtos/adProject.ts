@@ -36,6 +36,8 @@ export const AdClipEditSchema = z.object({
   focusX: z.number().int().min(0).max(100).default(50),
   focusY: z.number().int().min(0).max(100).default(50),
   zoom: z.number().min(1).max(3).default(1),
+  volume: z.number().min(0).max(1).default(1),
+  motion: z.enum(['none', 'zoom-in', 'zoom-out', 'pan-left', 'pan-right']).default('none'),
 })
 
 export const AdTransitionSchema = z
@@ -108,10 +110,13 @@ export const AdCarouselSlideSchema = z.object({
   assetId: z.number().int().positive(),
   text: z.string().trim().max(280).default(''),
   durationSeconds: z.number().min(3).max(60).default(5),
+  edit: AdClipEditSchema.optional(),
+  textStyle: AdTextStyleSchema.optional(),
 })
 
 export const AdProjectConfigSchema = z.object({
   kind: z.enum(['video', 'carousel']).default('video'),
+  productIds: z.array(z.number().int().positive()).max(50).default([]),
   carousel: z.object({
     slides: z.array(AdCarouselSlideSchema).max(20).default([]),
     caption: z.string().max(2200).default(''),
@@ -165,6 +170,7 @@ export const CreateAdProjectSchema = z.object({
 })
 
 export const UpdateAdProjectSchema = z.object({
+  expectedRevision: z.number().int().min(0).optional(),
   name: z.string().trim().min(1).max(120).optional(),
   config: AdProjectConfigSchema.optional(),
 })

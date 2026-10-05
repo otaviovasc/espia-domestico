@@ -1,4 +1,5 @@
 import { OfferSchema, type OfferInput } from '@/dtos/campaign'
+import { ExtensionEvidenceSchema } from '@/dtos/extensionEvidence'
 import type { SourceIngestor, IngestResult, IngestWarning } from './SourceIngestor'
 
 /**
@@ -21,6 +22,10 @@ interface MlCard {
   productUrl?: string | null
   commissionedUrl?: string | null
   commissionedUrlStatus?: string | null
+  commission?: unknown
+  searchMatch?: unknown
+  selection?: unknown
+  reviewVideos?: unknown
   // "compacto" export: fields at the card root.
   pricing?: MlPricing | null
   commissionPercent?: string | null
@@ -36,6 +41,8 @@ interface MlCard {
 interface MlPayload {
   schemaVersion?: number
   sourceUrl?: string
+  extractedAt?: string
+  search?: { commission?: unknown }
   cards?: MlCard[]
 }
 
@@ -146,6 +153,17 @@ export class MercadoLivreIngestor implements SourceIngestor {
       const commissionPercent =
         card.commissionPercent ?? card.visible?.commissionPercent ?? undefined
 
+      const rawEvidence = {
+        productUrl: card.productUrl ?? undefined,
+        extractedAt: payload.extractedAt,
+        commission: card.commission ?? undefined,
+        searchMatch: card.searchMatch ?? (payload.search?.commission ? { commission: payload.search.commission } : undefined),
+        selection: card.selection ?? undefined,
+        reviewVideos: card.reviewVideos ?? undefined,
+      }
+      const evidence = ExtensionEvidenceSchema.safeParse(rawEvidence)
+      if (!evidence.success) warnings.push({ index, productId, message: 'Metadados da extensão inválidos; produto importado sem esses metadados. Confira o export original.' })
+
       const parsed = OfferSchema.safeParse({
         title,
         discountedPrice,
@@ -160,6 +178,7 @@ export class MercadoLivreIngestor implements SourceIngestor {
         source: this.id,
         commissioned,
         commissionedUrlStatus,
+        extensionEvidence: evidence.success ? evidence.data : undefined,
       })
       if (!parsed.success) {
         warnings.push({

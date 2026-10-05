@@ -1,4 +1,7 @@
-import { memo, useMemo, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { studioApi } from '@/lib/adStudioApi'
+import { apiErrorMessage } from '@/lib/api'
+import { memo, useMemo, useRef, useState, useEffect } from 'react'
 import {
   AudioLines,
   ChevronDown,
@@ -162,14 +165,6 @@ function readSavedPresets(storageKey: string): SavedCreativePreset[] {
   }
 }
 
-function writeSavedPresets(storageKey: string, presets: SavedCreativePreset[]) {
-  try {
-    window.localStorage.setItem(storageKey, JSON.stringify(presets.slice(0, 12)))
-  } catch {
-    // The controls still work when browser storage is unavailable or full.
-  }
-}
-
 function signedPercent(value: number): string {
   const amount = Math.round(value * 100)
   return `${amount > 0 ? '+' : ''}${amount}%`
@@ -208,7 +203,36 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [presetName, setPresetName] = useState('')
   const [savingPreset, setSavingPreset] = useState(false)
-  const [savedPresets, setSavedPresets] = useState<SavedCreativePreset[]>(() => readSavedPresets(savedPresetsKey))
+  const client = useQueryClient()
+  const [presetError, setPresetError] = useState('')
+  const presets = useQuery({ queryKey: ['studio', 'preset'], queryFn: () => studioApi.all<SavedCreativePreset>('preset') })
+  const savedPresets = presets.data?.map((r) => r.payload) ?? []
+  const migratingPresets = useRef(false)
+  useEffect(() => {
+    if (!presets.isSuccess || migratingPresets.current) return
+    const local = readSavedPresets(savedPresetsKey)
+    if (!local.length) return
+    // Content-derived IDs preserve different browser presets and make retries safe.
+    migratingPresets.current = true
+    void (async () => {
+      try {
+        for (const p of local) {
+          const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(p)))
+          const key = `legacy-${Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')}`
+          if (presets.data.some((r) => r.key === key)) continue
+          try { await studioApi.save('preset', { ...p, id: key }, undefined, key) }
+          catch (error) {
+            // A second tab can finish the same migration first.
+            const existing = await studioApi.all<SavedCreativePreset>('preset')
+            if (!existing.some((r) => r.key === key)) throw error
+          }
+        }
+        window.localStorage.removeItem(savedPresetsKey)
+        await client.invalidateQueries({ queryKey: ['studio', 'preset'] })
+      } catch (error) { setPresetError(apiErrorMessage(error)) }
+      finally { migratingPresets.current = false }
+    })()
+  }, [presets.data, presets.isSuccess, savedPresetsKey, client])
   const hookTextRef = useRef<HTMLTextAreaElement>(null)
   const normalized = normaliseCreativeConfig(config)
   const clips = useMemo(() => assets.filter((asset) => asset.kind === 'clip'), [assets])
@@ -289,15 +313,11 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
     })
   }
 
-  function saveCurrentPreset() {
+  async function saveCurrentPreset() {
     const name = presetName.trim()
     if (!name) return
-    const nextPresetNumber = savedPresets.reduce((highest, preset) => {
-      const match = /^preset-(\d+)$/.exec(preset.id)
-      return Math.max(highest, match ? Number(match[1]) : 0)
-    }, 0) + 1
     const saved: SavedCreativePreset = {
-      id: `preset-${nextPresetNumber}`,
+      id: crypto.randomUUID(),
       name: name.slice(0, 48),
       visualEffects: { ...normalized.visualEffects },
       hook: {
@@ -308,17 +328,18 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
       timing: { ...normalized.timing },
       transition: { ...normalized.transition },
     }
-    const next = [saved, ...savedPresets].slice(0, 12)
-    setSavedPresets(next)
-    writeSavedPresets(savedPresetsKey, next)
-    setPresetName('')
-    setSavingPreset(false)
+    try {
+      await studioApi.save('preset', saved, undefined, saved.id)
+      await client.invalidateQueries({ queryKey: ['studio', 'preset'] })
+      setPresetName(''); setSavingPreset(false); setPresetError('')
+    } catch (error) { setPresetError(apiErrorMessage(error)) }
   }
 
-  function removeSavedPreset(presetId: string) {
-    const next = savedPresets.filter((preset) => preset.id !== presetId)
-    setSavedPresets(next)
-    writeSavedPresets(savedPresetsKey, next)
+  async function removeSavedPreset(presetId: string) {
+    const row = presets.data?.find((r) => r.payload.id === presetId)
+    if (!row) return
+    try { await studioApi.remove(row.id); await client.invalidateQueries({ queryKey: ['studio', 'preset'] }); setPresetError('') }
+    catch (error) { setPresetError(apiErrorMessage(error)) }
   }
 
   function addTrack() {
@@ -374,9 +395,10 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
             </button>
           ))}
         </div>
+        {presetError || presets.isError ? <p role="alert" className="text-xs text-red-700">{presetError || apiErrorMessage(presets.error)}</p> : null}
         {savedPresets.length > 0 ? (
           <div className="mt-3">
-            <p className="mb-1.5 text-[11px] font-semibold text-zinc-600">Seus modelos neste navegador</p>
+            <p className="mb-1.5 text-[11px] font-semibold text-zinc-600">Seus modelos na sua conta</p>
             <div className="flex gap-1.5 overflow-x-auto pb-1">
               {savedPresets.map((preset) => (
                 <span key={preset.id} className="flex shrink-0 items-center overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50">

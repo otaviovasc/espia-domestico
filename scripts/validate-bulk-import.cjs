@@ -145,6 +145,10 @@ async function main() {
       productUrl: 'https://www.mercadolivre.com.br/panela/p/MLB1234567',
       commissionedUrl: 'https://meli.la/bulk-manual-qa', price: '79,90',
     }, extractor)])
+    full.cards[0].visible.commissionPercent = '12%'
+    full.cards[0].commission = extractor.commissionEvidence(full.cards[0])
+    full.cards[0].searchMatch = { keywords: ['panela'], matchMode: 'any', commission: { minPercent: 10, maxPercent: null, minEstimatedBrl: 5 } }
+    full.cards[0].reviewVideos = { source: 'mercado_livre_product_page', requested: 3, found: 1, status: 'shortfall', scanScope: 'loaded_product_page', videos: [{ url: 'https://video-vod-clips.mms.mlstatic.com/example/master.m3u8', kind: 'customer_review', status: 'complete', format: 'ts', filename: '/home/fixture/Downloads/video-1.ts' }] }
     for (const json of [full, compactExport(full)]) {
       const result = await request('/campaigns/import-offers', { json, parseOnly: true })
       assert.equal(result.source, 'mercadolivre')
@@ -152,6 +156,16 @@ async function main() {
       assert.equal(result.offers[0].commissionedUrlStatus, 'manual_unverified')
       assert.equal(result.offers[0].discountedPrice, 79.9)
       assert.ok(result.errors.some((item) => item.message.includes('manual_unverified')))
+      const offer = result.offers[0]
+      assert.equal(offer.extensionEvidence.commission.estimatedBrl, 9.59)
+      assert.equal(offer.extensionEvidence.searchMatch.commission.minPercent, 10)
+      assert.equal(offer.extensionEvidence.reviewVideos.videos[0].filename, 'video-1.ts')
+      const saved = await request('/saved-products', { offers: [{ ...offer, category: 'B' }] })
+      const id = saved.saved[0].id
+      const listed = await request('/saved-products')
+      assert.deepEqual(listed.items.find(item => item.id === id).offer.extensionEvidence, offer.extensionEvidence)
+      const response = await fetch(`${base}/saved-products/${id}`, { method: 'DELETE', headers: { authorization: `Bearer ${token}` } })
+      assert.equal(response.status, 200)
     }
     console.log(JSON.stringify({ extensionExports: ['full', 'compact'], importedCards: 1,
       manualEvidence: 'manual_unverified', paidCalls: 0 }))

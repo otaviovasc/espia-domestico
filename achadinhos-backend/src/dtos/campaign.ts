@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ExtensionEvidenceSchema } from './extensionEvidence'
 
 /**
  * A single product offer. Designed to be flexible so a real affiliate JSON
@@ -25,6 +26,7 @@ export const OfferSchema = z.object({
   commissioned: z.boolean().optional(),
   /** Export evidence for the affiliate URL; a supplied URL alone is not verification. */
   commissionedUrlStatus: z.string().max(80).optional(),
+  extensionEvidence: ExtensionEvidenceSchema.optional(),
   category: z.enum(['A', 'B', 'C', 'D']).optional(),
   relevanceScore: z.number().min(0).max(100).optional(),
   discountPercent: z.number().min(0).max(100).optional(),
@@ -167,6 +169,7 @@ export function normalizeRawOffer(raw: Record<string, unknown>): Record<string, 
     discountPercent: toNumber(pick('discountPercent', 'discount_percent', 'descontoPercentual')),
     commissioned: pick('commissioned', 'comissionado'),
     commissionedUrlStatus: pick('commissionedUrlStatus', 'commissioned_url_status'),
+    extensionEvidence: pick('extensionEvidence'),
     productId: pick('productId', 'product_id', 'idProduto'),
     source: pick('source', 'origem'),
     installmentLabel: pick('installmentLabel', 'parcelamento'),

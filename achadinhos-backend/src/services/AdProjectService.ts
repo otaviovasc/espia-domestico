@@ -3,6 +3,7 @@ import { inject, injectable } from 'tsyringe'
 import { env } from '@/config/env'
 import { sequelize } from '@/database'
 import { AdAsset } from '@/database/models/AdAsset'
+import { SavedProduct } from '@/database/models/SavedProduct'
 import { AdProject } from '@/database/models/AdProject'
 import { AdRenderJob, type AdRenderOutput } from '@/database/models/AdRenderJob'
 import {
@@ -23,7 +24,10 @@ type AdTimingResult = { cuts: number[]; timingSource: 'fixed' | 'beat' | 'fallba
 const previewTimingCache = new Map<string, Promise<AdTimingResult>>()
 const MAX_PREVIEW_TIMING_CACHE_ENTRIES = 64
 
-function cachedTiming(key: string, compute: () => Promise<AdTimingResult>): Promise<AdTimingResult> {
+function cachedTiming(
+  key: string,
+  compute: () => Promise<AdTimingResult>,
+): Promise<AdTimingResult> {
   const cached = previewTimingCache.get(key)
   if (cached) {
     previewTimingCache.delete(key)
@@ -103,6 +107,7 @@ export class AdProjectService {
         ])
         return {
           id: project.id,
+          revision: project.revision,
           name: project.name,
           config: AdProjectConfigSchema.parse(project.config),
           assetCount,
@@ -122,6 +127,7 @@ export class AdProjectService {
     ])
     return {
       id: project.id,
+      revision: project.revision,
       name: project.name,
       config: AdProjectConfigSchema.parse(project.config),
       assets: assets.map(serializeAdAsset),
@@ -147,9 +153,27 @@ export class AdProjectService {
   }
 
   async update(userId: number, projectId: number, input: UpdateAdProjectInput) {
-    const project = await this.project(userId, projectId)
-    if (input.config) await this.validateAssetSelection(projectId, input.config)
-    await project.update(input)
+    await sequelize.transaction(async (transaction) => {
+      const project = await AdProject.findOne({
+        where: { id: projectId, userId },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      })
+      if (!project) throw NotFoundError('Projeto de anúncio não encontrado')
+      if (input.expectedRevision !== undefined && input.expectedRevision !== project.revision)
+        throw ConflictError(
+          'Este projeto foi alterado em outro dispositivo. Recarregue antes de salvar.',
+        )
+      if (input.config) await this.validateAssetSelection(projectId, input.config)
+      await project.update(
+        {
+          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.config ? { config: input.config } : {}),
+          revision: project.revision + 1,
+        },
+        { transaction },
+      )
+    })
     return await this.get(userId, projectId)
   }
 
@@ -160,7 +184,12 @@ export class AdProjectService {
     const clone = await AdProject.create({
       userId,
       name: `${source.name} (cópia)`.slice(0, 120),
-      config: { ...sourceConfig, selectedClipIds: [], carousel: { ...sourceConfig.carousel, slides: [] }, musicAssetId: null },
+      config: {
+        ...sourceConfig,
+        selectedClipIds: [],
+        carousel: { ...sourceConfig.carousel, slides: [] },
+        musicAssetId: null,
+      },
     })
     const assetMap = new Map<number, number>()
     try {
@@ -184,7 +213,10 @@ export class AdProjectService {
           ...sourceConfig,
           carousel: {
             ...sourceConfig.carousel,
-            slides: sourceConfig.carousel.slides.map((slide) => ({ ...slide, assetId: assetMap.get(slide.assetId)! })),
+            slides: sourceConfig.carousel.slides.map((slide) => ({
+              ...slide,
+              assetId: assetMap.get(slide.assetId)!,
+            })),
           },
           selectedClipIds: sourceConfig.selectedClipIds
             .map((id) => assetMap.get(id))
@@ -345,17 +377,19 @@ export class AdProjectService {
     await this.project(userId, projectId)
     if (config.timing.mode === 'fixed') return await this.renderer.getTiming(config, [])
 
-    const firstTrack = config.musicTracks[0] ?? (config.musicAssetId
-      ? {
-          assetId: config.musicAssetId,
-          volume: config.musicVolume,
-          startSeconds: 0,
-          endSeconds: null,
-          sourceStartSeconds: 0,
-          fadeInSeconds: 0,
-          fadeOutSeconds: 0.8,
-        }
-      : undefined)
+    const firstTrack =
+      config.musicTracks[0] ??
+      (config.musicAssetId
+        ? {
+            assetId: config.musicAssetId,
+            volume: config.musicVolume,
+            startSeconds: 0,
+            endSeconds: null,
+            sourceStartSeconds: 0,
+            fadeInSeconds: 0,
+            fadeOutSeconds: 0.8,
+          }
+        : undefined)
     if (!firstTrack) return await this.renderer.getTiming(config, [])
 
     const asset = await AdAsset.findOne({
@@ -402,6 +436,13 @@ export class AdProjectService {
     projectId: number,
     config: AdProject['config'],
   ): Promise<void> {
+    if (config.productIds?.length) {
+      const project = await AdProject.findByPk(projectId)
+      const count = await SavedProduct.count({
+        where: { userId: project!.userId, id: { [Op.in]: [...new Set(config.productIds)] } },
+      })
+      if (count !== new Set(config.productIds).size) throw UnprocessableError('Produto inválido')
+    }
     if (new Set(config.selectedClipIds).size !== config.selectedClipIds.length)
       throw UnprocessableError('Um clipe não pode aparecer duas vezes na seleção')
     const selected = new Set(config.selectedClipIds)
@@ -419,8 +460,11 @@ export class AdProjectService {
     const ids = [...config.selectedClipIds, ...slideIds, ...musicIds]
     if (!ids.length) return
     const assets = await AdAsset.findAll({ where: { projectId, id: { [Op.in]: ids } } })
-    const clips = new Set(assets.filter((item) => item.kind === 'clip' || item.kind === 'image').map((item) => item.id))
-    if (slideIds.some((id) => !clips.has(id))) throw UnprocessableError('Uma ou mais mídias do carrossel são inválidas')
+    const clips = new Set(
+      assets.filter((item) => item.kind === 'clip' || item.kind === 'image').map((item) => item.id),
+    )
+    if (slideIds.some((id) => !clips.has(id)))
+      throw UnprocessableError('Uma ou mais mídias do carrossel são inválidas')
     if (config.selectedClipIds.some((id) => !clips.has(id)))
       throw UnprocessableError('Um ou mais clipes selecionados são inválidos')
     const availableMusic = new Map(
@@ -442,6 +486,14 @@ export class AdProjectService {
       const music = availableMusic.get(track.assetId)!
       if (track.sourceStartSeconds >= music.durationSeconds - 0.05)
         throw UnprocessableError('O início da faixa está fora da duração da música')
+    }
+    for (const slide of config.carousel.slides) {
+      const asset = assets.find((item) => item.id === slide.assetId)!
+      if (asset.kind === 'clip' && slide.edit) {
+        const end = slide.edit.trimEnd ?? asset.durationSeconds
+        if (slide.edit.trimStart >= end - 0.25 || end > asset.durationSeconds + 0.05)
+          throw UnprocessableError('O recorte do slide deve caber no vídeo e ter ao menos 0,25 s')
+      }
     }
     for (const [clipIndex, clip] of assets.filter((item) => item.kind === 'clip').entries()) {
       const edit = clipEdits[String(clip.id)]
@@ -465,7 +517,8 @@ export class AdProjectService {
       configOverride === undefined ? project.config : configOverride,
     )
     await this.validateAssetSelection(projectId, config)
-    if (config.kind === 'carousel' && config.carousel.slides.length < 2) throw UnprocessableError('Adicione de 2 a 20 slides ao carrossel')
+    if (config.kind === 'carousel' && config.carousel.slides.length < 2)
+      throw UnprocessableError('Adicione de 2 a 20 slides ao carrossel')
     if (config.kind === 'video' && !config.selectedClipIds.length) {
       throw UnprocessableError('Selecione pelo menos um clipe para renderizar')
     }

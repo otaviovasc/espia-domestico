@@ -10,10 +10,11 @@ import {
     Crop,
     Download,
   Film,
-    FolderOpen,
     Focus,
   LoaderCircle,
   Music2,
+  Maximize2,
+  Minimize2,
   Pause,
   Play,
   Plus,
@@ -44,6 +45,10 @@ import { Button, Input, Spinner } from '@/components/ui'
 import ClipSequenceEditor from '@/components/ClipSequenceEditor'
 import { CarouselEditor, CarouselPreview } from '@/components/CarouselCreator'
 import { addUploadedMedia, carouselValidation } from '@/lib/adCarouselConfig'
+import { usePreviewFullscreen } from '@/hooks/usePreviewFullscreen'
+import { useCreativeHistory } from '@/hooks/useCreativeHistory'
+import { StudioTools } from '@/components/StudioTools'
+import { studioApi } from '@/lib/adStudioApi'
 import CreativeControls from '@/components/CreativeControls'
 import EmojiPicker from '@/components/EmojiPicker'
 import { DEFAULT_HOOK, DEFAULT_VISUAL_EFFECTS, normaliseCreativeConfig } from '@/lib/adCreativeConfig'
@@ -370,7 +375,7 @@ function UploadZone({
 }) {
   const input = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
-  const accept = kind === 'image' ? 'image/jpeg,image/png,image/webp' : kind === 'clip' ? 'video/mp4,video/quicktime,video/webm' : 'audio/mpeg,audio/mp4,audio/x-m4a,audio/m4a,audio/wav,audio/x-wav,audio/ogg,audio/flac'
+  const accept = kind === 'image' ? 'image/jpeg,image/png,image/webp' : kind === 'clip' ? 'video/mp4,video/quicktime,video/webm,video/mp2t,.ts' : 'audio/mpeg,audio/mp4,audio/x-m4a,audio/m4a,audio/wav,audio/x-wav,audio/ogg,audio/flac'
 
   function receive(files: File[]) {
     const accepted = multiple ? files : files.slice(0, 1)
@@ -414,7 +419,7 @@ function UploadZone({
         {busy
           ? 'Enviando…'
           : kind === 'image' ? 'Adicionar imagens' : kind === 'clip'
-            ? 'Adicionar vídeos'
+            ? 'Adicionar vídeos (MP4, MOV, WebM ou TS)'
             : 'Escolher trilha'}
       </button>
     </>
@@ -535,7 +540,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
   const [playing, setPlaying] = useState(() => !window.matchMedia('(prefers-reduced-motion: reduce)').matches)
   const [muted, setMuted] = useState(true)
   const [seekVersion, setSeekVersion] = useState(0)
-  const [showSafeZone, setShowSafeZone] = useState(true)
+  const [showSafeZone, setShowSafeZone] = useState(false)
   const [showPlacementChrome, setShowPlacementChrome] = useState(false)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [readyAudioKeys, setReadyAudioKeys] = useState<Set<string>>(() => new Set())
@@ -549,7 +554,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
   const backgroundVideo = useRef<HTMLVideoElement>(null)
   const outgoingForegroundVideo = useRef<HTMLVideoElement>(null)
   const outgoingBackgroundVideo = useRef<HTMLVideoElement>(null)
-  const previewPanel = useRef<HTMLElement>(null)
+  const { ref: previewPanel, expanded, toggle: toggleExpanded } = usePreviewFullscreen()
   const previewAudioContext = useRef<AudioContext | null>(null)
   const playedTransitionSfxKey = useRef<string | null>(null)
   const lastPreviewTickAt = useRef<number | null>(null)
@@ -631,7 +636,6 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
   const clipIndex = clipOrder.length > 0 ? segmentIndex % clipOrder.length : 0
   const textIndex = config.texts.length > 0 ? segmentIndex % config.texts.length : 0
   const activeClip = clipOrder[clipIndex]
-  const selectedClipIndex = clips.findIndex((clip) => clip.id === activeClip?.id)
   const hookActive = Boolean(hookClip && segmentIndex === 0)
   const rawActiveText = hookActive && hookConfig.text.trim() ? hookConfig.text : config.texts[textIndex] ?? ''
   const captionTexts = [...new Set([...config.texts, ...(hookConfig.enabled && hookConfig.text.trim() ? [hookConfig.text] : [])])].filter((text) => text.trim())
@@ -1024,11 +1028,10 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
       : { inset: '7%' }
 
   return (
-    <section ref={previewPanel} className="ad-stage-panel">
+    <section ref={previewPanel} className={`ad-stage-panel ${expanded ? 'ad-stage-expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label="Prévia do vídeo" style={{ '--ad-preview-ratio': config.output.width / config.output.height } as React.CSSProperties}>
       <div className="ad-preview-toolbar">
         <div className="min-w-0">
-          <h2 className="text-base font-semibold text-white">Prévia da composição</h2>
-          <p className="mt-0.5 truncate text-[11px] text-white/50">{preset?.label ?? `${config.output.width} × ${config.output.height}`} · {previewDuration}s</p>
+          <h2 className="text-sm font-semibold text-white">Prévia <span className="ml-2 text-xs font-normal text-white/50">{preset?.ratio ?? `${config.output.width}:${config.output.height}`}</span></h2>
         </div>
           <div className="ad-preview-toolbar-actions">
             <button
@@ -1051,26 +1054,8 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
             >
               <Clapperboard size={15} />
             </button>
-            <button
-              type="button"
-              onClick={togglePreviewSound}
-              disabled={!hasPreviewSound || !previewSoundReady}
-              className={`ad-preview-tool-button ad-preview-sound-button ${hasPreviewSound && !muted ? 'ad-preview-tool-button-active' : ''}`}
-              aria-label={!hasPreviewSound ? 'Nenhum áudio configurado' : audioFailed && !hasTransitionSfx ? 'Trilha indisponível' : !previewSoundReady ? 'Preparando áudio da prévia' : muted ? 'Ligar áudio da prévia' : 'Desligar áudio da prévia'}
-              aria-pressed={hasPreviewSound ? !muted : false}
-              title={!hasPreviewSound ? 'Adicione uma trilha ou efeito sonoro' : audioFailed && !hasTransitionSfx ? 'Não foi possível carregar a trilha' : !previewSoundReady ? 'Preparando áudio' : muted ? 'Ligar áudio' : 'Desligar áudio'}
-            >
-              {muted || !hasPreviewSound ? <VolumeX size={15} /> : <Volume2 size={15} />}
-              <span>{!hasPreviewSound ? 'Sem áudio' : audioFailed && !hasTransitionSfx ? 'Som indisponível' : !previewSoundReady ? 'Preparando' : muted ? 'Som desligado' : 'Som ligado'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={togglePreviewPlayback}
-              className="ad-preview-tool-button"
-              aria-label={playing ? 'Pausar prévia' : 'Reproduzir prévia'}
-              title={playing ? 'Pausar prévia' : 'Reproduzir prévia'}
-            >
-              {playing ? <Pause size={15} /> : <Play size={15} />}
+            <button type="button" onClick={() => void toggleExpanded()} className="ad-preview-tool-button" aria-label={expanded ? 'Reduzir prévia' : 'Ampliar prévia'} title={expanded ? 'Reduzir prévia' : 'Ampliar prévia'}>
+              {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
           </div>
         </div>
@@ -1081,7 +1066,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
           Não foi possível carregar a trilha. <button type="button" onClick={retryPreviewAudio}>Tentar novamente</button>
         </p>
       ) : audioPlaybackBlocked ? (
-        <p role="status" className="ad-preview-audio-status">O navegador bloqueou o áudio. Toque em “Som desligado” para tentar novamente.</p>
+        <p role="status" className="ad-preview-audio-status">O navegador bloqueou o áudio. Use o botão de som para tentar novamente.</p>
       ) : null}
 
         <div
@@ -1223,10 +1208,6 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
             draggable={false}
           />
         ) : null}
-        <div className="absolute bottom-3 left-3 right-3 z-20 flex items-center justify-between text-[10px] font-medium text-white/75">
-            <span className="rounded-md bg-black/45 px-2 py-1 backdrop-blur-sm">{preset?.ratio ?? `${config.output.width}:${config.output.height}`} · {clipSpeed}×</span>
-          <span className="rounded-md bg-black/45 px-2 py-1 backdrop-blur-sm">{hookActive ? 'Gancho' : `${Math.max(1, selectedClipIndex + 1)}/${Math.max(1, clips.length)}`}</span>
-        </div>
       </div>
 
       {captions.isFetching || captionInput !== settledCaptionInput ? <p className="mt-2 text-center text-xs text-white/50" role="status">Atualizando texto da prévia…</p> : null}
@@ -1265,48 +1246,46 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
       {nextClip && nextMedia.url ? nextClip.kind === 'image' ? <img src={nextMedia.url} alt="" className="sr-only" /> : <video src={nextMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
       {followingClip && followingMedia.url ? followingClip.kind === 'image' ? <img src={followingMedia.url} alt="" className="sr-only" /> : <video src={followingMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
 
-      <div className="ad-preview-timeline">
-        <input
-          type="range"
-          min={0}
-          max={previewDuration}
-          step={0.05}
-          value={previewElapsed}
-          onChange={(event) => seekPreview(Number(event.target.value))}
-          className="ad-preview-scrubber w-full"
-          aria-label="Posição da prévia"
-          aria-valuetext={`${previewElapsed.toFixed(1)} de ${previewDuration} segundos`}
-        />
-        <div className="mt-1 flex items-center justify-between text-[10px] font-medium text-white/45">
-          <span>{previewElapsed.toFixed(1)}s</span>
-          <span>{previewDuration}s · {config.output.fps} fps · {config.variationCount} var.</span>
+      <div className="ad-preview-transport">
+            <button
+              type="button"
+              onClick={togglePreviewPlayback}
+              className="ad-preview-tool-button"
+              aria-label={playing ? 'Pausar prévia' : 'Reproduzir prévia'}
+              title={playing ? 'Pausar prévia' : 'Reproduzir prévia'}
+            >
+              {playing ? <Pause size={15} /> : <Play size={15} />}
+            </button>
+            <button
+              type="button"
+              onClick={togglePreviewSound}
+              disabled={!hasPreviewSound || !previewSoundReady}
+              className={`ad-preview-tool-button ad-preview-sound-button ${hasPreviewSound && !muted ? 'ad-preview-tool-button-active' : ''}`}
+              aria-label={!hasPreviewSound ? 'Nenhum áudio configurado' : audioFailed && !hasTransitionSfx ? 'Trilha indisponível' : !previewSoundReady ? 'Preparando áudio da prévia' : muted ? 'Ligar áudio da prévia' : 'Desligar áudio da prévia'}
+              aria-pressed={hasPreviewSound ? !muted : false}
+              title={!hasPreviewSound ? 'Adicione uma trilha ou efeito sonoro' : audioFailed && !hasTransitionSfx ? 'Não foi possível carregar a trilha' : !previewSoundReady ? 'Preparando áudio' : muted ? 'Ligar áudio' : 'Desligar áudio'}
+            >
+              {muted || !hasPreviewSound ? <VolumeX size={15} /> : <Volume2 size={15} />}
+            </button>
+        <div className="ad-preview-timeline">
+          <input type="range" min={0} max={previewDuration} step={0.05} value={previewElapsed}
+            onChange={(event) => seekPreview(Number(event.target.value))} className="ad-preview-scrubber w-full"
+            aria-label="Posição da prévia" aria-valuetext={`${previewElapsed.toFixed(1)} de ${previewDuration} segundos`} />
         </div>
+        <span className="ad-preview-time">{previewElapsed.toFixed(1)} / {previewDuration}s</span>
       </div>
-
-      <div className="mt-3 flex gap-1.5 overflow-hidden">
-        {clips.slice(0, 8).map((clip, index) => (
-          <button
-            key={clip.id}
-            type="button"
-            onClick={() => seekToClip(clip.id)}
-            aria-label={`Ver clipe ${index + 1}`}
-            className={`h-2 min-h-6 flex-1 rounded-full bg-clip-content py-[9px] ${!hookActive && clip.id === activeClip?.id ? 'bg-[#ff735e]' : 'bg-white/20'}`}
-          />
+      <div className="ad-preview-filmstrip" aria-label="Cenas do vídeo">
+        {clips.map((clip, index) => (
+          <button key={`${clip.id}:${index}`} type="button" onClick={() => seekToClip(clip.id)}
+            aria-label={`Ver clipe ${index + 1}`} aria-pressed={!hookActive && clip.id === activeClip?.id}
+            className={`ad-preview-scene ${!hookActive && clip.id === activeClip?.id ? 'ad-preview-scene-active' : ''}`}>{index + 1}</button>
         ))}
       </div>
-      <div className="mt-3 border-t border-white/10 pt-3">
-        <button
-          type="button"
-          onClick={() => { setPlaying(false); onExactPreview() }}
-          disabled={!canRenderExact || exactPreviewPending}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          {exactPreviewPending ? <LoaderCircle size={14} className="animate-spin" /> : <Clapperboard size={14} />}
-          Gerar prévia fiel
-        </button>
-        <p className="mt-1.5 text-center text-[10px] leading-4 text-white/45">Gera uma variação com os efeitos, transições e batidas finais. O vídeo aparece nos resultados abaixo.</p>
-      </div>
-
+      <div className="ad-preview-footer">
+        <details className="ad-preview-details">
+          <summary>Detalhes da prévia</summary>
+          <p>{config.output.width} × {config.output.height} · {config.output.fps} fps · Variação 1</p>
+          <p>A prévia final inclui os efeitos e as batidas do render e aparece em Arquivos gerados.</p>
       <div className="ad-preview-meta">
         <span className="text-orange-100">Variação 1</span>
         <span>{transitionLabel}</span>
@@ -1316,6 +1295,14 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
         {hookActive ? <span className="text-orange-100">Gancho</span> : null}
         {(config.colorPreset !== 'none' || effects.brightness !== 0 || effects.contrast !== 1 || effects.saturation !== 1 || effects.temperature !== 0 || effects.sharpness > 0 || effects.vignette > 0 || effects.grain > 0 || effects.glow > 0 || transition.preset === 'dissolve') ? <span title="Use a prévia fiel para conferir os efeitos na qualidade final">Efeitos visuais aproximados</span> : null}
 
+      </div>
+        </details>
+        <button type="button" onClick={() => { setPlaying(false); onExactPreview() }}
+          disabled={!canRenderExact || exactPreviewPending} className="ad-preview-render-button"
+          title="Gerar uma variação com todos os efeitos finais">
+          {exactPreviewPending ? <LoaderCircle size={14} className="animate-spin" /> : <Clapperboard size={14} />}
+          Prévia final
+        </button>
       </div>
     </section>
   )
@@ -1405,6 +1392,8 @@ function RenderOutput({
 function RenderCard({ projectId, job, onCancel, initiallyExpanded }: { projectId: number; job: AdRenderJob; onCancel: () => void; initiallyExpanded: boolean }) {
   const active = job.status === 'queued' || job.status === 'running'
   const [expanded, setExpanded] = useState(initiallyExpanded)
+  const [bundleBusy, setBundleBusy] = useState(false)
+  const [bundleError, setBundleError] = useState('')
   const aspectRatio = `${job.config.output.width} / ${job.config.output.height}`
   const outputPreset = outputPresetFor(job.config.output)
   return (
@@ -1431,6 +1420,14 @@ function RenderCard({ projectId, job, onCancel, initiallyExpanded }: { projectId
           </button>
         )}
       </div>
+      {job.status === 'completed' ? <div className="px-4 pb-2">
+        <Button variant="secondary" disabled={bundleBusy} onClick={async () => {
+          setBundleBusy(true); setBundleError('')
+          try { const blob = await studioApi.bundle(projectId, job.id); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `creative-${projectId}-${job.id}.zip`; a.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000) }
+          catch (cause) { setBundleError(apiErrorMessage(cause)) } finally { setBundleBusy(false) }
+        }}>{bundleBusy ? 'Preparando pacote...' : 'Baixar ZIP com capa e legenda'}</Button>
+        {bundleError ? <p role="alert" className="text-xs text-red-700">{bundleError}</p> : null}
+      </div> : null}
       {active && (
         <div className="px-4 py-4">
           <div className="mb-2 flex justify-between text-xs text-zinc-500">
@@ -1485,7 +1482,10 @@ export default function AdLibraryPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [carouselIndex, setCarouselIndex] = useState(0)
   const [draftName, setDraftName] = useState('')
-  const [draft, setDraft] = useState<AdProjectConfig>(copyConfig(DEFAULT_CONFIG))
+  const { value: draft, set: setDraft, reset: resetDraft, undo, redo, canUndo, canRedo } = useCreativeHistory<AdProjectConfig>(copyConfig(DEFAULT_CONFIG))
+  const [studioBusy, setStudioBusy] = useState(false)
+  const [autosaveError, setAutosaveError] = useState<string | null>(null)
+  const autosaveAttempt = useRef('')
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -1493,6 +1493,8 @@ export default function AdLibraryPage() {
   const [musicRightsConfirmed, setMusicRightsConfirmed] = useState(false)
   const [hydratedProjectId, setHydratedProjectId] = useState<number | null>(null)
   const loadedProjectId = useRef<number | null>(null)
+  const acknowledged = useRef<AdProject | null>(null)
+  const [writeRevision, setWriteRevision] = useState(0)
   const latestDraft = useRef(draft)
   const latestDraftName = useRef(draftName)
   const textAreaRefs = useRef<Record<number, HTMLTextAreaElement | null>>({})
@@ -1521,7 +1523,23 @@ export default function AdLibraryPage() {
 
   /* Form state intentionally resets when a different persisted project is loaded. */
   useEffect(() => {
-    if (!project.data || loadedProjectId.current === project.data.id) return
+    if (!project.data) return
+    if (loadedProjectId.current === project.data.id) {
+      const base = acknowledged.current
+      if (!base || base.revision === project.data.revision) return
+      const unchanged = latestDraftName.current === base.name && JSON.stringify(latestDraft.current) === JSON.stringify(copyConfig(base.config))
+      if (!unchanged) {
+        setAutosaveError('Este projeto mudou em outro dispositivo. Recarregue a versão salva antes de continuar.')
+        return
+      }
+      acknowledged.current = project.data
+      setWriteRevision(project.data.revision)
+      setDraftName(project.data.name)
+      resetDraft(copyConfig(project.data.config))
+      return
+    }
+    acknowledged.current = project.data
+    setWriteRevision(project.data.revision)
     loadedProjectId.current = project.data.id
     type RecoveredDraft = { baseUpdatedAt: string; name: string; config: AdProjectConfig }
     let recovered: RecoveredDraft | null = null
@@ -1535,17 +1553,19 @@ export default function AdLibraryPage() {
       // Project switches are the explicit boundary where the persisted form is replaced.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setDraftName(recovered.name)
-      setDraft(copyConfig(recovered.config))
+      resetDraft(copyConfig(recovered.config))
     } else {
       setDraftName(project.data.name)
-      setDraft(copyConfig(project.data.config))
+      resetDraft(copyConfig(project.data.config))
     }
+    setAutosaveError(null)
+    autosaveAttempt.current = ''
     setCarouselIndex(0)
     setHydratedProjectId(project.data.id)
     setFeedback(null)
     setError(null)
     setConfirmDelete(false)
-  }, [project.data])
+  }, [project.data, resetDraft])
 
   const current = project.data
   const clips = current?.assets?.filter((asset) => asset.kind === 'clip' || asset.kind === 'image') ?? []
@@ -1579,7 +1599,7 @@ export default function AdLibraryPage() {
       const texts = draft.texts.map((text) => text.trim()).filter(Boolean)
       if (texts.length === 0) throw new Error('Adicione pelo menos um texto.')
       const submittedState = JSON.stringify({ draftName, draft })
-      return adProjectApi.update(activeId!, { name: draftName.trim(), config: { ...draft, texts } })
+      return adProjectApi.update(activeId!, { name: draftName.trim(), config: { ...draft, texts }, expectedRevision: writeRevision })
         .then((saved) => ({ saved, submittedState }))
     },
     onSuccess: async ({ saved, submittedState }) => {
@@ -1587,6 +1607,10 @@ export default function AdLibraryPage() {
         setDraftName(saved.name)
         setDraft(copyConfig(saved.config))
       }
+      acknowledged.current = saved
+      setWriteRevision(saved.revision)
+      queryClient.setQueryData(['ad-projects', saved.id], saved)
+      setAutosaveError(null)
       setFeedback('Projeto salvo.')
       setError(null)
       await Promise.all([
@@ -1594,7 +1618,7 @@ export default function AdLibraryPage() {
         queryClient.invalidateQueries({ queryKey: ['ad-projects', activeId] }),
       ])
     },
-    onError: (cause) => setError(apiErrorMessage(cause)),
+    onError: (cause) => { setError(apiErrorMessage(cause)); setAutosaveError(apiErrorMessage(cause)) },
   })
   const duplicate = useMutation({
     mutationFn: () => adProjectApi.duplicate(activeId!),
@@ -1618,16 +1642,19 @@ export default function AdLibraryPage() {
     mutationFn: async (variables: { kind: 'clip' | 'image' | 'music'; files: File[] }) => {
       const assets = await adProjectApi.uploadAssets(activeId!, variables.kind, variables.files)
       const persisted = normaliseCreativeConfig(draft)
+      let saved: AdProject
       try {
         const persistedConfig = addUploadedMedia(persisted, variables.kind, assets)
-        await adProjectApi.update(activeId!, { config: persistedConfig })
+        saved = await adProjectApi.update(activeId!, { config: persistedConfig, expectedRevision: writeRevision })
       } catch (cause) {
         await Promise.allSettled(assets.map((asset) => adProjectApi.removeAsset(activeId!, asset.id)))
         throw cause
       }
-      return { assets, variables }
+      return { assets, variables, saved }
     },
-    onSuccess: async ({ assets, variables }) => {
+    onSuccess: async ({ assets, variables, saved }) => {
+      acknowledged.current = saved; setWriteRevision(saved.revision)
+      queryClient.setQueryData(['ad-projects', saved.id], saved)
       setDraft((value) => {
         const normalized = normaliseCreativeConfig(value)
         return addUploadedMedia(normalized, variables.kind, assets)
@@ -1647,6 +1674,7 @@ export default function AdLibraryPage() {
     mutationFn: (variables: { url: string; projectId: number }) => adProjectApi.importMusic(variables.projectId, variables.url),
     onSuccess: async ({ asset, project: updatedProject }) => {
       const projectId = updatedProject.id
+      acknowledged.current = updatedProject; setWriteRevision(updatedProject.revision)
       const track = updatedProject.config.musicTracks.find((item) => item.assetId === asset.id)
       queryClient.setQueryData(['ad-projects', projectId], updatedProject)
       if (activeId === projectId) {
@@ -1687,34 +1715,26 @@ export default function AdLibraryPage() {
           ? { ...persisted.hook, enabled: false, clipAssetId: null }
           : persisted.hook,
       }
-      await adProjectApi.update(activeId!, { config: persistedConfig })
+      const saved = await adProjectApi.update(activeId!, { config: persistedConfig, expectedRevision: writeRevision })
       try {
         await adProjectApi.removeAsset(activeId!, asset.id)
       } catch (cause) {
-        await adProjectApi.update(activeId!, { config: persisted }).catch(() => undefined)
+        await adProjectApi.update(activeId!, { config: persisted, expectedRevision: saved.revision }).catch(() => undefined)
         throw cause
       }
-      return asset
+      return { asset, saved }
     },
-    onSuccess: async (asset) => {
-      setDraft((value) => {
-        const clipEdits = { ...(value.clipEdits ?? {}) }
-        delete clipEdits[String(asset.id)]
-        return {
-          ...normaliseCreativeConfig(value),
-          carousel: { caption: value.carousel?.caption ?? '', slides: (value.carousel?.slides ?? []).filter((slide) => slide.assetId !== asset.id) },
-          selectedClipIds: value.selectedClipIds.filter((id) => id !== asset.id),
-          clipEdits,
-          musicAssetId: value.musicAssetId === asset.id ? null : value.musicAssetId,
-          musicTracks: (value.musicTracks ?? []).filter((track) => track.assetId !== asset.id),
-          hook: value.hook?.clipAssetId === asset.id
-            ? { ...value.hook, enabled: false, clipAssetId: null }
-            : value.hook,
-        }
-      })
+    onSuccess: async ({ saved }) => {
+      acknowledged.current = saved; setWriteRevision(saved.revision)
+      queryClient.setQueryData(['ad-projects', saved.id], saved)
+      // Deleted media cannot be restored by form undo.
+      resetDraft(copyConfig(saved.config))
       await queryClient.invalidateQueries({ queryKey: ['ad-projects', activeId] })
     },
-    onError: (cause) => setError(apiErrorMessage(cause)),
+    onError: async (cause) => {
+      setError(apiErrorMessage(cause))
+      await queryClient.invalidateQueries({ queryKey: ['ad-projects', activeId] })
+    },
   })
   const render = useMutation({
     mutationFn: async (previewOnly: boolean) => {
@@ -1723,6 +1743,7 @@ export default function AdLibraryPage() {
       const normalizedConfig = { ...draft, texts: draft.texts.map((text) => text.trim()).filter(Boolean) }
       const saved = await adProjectApi.update(activeId!, {
         name: draftName.trim(),
+        expectedRevision: writeRevision,
         config: normalizedConfig,
       })
       const job = await adProjectApi.render(activeId!, previewOnly ? { ...saved.config, variationCount: 1 } : undefined)
@@ -1733,6 +1754,9 @@ export default function AdLibraryPage() {
         setDraftName(saved.name)
         setDraft(copyConfig(saved.config))
       }
+      acknowledged.current = saved
+      setWriteRevision(saved.revision)
+      queryClient.setQueryData(['ad-projects', saved.id], saved)
       setFeedback(previewOnly ? 'Prévia fiel iniciada. Uma variação aparecerá nos resultados abaixo.' : 'Render iniciado. Você pode acompanhar o progresso abaixo.')
       setError(null)
       await Promise.all([
@@ -1748,10 +1772,20 @@ export default function AdLibraryPage() {
     onError: (cause) => setError(apiErrorMessage(cause)),
   })
 
+  const blocked = studioBusy || upload.isPending || save.isPending || render.isPending || importMusic.isPending || removeAsset.isPending || removeProject.isPending || duplicate.isPending || createProject.isPending
+
   const dirty = useMemo(() => {
     if (!current) return false
     return draftName !== current.name || JSON.stringify(draft) !== JSON.stringify(copyConfig(current.config))
   }, [current, draft, draftName])
+
+  useEffect(() => {
+    if (!dirty || blocked || autosaveError || !activeId || current?.id !== activeId || hydratedProjectId !== activeId || clipValidationError || !draftName.trim() || draft.texts.every((text) => !text.trim())) return
+    const fingerprint = JSON.stringify({ activeId, draftName, draft })
+    if (autosaveAttempt.current === fingerprint) return
+    const timer = window.setTimeout(() => { autosaveAttempt.current = fingerprint; save.mutate() }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [dirty, blocked, autosaveError, activeId, current?.id, hydratedProjectId, draftName, draft, clipValidationError, save])
 
   useEffect(() => {
     if (!dirty) return undefined
@@ -1776,6 +1810,17 @@ export default function AdLibraryPage() {
       // Session storage may be unavailable; the beforeunload guard still protects the draft.
     }
   }, [activeId, current, dirty, draft, draftName, hydratedProjectId])
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (blocked || !current || target?.matches('input,textarea,select') || target?.isContentEditable || !(event.ctrlKey || event.metaKey)) return
+      if (event.key.toLowerCase() === 'z') { event.preventDefault(); if (event.shiftKey) redo(); else undo() }
+      else if (event.key.toLowerCase() === 'y') { event.preventDefault(); redo() }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [blocked, current, undo, redo])
 
   function updateText(index: number, value: string) {
     setDraft((currentDraft) => ({
@@ -1883,7 +1928,7 @@ export default function AdLibraryPage() {
             Combine imagens e vídeos em anúncios ou monte um carrossel com slides na ordem que você escolher.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => createProject.mutate('carousel')} disabled={createProject.isPending || upload.isPending || save.isPending || render.isPending}><Plus size={17} /> Novo carrossel</Button><Button onClick={() => createProject.mutate('video')} disabled={createProject.isPending || upload.isPending || save.isPending || render.isPending}>
+        <div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => createProject.mutate('carousel')} disabled={blocked}><Plus size={17} /> Novo carrossel</Button><Button onClick={() => createProject.mutate('video')} disabled={blocked}>
           {createProject.isPending ? <LoaderCircle size={17} className="animate-spin" /> : <Plus size={17} />}
           Novo vídeo
         </Button></div>
@@ -1902,6 +1947,34 @@ export default function AdLibraryPage() {
         </div>
       )}
 
+      {current && hydratedProjectId === current.id ? (
+        <div className="mb-5 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" disabled={!canUndo || blocked} onClick={undo}>Desfazer</Button>
+            <Button variant="secondary" disabled={!canRedo || blocked} onClick={redo}>Refazer</Button>
+            <span role="status" className="text-xs text-zinc-500">{autosaveError ? 'Salvamento pausado' : save.isPending ? 'Salvando...' : dirty ? 'Alterações pendentes' : 'Salvo na sua conta'}</span>
+            {autosaveError ? <><span role="alert" className="text-xs text-red-700">{autosaveError}</span><Button variant="secondary" disabled={blocked || Boolean(clipValidationError)} onClick={() => {
+              autosaveAttempt.current = ''
+              setAutosaveError(null)
+              setError(null)
+              save.mutate()
+            }}>Tentar salvar novamente</Button><Button variant="secondary" onClick={async () => {
+              try {
+                const fresh = await adProjectApi.get(current.id)
+                acknowledged.current = fresh; setWriteRevision(fresh.revision)
+                queryClient.setQueryData(['ad-projects', fresh.id], fresh)
+                resetDraft(copyConfig(fresh.config)); setDraftName(fresh.name); setAutosaveError(null); setError(null); autosaveAttempt.current = ''
+              } catch (cause) { setError(apiErrorMessage(cause)) }
+            }}>Recarregar versão salva</Button></> : null}
+          </div>
+          <StudioTools key={current.id} project={{ ...current, revision: writeRevision }} config={draft} name={draftName} jobs={jobs.data ?? []} disabled={blocked || Boolean(autosaveError)} onBusy={setStudioBusy} onChange={setDraft} onProject={async (updated) => {
+            if (updated.id === activeId) { acknowledged.current = updated; setWriteRevision(updated.revision) }
+            queryClient.setQueryData(['ad-projects', updated.id], updated)
+            await queryClient.invalidateQueries({ queryKey: ['ad-projects'] })
+          }} onSelect={(id) => setSelectedId(id)} onError={(message) => setError(message)} />
+        </div>
+      ) : null}
+
       {projects.isError ? (
         <QueryErrorState
           title="Não foi possível carregar seus projetos"
@@ -1914,41 +1987,29 @@ export default function AdLibraryPage() {
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-100 text-violet-700"><Clapperboard size={30} /></div>
           <h2 className="mt-5 text-xl font-semibold text-zinc-900">Crie seu primeiro projeto</h2>
           <p className="mt-2 max-w-md text-sm leading-6 text-zinc-500">Separe seus melhores clipes. A biblioteca cuida das combinações, do texto, da trilha e do acabamento.</p>
-          <Button className="mt-5" onClick={() => createProject.mutate('video')} disabled={createProject.isPending || upload.isPending || save.isPending || render.isPending}><Plus size={17} /> Criar projeto</Button>
+          <Button className="mt-5" onClick={() => createProject.mutate('video')} disabled={blocked}><Plus size={17} /> Criar projeto</Button>
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-[minmax(0,1fr)] items-start gap-5 xl:grid-cols-[240px_minmax(310px,420px)_minmax(360px,1fr)]">
-            <aside className="min-w-0 rounded-2xl border border-zinc-200 bg-white p-3 xl:sticky xl:top-0">
-              <div className="flex items-center justify-between px-2 pb-3 pt-1">
-                <div className="flex items-center gap-2 text-sm font-semibold text-zinc-800"><FolderOpen size={16} /> Projetos</div>
-                <span className="text-xs text-zinc-400">{projects.data.length}</span>
-              </div>
-              <div className="flex gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
-                {projects.data.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => selectProject(item.id)}
-                    disabled={upload.isPending || save.isPending || render.isPending}
-                    className={`min-w-[190px] rounded-xl px-3 py-3 text-left transition xl:min-w-0 ${activeId === item.id ? 'bg-[#19192c] text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
-                  >
-                    <span className="block truncate text-sm font-semibold">{item.name}</span>
-                    <span className={`mt-1 block text-xs ${activeId === item.id ? 'text-white/50' : 'text-zinc-400'}`}>{formatDate(item.updatedAt)}</span>
-                  </button>
-                ))}
-              </div>
-            </aside>
+          <div className="mb-3 flex min-w-0 items-center gap-3">
+            <label htmlFor="creative-project" className="text-xs font-medium text-zinc-500">Projeto</label>
+            <select id="creative-project" aria-label="Selecionar projeto" value={activeId ?? ''} disabled={blocked}
+              onChange={(event) => selectProject(Number(event.target.value))}
+              className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-800 sm:max-w-sm">
+              {projects.data.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </div>
+          <div inert={studioBusy} className="ad-editor-workspace">
 
             {project.isError ? (
               <QueryErrorState
                 title="Não foi possível abrir este projeto"
                 error={project.error}
                 onRetry={() => void project.refetch()}
-                className="min-h-[520px] xl:col-span-2"
+                className="min-h-[520px] lg:col-span-2"
               />
             ) : project.isLoading || !current ? (
-              <div className="col-span-2 flex min-h-[520px] items-center justify-center rounded-2xl border border-zinc-200 bg-white"><Spinner /></div>
+              <div className="lg:col-span-2 flex min-h-[520px] items-center justify-center rounded-2xl border border-zinc-200 bg-white"><Spinner /></div>
             ) : (
               <>
                 {isCarousel ? <CarouselPreview project={current} config={draft} index={carouselIndex} onIndexChange={setCarouselIndex} /> : <PhonePreview
@@ -1969,7 +2030,7 @@ export default function AdLibraryPage() {
                         onChange={(event) => setDraftName(event.target.value)}
                         className="min-w-[220px] flex-1 border-0 bg-zinc-100 text-base font-semibold focus:bg-white"
                       />
-                      <Button variant="secondary" onClick={() => duplicate.mutate()} disabled={duplicate.isPending || upload.isPending || save.isPending || render.isPending}><Copy size={16} /> Duplicar</Button>
+                      <Button variant="secondary" onClick={() => duplicate.mutate()} disabled={blocked || Boolean(autosaveError)}><Copy size={16} /> Duplicar</Button>
                       {confirmDelete ? (
                         <div className="flex items-center gap-1">
                           <Button variant="danger" onClick={() => removeProject.mutate()} disabled={removeProject.isPending}>Excluir</Button>
@@ -1984,9 +2045,9 @@ export default function AdLibraryPage() {
                   {isCarousel ? <CarouselEditor
                     assets={clips} config={draft} onChange={setDraft} onPreview={setCarouselIndex}
                     onRemove={(asset) => removeAsset.mutate(asset)} removingAssetId={removeAsset.isPending ? removeAsset.variables?.id ?? null : null}
-                    uploading={upload.isPending}
-                    uploadImages={<UploadZone kind="image" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'image', files })} />}
-                    uploadVideos={<UploadZone kind="clip" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />}
+                    uploading={blocked}
+                    uploadImages={<UploadZone kind="image" multiple busy={blocked} onFiles={(files) => upload.mutate({ kind: 'image', files })} />}
+                    uploadVideos={<UploadZone kind="clip" multiple busy={blocked} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />}
                   /> : <>
                   <section className="rounded-2xl border border-zinc-200 bg-white p-5">
                     <div className="mb-4 flex items-start justify-between gap-3">
@@ -2005,8 +2066,8 @@ export default function AdLibraryPage() {
                     />
                     <div className={clips.length > 0 ? 'mt-3' : ''}>
                       <div className="grid gap-2 sm:grid-cols-2">
-                        <UploadZone kind="clip" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />
-                        <UploadZone kind="image" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'image', files })} />
+                        <UploadZone kind="clip" multiple busy={blocked} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />
+                        <UploadZone kind="image" multiple busy={blocked} onFiles={(files) => upload.mutate({ kind: 'image', files })} />
                       </div>
                     </div>
                   </section>
@@ -2280,10 +2341,10 @@ export default function AdLibraryPage() {
                   </>}
 
                   <div className="sticky bottom-3 z-30 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white/95 p-3 shadow-xl shadow-zinc-900/10 backdrop-blur">
-                    <Button variant="secondary" onClick={() => save.mutate()} disabled={!dirty || save.isPending || upload.isPending || render.isPending || Boolean(clipValidationError)}><Save size={16} /> {save.isPending ? 'Salvando…' : dirty ? 'Salvar projeto' : 'Salvo'}</Button>
+                    <Button variant="secondary" onClick={() => save.mutate()} disabled={!dirty || blocked || Boolean(autosaveError) || Boolean(clipValidationError)}><Save size={16} /> {save.isPending ? 'Salvando…' : dirty ? 'Salvar projeto' : 'Salvo'}</Button>
                     <Button
                       onClick={() => render.mutate(false)}
-                      disabled={(isCarousel ? (draft.carousel?.slides.length ?? 0) < 2 : draft.selectedClipIds.length === 0) || render.isPending || upload.isPending || save.isPending || hasActiveJob || Boolean(clipValidationError)}
+                      disabled={(isCarousel ? (draft.carousel?.slides.length ?? 0) < 2 : draft.selectedClipIds.length === 0) || blocked || Boolean(autosaveError) || hasActiveJob || Boolean(clipValidationError)}
                       className="bg-[#ee5b47] hover:bg-[#db4c39] disabled:bg-[#f4a397]"
                     >
                       {render.isPending || hasActiveJob ? <LoaderCircle size={16} className="animate-spin" /> : <Clapperboard size={16} />}

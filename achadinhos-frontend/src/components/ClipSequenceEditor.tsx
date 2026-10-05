@@ -510,6 +510,7 @@ function ClipSequenceEditor({
                         </select>
                       </label>
                     </div>
+                    {asset.kind === 'image' ? <label className="mt-2 block text-xs">Movimento da imagem<select className="ml-2 rounded border border-zinc-300 p-2" value={edit.motion ?? 'none'} onChange={(event) => onChange(withClipEdit(config, asset, { motion: event.target.value as AdClipEdit['motion'] }))}><option value="none">Estática</option><option value="zoom-in">Zoom gradual</option><option value="zoom-out">Afastar gradual</option><option value="pan-left">Panorâmica esquerda</option><option value="pan-right">Panorâmica direita</option></select></label> : null}
                     {asset.kind !== 'image' && effectiveDuration * edit.speed < MIN_TRIMMED_DURATION ? <p role="alert" className="mt-2 text-[11px] font-medium text-red-600">O trecho de origem precisa ter pelo menos 0,25 segundo.</p> : null}
 
                     <div className="mt-4 border-t border-zinc-200 pt-3">

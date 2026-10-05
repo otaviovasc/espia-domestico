@@ -80,5 +80,12 @@ export function carouselValidation(
     )
   )
     return 'Cada vídeo deve ter entre 3 e 60 segundos.'
+  for (const slide of slides) {
+    const asset = assets.find((a) => a.id === slide.assetId)
+    if (asset?.kind === 'clip' && slide.edit) {
+      const end = slide.edit.trimEnd ?? asset.durationSeconds
+      if (slide.edit.trimStart >= end - 0.25 || end > asset.durationSeconds + 0.05) return 'O recorte de cada vídeo deve caber no arquivo e ter ao menos 0,25 s.'
+    }
+  }
   return null
 }

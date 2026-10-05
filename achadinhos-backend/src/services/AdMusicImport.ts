@@ -385,6 +385,7 @@ async function openRemoteAudio(
   rawUrl: string,
   signal: AbortSignal,
   dependencies: MusicImportDependencies,
+  extensions: Readonly<Record<string, string>> = AUDIO_EXTENSIONS,
 ): Promise<{ response: RemoteResponse; url: URL; mimeType: string; extension: string }> {
   let url = normalizeDirectAudioUrl(rawUrl)
   for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
@@ -424,7 +425,7 @@ async function openRemoteAudio(
       .split(';')[0]
       .trim()
       .toLowerCase()
-    const extension = AUDIO_EXTENSIONS[mimeType]
+    const extension = extensions[mimeType]
     if (!extension) {
       response.discard()
       throw BadRequestError('O link deve apontar diretamente para um arquivo de áudio compatível')
@@ -437,10 +438,11 @@ async function openRemoteAudio(
 async function downloadDirectMusicWithSlot(
   rawUrl: string,
   dependencies: MusicImportDependencies,
+  image = false,
 ): Promise<ImportedMusic> {
   const signal = AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
-  const maxBytes = env.AD_MAX_MUSIC_MB * 1024 * 1024
-  const remote = await openRemoteAudio(rawUrl, signal, dependencies)
+  const maxBytes = (image ? 20 : env.AD_MAX_MUSIC_MB) * 1024 * 1024
+  const remote = await openRemoteAudio(rawUrl, signal, dependencies, image ? { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' } : AUDIO_EXTENSIONS)
   const declaredLength = Number(firstHeader(remote.response.headers['content-length']))
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     remote.response.discard()
@@ -505,4 +507,13 @@ export async function downloadDirectMusic(
 
 export async function cleanupImportedMusic(file: ImportedMusic): Promise<void> {
   await rm(file.directory, { recursive: true, force: true })
+}
+
+export async function downloadProductImage(url: string, userId: number): Promise<ImportedMusic> {
+  const releaseUser = await acquireUserImportSlot(userId)
+  let releaseGlobal: (() => void) | undefined
+  try {
+    releaseGlobal = await acquireImportSlot()
+    return await downloadDirectMusicWithSlot(url, defaultDependencies, true)
+  } finally { releaseGlobal?.(); releaseUser() }
 }

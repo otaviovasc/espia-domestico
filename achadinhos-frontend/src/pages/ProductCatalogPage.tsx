@@ -20,6 +20,7 @@ import { productGroupApi } from '@/lib/productGroups'
 import { Badge, Button, Card, Input, Label, Spinner } from '@/components/ui'
 import { ClassificationProfilePanel } from '@/components/ClassificationProfilePanel'
 import { ImportFeedbackList } from '@/components/ImportFeedbackList'
+import { ProductExtensionEvidence } from '@/components/ProductExtensionEvidence'
 import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const PAGE_SIZE = 40
@@ -651,7 +652,7 @@ export default function ProductCatalogPage() {
                     {visibleOffers.map(({ offer, index }) => (
                     <tr key={`${offer.productId || offer.affiliateUrl}-${index}`} className="border-b border-zinc-100">
                       <td className="px-2 py-3"><input type="checkbox" aria-label={`Salvar ${offer.title}`} checked={selected.has(index)} disabled={!offer.category || save.isPending || classify.isPending} onChange={() => toggle(index)} /></td>
-                        <td className="px-2 py-3"><div className="flex min-w-48 items-center gap-2">{offer.imageUrl && <img src={offer.imageUrl} alt="" loading="lazy" className="h-10 w-10 rounded object-cover" />}<div><span>{offer.title}</span>{provenanceByIndex.get(index) && <p className="mt-1 text-xs text-zinc-500">{importOriginLabel(index, provenanceByIndex.get(index))}</p>}</div>{savedKeys.has(offer.source && offer.productId ? `${offer.source}:${offer.productId}` : offer.affiliateUrl) && <Badge tone="green">Salvo</Badge>}</div></td>
+                        <td className="px-2 py-3"><div className="flex min-w-48 items-center gap-2">{offer.imageUrl && <img src={offer.imageUrl} alt="" loading="lazy" className="h-10 w-10 rounded object-cover" />}<div><span>{offer.title}</span><ProductExtensionEvidence evidence={offer.extensionEvidence} />{provenanceByIndex.get(index) && <p className="mt-1 text-xs text-zinc-500">{importOriginLabel(index, provenanceByIndex.get(index))}</p>}</div>{savedKeys.has(offer.source && offer.productId ? `${offer.source}:${offer.productId}` : offer.affiliateUrl) && <Badge tone="green">Salvo</Badge>}</div></td>
                         <td className="px-2 py-3">{offer.category ? <span title={`Afinidade com o nicho: ${offer.relevanceScore ?? '—'}/100`}><Badge tone={TONES[offer.category]}>Categoria {offer.category}</Badge></span> : <Badge>Sem categoria</Badge>}</td>
                         <td className="whitespace-nowrap px-2 py-3">{offer.discountPercent != null ? `${offer.discountPercent}%` : '—'}</td>
                         <td className="whitespace-nowrap px-2 py-3">{offer.commissioned === false ? 'Sem comissão' : offer.commissionRate != null ? `${offer.commissionRate}%` : '—'}</td>
@@ -785,7 +786,7 @@ export default function ProductCatalogPage() {
               return (
                 <div key={item.id} className="grid gap-2 border-b border-zinc-100 py-3 text-sm md:grid-cols-[auto_minmax(0,1fr)_minmax(12rem,auto)_minmax(13rem,auto)_auto] md:items-start">
                   <input type="checkbox" className="mt-1" checked={selectedSavedIds.has(item.id)} disabled={assignGroups.isPending} onChange={() => toggleSaved(item.id)} aria-label={`Selecionar ${item.offer.title} para organizar em grupos`} />
-                  <span className="min-w-0 truncate font-medium" title={item.offer.title}>{item.offer.title}</span>
+                  <div className="min-w-0"><p className="truncate font-medium" title={item.offer.title}>{item.offer.title}</p><ProductExtensionEvidence evidence={item.offer.extensionEvidence} /></div>
                   <div className="space-y-1">
                     <div className="flex flex-wrap gap-1">
                       {itemClassifications.length > 0 ? itemClassifications.map(([profileId, classification]) => (

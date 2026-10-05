@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { ExtensionEvidence } from './extensionEvidence'
 
 /** Same-origin in dev via Vite proxy; set VITE_API_BASE for a separate host. */
 const baseURL = (import.meta.env.VITE_API_BASE as string | undefined) ?? '/api/v1'
@@ -100,6 +101,8 @@ export interface Offer {
   productId?: string
   source?: string
   commissioned?: boolean
+  commissionedUrlStatus?: string
+  extensionEvidence?: ExtensionEvidence
   category?: 'A' | 'B' | 'C' | 'D'
   relevanceScore?: number
   discountPercent?: number
@@ -382,6 +385,8 @@ export interface AdClipEdit {
   focusX: number
   focusY: number
   zoom: number
+  volume?: number
+  motion?: 'none' | 'zoom-in' | 'zoom-out' | 'pan-left' | 'pan-right'
 }
 
 export interface AdTransitionConfig {
@@ -421,6 +426,8 @@ export interface AdMusicTrack {
 }
 
 export interface AdCarouselSlide {
+  edit?: AdClipEdit
+  textStyle?: AdProjectConfig['textStyle']
   assetId: number
   text: string
   durationSeconds: number
@@ -428,6 +435,7 @@ export interface AdCarouselSlide {
 
 export interface AdProjectConfig {
   kind?: 'video' | 'carousel'
+  productIds?: number[]
   carousel?: { slides: AdCarouselSlide[]; caption: string }
   variationCount: number
   texts: string[]
@@ -505,6 +513,7 @@ export interface AdRenderJob {
 }
 
 interface AdProjectBase {
+  revision: number
   id: number
   name: string
   config: AdProjectConfig
@@ -839,7 +848,7 @@ export const adProjectApi = {
   async get(id: number): Promise<AdProject> {
     return unwrap<AdProject>(await api.get(`/ad-projects/${encodeURIComponent(id)}`))
   },
-  async update(id: number, input: Partial<AdProjectInput>): Promise<AdProject> {
+  async update(id: number, input: Partial<AdProjectInput> & { expectedRevision?: number }): Promise<AdProject> {
     return unwrap<AdProject>(await api.patch(`/ad-projects/${encodeURIComponent(id)}`, input))
   },
   async remove(id: number): Promise<void> {

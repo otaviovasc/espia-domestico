@@ -42,6 +42,7 @@
     "@resvg/resvg-js": "^2.6.2",
     "@twemoji/svg": "^15.0.0",
     "ai": "^7.0.122",
+    "archiver": "^7.0.1",
     "axios": "^1.11.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
@@ -63,6 +64,7 @@
     "zod": "^3.25.67"
   },
   "devDependencies": {
+    "@types/archiver": "^6.0.4",
     "@types/bcrypt": "^6.0.0",
     "@types/cookie-parser": "^1.4.8",
     "@types/cors": "^2.8.19",

@@ -111,8 +111,8 @@ async function main() {
   })
   const token = generateToken(user),
     otherToken = generateToken(other)
-  server = createApp().listen(serve ? 3100 : 0)
-  await new Promise((resolve) => server.once('listening', resolve))
+  server = createApp().listen(serve ? Number(process.env.AD_MEDIA_QA_PORT || 3100) : 0)
+  await new Promise((resolve, reject) => { server.once('listening', resolve); server.once('error', reject) })
   const base = `http://127.0.0.1:${server.address().port}/api/v1/ad-projects`
   async function json(
     suffix,
@@ -208,6 +208,26 @@ async function main() {
     'yuv420p',
     clip,
   ])
+  const transport = path.join(directory, 'review.ts')
+  command('ffmpeg', ['-v', 'error', '-y', '-i', clip, '-c', 'copy', '-f', 'mpegts', transport])
+  const ts = await upload(carousel.id, 'clip', transport, 'application/octet-stream')
+  assert.equal(ts.mimeType, 'video/mp4')
+  const normalizedResponse = await fetch(`${base}/${carousel.id}/assets/${ts.id}/content`, { headers: { authorization: `Bearer ${token}` } })
+  assert.equal(normalizedResponse.status, 200)
+  assert.ok(normalizedResponse.headers.get('content-type').startsWith('video/mp4'))
+  const normalized = path.join(directory, 'normalized-review.mp4')
+  fs.writeFileSync(normalized, Buffer.from(await normalizedResponse.arrayBuffer()))
+  const normalizedProbe = JSON.parse(command('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'json', normalized]))
+  assert.equal(normalizedProbe.streams.find(stream => stream.codec_type === 'audio').codec_name, 'aac')
+  const fakeTs = path.join(directory, 'fake.ts')
+  fs.writeFileSync(fakeTs, 'export const invalid = true;')
+  await upload(carousel.id, 'clip', fakeTs, 'application/octet-stream', 400)
+  const reviewArg = process.argv.find(arg => arg.startsWith('--extension-review='))
+  if (reviewArg) {
+    const real = await upload(carousel.id, 'clip', reviewArg.slice('--extension-review='.length), 'video/mp2t')
+    assert.equal(real.mimeType, 'video/mp4')
+    console.log(JSON.stringify({ liveExtensionReviewUploaded: true, mimeType: real.mimeType, durationSeconds: real.durationSeconds, width: real.width, height: real.height }))
+  }
   const video = await upload(carousel.id, 'clip', clip, 'video/mp4')
   await upload(carousel.id, 'image', clip, 'image/png', 400)
   await upload(
@@ -227,7 +247,7 @@ async function main() {
         text: 'Sua casa merece esse achadinho',
         durationSeconds: 5,
       },
-      { assetId: video.id, text: 'Veja em ação', durationSeconds: 3 },
+      { assetId: ts.id, text: 'Veja em ação', durationSeconds: 3 },
       { assetId: images[0].id, text: '', durationSeconds: 5 },
     ],
   }
@@ -361,12 +381,13 @@ async function main() {
     (await completed(videoProject.id, videoJob.id)).outputs.length,
     1,
   )
+  await require('./ad-studio-qa.cjs')({ json, base, token, otherToken, fromBackend, user, other, carousel, config, images, video, job: result, directory, command, completed })
   console.log(
-    'PASS: migrations, JPG/PNG/WebP uploads, signatures, ownership, slide validation, snapshot order, JPG/MP4 rendering, range downloads, duplication, mixed video rendering.',
+    'PASS: migrations, JPG/PNG/WebP uploads, TS-to-MP4 upload with audio, signatures, ownership, slide validation, snapshot order, JPG/MP4 rendering, range downloads, duplication, mixed video rendering.',
   )
   if (serve) {
     console.log(
-      `Browser QA: http://localhost:5273/painel/ads\nLogin: media-qa@example.invalid / Media-QA-local-2026\nFixtures: ${directory}\nIsolated API: ${base}\nCtrl+C removes the QA database and files.`,
+      `Browser QA: connect Vite proxy to port ${server.address().port} and open /painel/ads\nLogin: media-qa@example.invalid / Media-QA-local-2026\nFixtures: ${directory}\nIsolated API: ${base}\nCtrl+C removes the QA database and files.`,
     )
     return
   }

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, open, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { injectable } from 'tsyringe'
@@ -14,7 +14,7 @@ import { adObjectStorage, type StoredMediaContent } from '@/services/AdObjectSto
 
 interface ProbeResult {
   format?: { duration?: string }
-  streams?: Array<{ codec_type?: string; width?: number; height?: number }>
+  streams?: Array<{ codec_type?: string; codec_name?: string; width?: number; height?: number }>
 }
 
 const EXTENSIONS: Record<string, string> = {
@@ -90,7 +90,7 @@ export async function probeMedia(filePath: string): Promise<ProbeResult> {
       '-v',
       'error',
       '-show_entries',
-      'format=duration:stream=codec_type,width,height',
+      'format=duration:stream=codec_type,codec_name,width,height',
       '-of',
       'json',
       filePath,
@@ -124,6 +124,32 @@ async function hasRecognizedSignature(filePath: string, imageMime?: string): Pro
   }
 }
 
+export async function hasTransportStreamSignature(filePath: string): Promise<boolean> {
+  const handle = await open(filePath, 'r')
+  try {
+    const buffer = Buffer.alloc(377)
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
+    return bytesRead === buffer.length && [0, 188, 376].every(offset => buffer[offset] === 0x47)
+  } finally { await handle.close() }
+}
+
+/** Browser previews need MP4; Mercado Livre's full reviews are MPEG-TS. */
+export async function convertTransportStream(filePath: string, probe: ProbeResult): Promise<string> {
+  const output = `${filePath}-${randomUUID()}.mp4`
+  const video = probe.streams?.find(stream => stream.codec_type === 'video')
+  const audio = probe.streams?.filter(stream => stream.codec_type === 'audio') ?? []
+  const copy = video?.codec_name === 'h264' && audio.every(stream => stream.codec_name === 'aac')
+  try {
+    await runProcess('ffmpeg', ['-hide_banner', '-loglevel', 'error', '-y', '-i', filePath,
+      '-map', '0:v:0', '-map', '0:a:0?', ...(copy ? ['-c', 'copy'] : ['-c:v', 'libx264', '-preset', 'fast', '-crf', '20', '-c:a', 'aac']),
+      '-movflags', '+faststart', output], { signal: AbortSignal.timeout(120_000) })
+    return output
+  } catch {
+    await rm(output, { force: true }).catch(() => undefined)
+    throw UnprocessableError('Não foi possível converter o vídeo TS para MP4')
+  }
+}
+
 export function serializeAdAsset(asset: AdAsset) {
   return {
     id: asset.id,
@@ -147,20 +173,22 @@ export class AdMediaService {
     file: Pick<Express.Multer.File, 'path' | 'originalname' | 'mimetype' | 'size'>,
     options: { transaction?: Transaction } = {},
   ): Promise<AdAsset> {
+    const transportStream = kind === 'clip' && (file.mimetype.toLowerCase() === 'video/mp2t' || path.extname(file.originalname).toLowerCase() === '.ts')
+    let convertedPath: string | undefined
     const mimeAllowed =
       kind === 'image' ? file.mimetype.startsWith('image/') : kind === 'clip'
         ? file.mimetype.startsWith('video/')
         : file.mimetype.startsWith('audio/') || file.mimetype === 'video/mp4'
     const maxBytes = (kind === 'image' ? 20 : kind === 'clip' ? env.AD_MAX_CLIP_MB : env.AD_MAX_MUSIC_MB) * 1024 * 1024
     try {
-      if (!mimeAllowed || !EXTENSIONS[file.mimetype]) {
+      if (!transportStream && (!mimeAllowed || !EXTENSIONS[file.mimetype])) {
         throw BadRequestError(
           kind === 'image' ? 'Envie uma imagem JPG, PNG ou WebP' : kind === 'clip' ? 'Formato de vídeo não suportado' : 'Formato de áudio não suportado',
         )
       }
       if (file.size < 1 || file.size > maxBytes)
         throw BadRequestError('Arquivo excede o limite permitido')
-      if (!(await hasRecognizedSignature(file.path, kind === 'image' ? file.mimetype : undefined)))
+      if (!(transportStream ? await hasTransportStreamSignature(file.path) : await hasRecognizedSignature(file.path, kind === 'image' ? file.mimetype : undefined)))
         throw BadRequestError('Assinatura do arquivo inválida')
 
       let probe: ProbeResult
@@ -185,10 +213,17 @@ export class AdMediaService {
         throw BadRequestError('A resolução da mídia é inválida ou excede 40 megapixels')
       }
 
+      let storedFile = file.path, mimeType = file.mimetype, sizeBytes = file.size
+      if (transportStream) {
+        convertedPath = await convertTransportStream(file.path, probe)
+        storedFile = convertedPath; mimeType = 'video/mp4'
+        sizeBytes = (await stat(storedFile)).size
+        if (sizeBytes > maxBytes) throw BadRequestError('Vídeo convertido excede o limite permitido')
+      }
       const storagePath = await adObjectStorage.putFile(
-        `projects/${projectId}/assets/${randomUUID()}${EXTENSIONS[file.mimetype]}`,
-        file.path,
-        file.mimetype,
+        `projects/${projectId}/assets/${randomUUID()}${EXTENSIONS[mimeType]}`,
+        storedFile,
+        mimeType,
         { removeSource: true },
       )
       try {
@@ -197,8 +232,8 @@ export class AdMediaService {
             projectId,
             kind,
             originalName: path.basename(file.originalname).slice(0, 255),
-            mimeType: file.mimetype,
-            sizeBytes: file.size,
+            mimeType,
+            sizeBytes,
             storagePath,
             durationSeconds,
             width: stream.width ?? null,
@@ -212,6 +247,7 @@ export class AdMediaService {
       }
     } finally {
       await rm(file.path, { force: true }).catch(() => undefined)
+      if (convertedPath) await rm(convertedPath, { force: true }).catch(() => undefined)
     }
   }
 
