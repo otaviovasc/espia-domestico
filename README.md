@@ -88,7 +88,26 @@ sessão (httpOnly) funciona no mesmo domínio, sem dor de cabeça de CORS.
 
 ## Biblioteca de anúncios
 
-Em `/painel/ads`, crie um projeto, envie os clipes curtos e, se quiser, uma
+Em `/painel/ads`, escolha **Novo vídeo** ou **Novo carrossel**.
+O criador de vídeos aceita imagens JPG, PNG e WebP junto com clipes. Cada imagem
+permanece na tela durante a cena, com o mesmo enquadramento, texto e transições
+dos vídeos. Imagens podem ter até 20 MB e 40 megapixels.
+
+O criador de carrosséis aceita de 2 a 20 slides com imagens e vídeos, em
+1080×1350 (4:5) ou 1080×1080 (1:1). Reordene os slides pelas setas, escreva
+textos opcionais em cada slide e uma legenda para Instagram. Cada imagem é
+exportada como JPG; cada vídeo, como MP4 de 3 a 60 segundos com áudio original.
+Vídeos curtos se repetem até completar a duração escolhida. Baixe os arquivos
+numerados e selecione-os nessa ordem ao criar o carrossel no Instagram. A
+publicação é manual. Projetos e cópias preservam a ordem e a legenda.
+
+Antes de usar imagens, execute `npm run migrate` no backend para aplicar
+`20261005000001-add-ad-images`. Para validar uploads, armazenamento, permissões,
+renders e downloads em um banco local temporário, compile o backend e execute
+`node scripts/validate-ad-media.cjs` na raiz. Acrescente `--serve` para manter a
+API isolada na porta 3100 durante QA no navegador; Ctrl+C remove os dados de QA.
+
+Para um vídeo, crie um projeto, envie as imagens e os clipes curtos e, se quiser, uma
 música de fundo. Escreva as frases que aparecerão no vídeo e escolha quantas
 variações gerar. Cada variação alterna os clipes e as frases. O áudio dos
 clipes é removido; apenas a música enviada pelo usuário aparece na saída.

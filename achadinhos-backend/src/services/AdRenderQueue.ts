@@ -58,10 +58,14 @@ async function processJob(jobId: number): Promise<void> {
       where: { projectId: job.projectId },
       order: [['id', 'ASC']],
     })
+    const selectedIds = new Set(job.configSnapshot.kind === 'carousel'
+      ? job.configSnapshot.carousel.slides.map((slide) => slide.assetId)
+      : job.configSnapshot.selectedClipIds)
     const clips = assets.filter(
-      (asset) => asset.kind === 'clip' && job.configSnapshot.selectedClipIds.includes(asset.id),
+      (asset) => (asset.kind === 'clip' || asset.kind === 'image') && selectedIds.has(asset.id),
     )
-    const musicIds = job.configSnapshot.musicTracks?.length
+    if (clips.length !== selectedIds.size) throw new Error('Uma ou mais mídias selecionadas não estão disponíveis')
+    const musicIds = job.configSnapshot.kind === 'carousel' ? [] : job.configSnapshot.musicTracks?.length
       ? job.configSnapshot.musicTracks.map((track) => track.assetId)
       : job.configSnapshot.musicAssetId ? [job.configSnapshot.musicAssetId] : []
     const musicIdSet = new Set(musicIds)

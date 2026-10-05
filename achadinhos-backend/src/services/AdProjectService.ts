@@ -8,6 +8,7 @@ import { AdRenderJob, type AdRenderOutput } from '@/database/models/AdRenderJob'
 import {
   AdProjectConfigSchema,
   type AdProjectConfig,
+  type AdAssetKind,
   type CreateAdProjectInput,
   type ImportAdMusicInput,
   type UpdateAdProjectInput,
@@ -43,6 +44,7 @@ function cachedTiming(key: string, compute: () => Promise<AdTimingResult>): Prom
 function serializeOutput(projectId: number, jobId: number, output: AdRenderOutput) {
   return {
     index: output.index,
+    mimeType: output.mimeType ?? 'video/mp4',
     fileName: output.fileName,
     sizeBytes: output.sizeBytes,
     durationSeconds: output.durationSeconds,
@@ -133,6 +135,7 @@ export class AdProjectService {
     // New projects have no assets yet. Reject references to another project.
     if (
       input.config.selectedClipIds.length ||
+      input.config.carousel.slides.length ||
       input.config.musicAssetId ||
       Object.keys(input.config.clipEdits ?? {}).length ||
       input.config.musicTracks?.length ||
@@ -157,7 +160,7 @@ export class AdProjectService {
     const clone = await AdProject.create({
       userId,
       name: `${source.name} (cópia)`.slice(0, 120),
-      config: { ...sourceConfig, selectedClipIds: [], musicAssetId: null },
+      config: { ...sourceConfig, selectedClipIds: [], carousel: { ...sourceConfig.carousel, slides: [] }, musicAssetId: null },
     })
     const assetMap = new Map<number, number>()
     try {
@@ -179,6 +182,10 @@ export class AdProjectService {
       await clone.update({
         config: {
           ...sourceConfig,
+          carousel: {
+            ...sourceConfig.carousel,
+            slides: sourceConfig.carousel.slides.map((slide) => ({ ...slide, assetId: assetMap.get(slide.assetId)! })),
+          },
           selectedClipIds: sourceConfig.selectedClipIds
             .map((id) => assetMap.get(id))
             .filter((id): id is number => Boolean(id)),
@@ -226,7 +233,7 @@ export class AdProjectService {
   async addAssets(
     userId: number,
     projectId: number,
-    kind: 'clip' | 'music',
+    kind: AdAssetKind,
     files: Express.Multer.File[],
   ) {
     await this.project(userId, projectId)
@@ -308,6 +315,7 @@ export class AdProjectService {
     if (active) throw ConflictError('Cancele as renderizações ativas antes de excluir a mídia')
     if (
       project.config.selectedClipIds.includes(assetId) ||
+      project.config.carousel?.slides.some((slide) => slide.assetId === assetId) ||
       project.config.musicAssetId === assetId ||
       project.config.musicTracks?.some((track) => track.assetId === assetId) ||
       (project.config.hook?.enabled && project.config.hook.clipAssetId === assetId)
@@ -407,10 +415,12 @@ export class AdProjectService {
       ...musicTracks.map((track) => track.assetId),
       ...(config.musicAssetId ? [config.musicAssetId] : []),
     ]
-    const ids = [...config.selectedClipIds, ...musicIds]
+    const slideIds = config.carousel.slides.map((slide) => slide.assetId)
+    const ids = [...config.selectedClipIds, ...slideIds, ...musicIds]
     if (!ids.length) return
     const assets = await AdAsset.findAll({ where: { projectId, id: { [Op.in]: ids } } })
-    const clips = new Set(assets.filter((item) => item.kind === 'clip').map((item) => item.id))
+    const clips = new Set(assets.filter((item) => item.kind === 'clip' || item.kind === 'image').map((item) => item.id))
+    if (slideIds.some((id) => !clips.has(id))) throw UnprocessableError('Uma ou mais mídias do carrossel são inválidas')
     if (config.selectedClipIds.some((id) => !clips.has(id)))
       throw UnprocessableError('Um ou mais clipes selecionados são inválidos')
     const availableMusic = new Map(
@@ -455,17 +465,10 @@ export class AdProjectService {
       configOverride === undefined ? project.config : configOverride,
     )
     await this.validateAssetSelection(projectId, config)
-    if (!config.selectedClipIds.length) {
+    if (config.kind === 'carousel' && config.carousel.slides.length < 2) throw UnprocessableError('Adicione de 2 a 20 slides ao carrossel')
+    if (config.kind === 'video' && !config.selectedClipIds.length) {
       throw UnprocessableError('Selecione pelo menos um clipe para renderizar')
     }
-    const clipCount = await AdAsset.count({
-      where: {
-        projectId,
-        kind: 'clip',
-        id: { [Op.in]: config.selectedClipIds },
-      },
-    })
-    if (!clipCount) throw UnprocessableError('Adicione e selecione pelo menos um clipe')
     const active = await AdRenderJob.findOne({
       where: { projectId, status: { [Op.in]: ['queued', 'running'] } },
     })
@@ -507,7 +510,7 @@ export class AdProjectService {
   async output(userId: number, projectId: number, jobId: number, index: number) {
     const job = await this.job(userId, projectId, jobId)
     const output = job.outputs.find((item) => item.index === index)
-    if (!output) throw NotFoundError('Vídeo renderizado não encontrado')
+    if (!output) throw NotFoundError('Mídia renderizada não encontrada')
     return output
   }
 

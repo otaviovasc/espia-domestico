@@ -72,6 +72,7 @@ function clipEdit(config: AdProjectConfig, assetId: number): AdClipEdit {
 }
 
 function availableDuration(asset: AdAsset, edit: AdClipEdit): number {
+  if (asset.kind === 'image') return 0
   const sourceEnd = edit.trimEnd ?? asset.durationSeconds
   return Math.max(0, sourceEnd - edit.trimStart) / edit.speed
 }
@@ -132,11 +133,11 @@ function ClipSequenceEditor({
   const selectedSet = useMemo(() => new Set(config.selectedClipIds), [config.selectedClipIds])
   const assetById = useMemo(() => new Map(assets.map((asset) => [asset.id, asset])), [assets])
   const assetLabelById = useMemo(
-    () => new Map(assets.map((asset, index) => [asset.id, getAdAssetDisplayLabel(asset, index)])),
+    () => new Map(assets.map((asset, index) => [asset.id, getAdAssetDisplayLabel(asset, index, asset.kind === 'image' ? 'Imagem' : 'Clipe')])),
     [assets],
   )
   const selectableIds = useMemo(
-    () => assets.filter((asset) => asset.durationSeconds >= MIN_TRIMMED_DURATION).map((asset) => asset.id),
+    () => assets.filter((asset) => asset.kind === 'image' || asset.durationSeconds >= MIN_TRIMMED_DURATION).map((asset) => asset.id),
     [assets],
   )
   const allSelectableSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedSet.has(id))
@@ -322,7 +323,7 @@ function ClipSequenceEditor({
           <Clock3 size={14} className="text-violet-600" />
           <span><strong className="text-zinc-800">{config.selectedClipIds.length}</strong> selecionados</span>
           <span aria-hidden="true" className="text-zinc-300">•</span>
-          <span><strong className="text-zinc-800">{seconds(selectedDuration)}</strong> disponíveis</span>
+          <span><strong className="text-zinc-800">{seconds(selectedDuration)}</strong> de vídeo</span>
           <span aria-hidden="true" className="text-zinc-300">→</span>
           <span><strong className="text-zinc-800">{seconds(config.output.durationSeconds)}</strong> no anúncio</span>
         </div>
@@ -394,7 +395,7 @@ function ClipSequenceEditor({
             const expanded = selected && expandedId === asset.id
             const customized = Boolean(config.clipEdits?.[String(asset.id)])
             const effectiveDuration = availableDuration(asset, edit)
-            const tooShort = asset.durationSeconds < MIN_TRIMMED_DURATION
+            const tooShort = asset.kind !== 'image' && asset.durationSeconds < MIN_TRIMMED_DURATION
             const displayedFocusX = edit.framingOverride ? edit.focusX : config.framing.focusX
             const displayedFocusY = edit.framingOverride ? edit.focusY : config.framing.focusY
             const displayedZoom = edit.framingOverride ? edit.zoom : 1
@@ -463,7 +464,7 @@ function ClipSequenceEditor({
                       {customized ? <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-700">Editado</span> : null}
                     </div>
                     <div className="mt-0.5 truncate text-[11px] text-zinc-500">
-                      {tooShort ? 'Curto demais para usar' : `${seconds(effectiveDuration)} a ${edit.speed}×`}
+                      {asset.kind === 'image' ? 'Imagem · usa a duração da cena' : tooShort ? 'Curto demais para usar' : `${seconds(effectiveDuration)} a ${edit.speed}×`}
                       {asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ''}
                     </div>
                   </div>
@@ -488,10 +489,10 @@ function ClipSequenceEditor({
                 {expanded ? (
                   <div className="border-t border-zinc-100 bg-zinc-50/70 p-3">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700"><Scissors size={14} className="text-violet-600" /> Corte e velocidade</span>
+                      <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700"><Scissors size={14} className="text-violet-600" /> {asset.kind === 'image' ? 'Ajustes da imagem' : 'Corte e velocidade'}</span>
                       <button type="button" onClick={() => resetEdit(asset.id)} disabled={!customized} className="flex items-center gap-1 text-[11px] font-semibold text-violet-700 disabled:text-zinc-300"><RotateCcw size={12} /> Restaurar</button>
                     </div>
-                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${asset.kind === 'image' ? 'hidden' : ''}`}>
                       <label className="text-[11px] font-medium text-zinc-600">
                         Início
                         <span className="relative mt-1 block"><input type="number" min={0} max={Math.max(0, Math.min(MAX_TRIM_SECONDS, edit.trimEnd ?? asset.durationSeconds) - MIN_TRIMMED_DURATION)} step={0.05} value={edit.trimStart} aria-describedby={`clip-${asset.id}-trim-start-help`} onChange={(event) => onChange(withClipEdit(config, asset, { trimStart: Number(event.target.value) }))} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-7 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
@@ -509,7 +510,7 @@ function ClipSequenceEditor({
                         </select>
                       </label>
                     </div>
-                    {effectiveDuration * edit.speed < MIN_TRIMMED_DURATION ? <p role="alert" className="mt-2 text-[11px] font-medium text-red-600">O trecho de origem precisa ter pelo menos 0,25 segundo.</p> : null}
+                    {asset.kind !== 'image' && effectiveDuration * edit.speed < MIN_TRIMMED_DURATION ? <p role="alert" className="mt-2 text-[11px] font-medium text-red-600">O trecho de origem precisa ter pelo menos 0,25 segundo.</p> : null}
 
                     <div className="mt-4 border-t border-zinc-200 pt-3">
                       <div className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold text-zinc-700">

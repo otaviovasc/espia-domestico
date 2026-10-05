@@ -97,3 +97,25 @@ test('manual timeline seeks map to the same trimmed clip frame as the renderer',
   assert.equal(previewClipLoops(1, 3, 2, 3), true)
   assert.equal(previewClipLoops(1, 20, 1, 30), false)
 })
+
+test('uploads insert images into videos and append ordered mixed carousel slides', async () => {
+  const { addUploadedMedia, carouselValidation } = await import('../src/lib/adCarouselConfig.ts')
+  const image = { id: 1, kind: 'image', durationSeconds: 0 }
+  const video = { id: 2, kind: 'clip', durationSeconds: 8 }
+  const base = { selectedClipIds: [], musicTracks: [], carousel: { caption: 'Keep this caption', slides: [] } }
+  assert.deepEqual(addUploadedMedia(base, 'image', [image]).selectedClipIds, [1])
+  const carousel = addUploadedMedia({ ...base, kind: 'carousel' }, 'image', [image])
+  const mixed = addUploadedMedia(carousel, 'clip', [video])
+  assert.deepEqual(mixed.carousel.slides.map((slide) => slide.assetId), [1, 2])
+  assert.deepEqual(mixed.carousel.slides.map((slide) => slide.durationSeconds), [5, 8])
+  assert.equal(mixed.carousel.caption, base.carousel.caption)
+  assert.equal(carouselValidation([image, video], mixed), null)
+  assert.ok(carouselValidation([image], mixed))
+  assert.throws(() => addUploadedMedia({ ...mixed, carousel: { ...mixed.carousel, slides: Array(20).fill(mixed.carousel.slides[0]) } }, 'image', [image]))
+  assert.ok(carouselValidation([image, video], { ...mixed, carousel: { ...mixed.carousel, slides: [{ assetId: 2, durationSeconds: NaN }] } }))
+})
+
+test('still images with zero source duration remain valid in the video sequence', async () => {
+  const { clipSequenceValidation } = await import('../src/lib/adClipConfig.ts')
+  assert.equal(clipSequenceValidation([{ id: 1, kind: 'image', originalName: 'product.png', durationSeconds: 0 }], { selectedClipIds: [1], clipEdits: {} }), null)
+})

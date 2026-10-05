@@ -22,7 +22,7 @@ const upload = multer({
   storage,
   limits: {
     files: 50,
-    fileSize: Math.max(env.AD_MAX_CLIP_MB, env.AD_MAX_MUSIC_MB) * 1024 * 1024,
+    fileSize: Math.max(20, env.AD_MAX_CLIP_MB, env.AD_MAX_MUSIC_MB) * 1024 * 1024,
     fields: 4,
   },
 })

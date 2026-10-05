@@ -18,6 +18,9 @@ interface ProbeResult {
 }
 
 const EXTENSIONS: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
   'video/mp4': '.mp4',
   'video/quicktime': '.mov',
   'video/webm': '.webm',
@@ -97,13 +100,16 @@ export async function probeMedia(filePath: string): Promise<ProbeResult> {
   return JSON.parse(output.toString()) as ProbeResult
 }
 
-async function hasRecognizedSignature(filePath: string): Promise<boolean> {
+async function hasRecognizedSignature(filePath: string, imageMime?: string): Promise<boolean> {
   const handle = await open(filePath, 'r')
   try {
     const buffer = Buffer.alloc(16)
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
     if (bytesRead < 4) return false
     const ascii = buffer.toString('ascii')
+    if (imageMime === 'image/jpeg') return buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff
+    if (imageMime === 'image/png') return buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    if (imageMime === 'image/webp') return ascii.startsWith('RIFF') && ascii.slice(8, 12) === 'WEBP'
     return (
       ascii.slice(4, 8) === 'ftyp' ||
       ascii.startsWith('RIFF') ||
@@ -142,19 +148,19 @@ export class AdMediaService {
     options: { transaction?: Transaction } = {},
   ): Promise<AdAsset> {
     const mimeAllowed =
-      kind === 'clip'
+      kind === 'image' ? file.mimetype.startsWith('image/') : kind === 'clip'
         ? file.mimetype.startsWith('video/')
         : file.mimetype.startsWith('audio/') || file.mimetype === 'video/mp4'
-    const maxBytes = (kind === 'clip' ? env.AD_MAX_CLIP_MB : env.AD_MAX_MUSIC_MB) * 1024 * 1024
+    const maxBytes = (kind === 'image' ? 20 : kind === 'clip' ? env.AD_MAX_CLIP_MB : env.AD_MAX_MUSIC_MB) * 1024 * 1024
     try {
       if (!mimeAllowed || !EXTENSIONS[file.mimetype]) {
         throw BadRequestError(
-          kind === 'clip' ? 'Formato de vídeo não suportado' : 'Formato de áudio não suportado',
+          kind === 'image' ? 'Envie uma imagem JPG, PNG ou WebP' : kind === 'clip' ? 'Formato de vídeo não suportado' : 'Formato de áudio não suportado',
         )
       }
       if (file.size < 1 || file.size > maxBytes)
         throw BadRequestError('Arquivo excede o limite permitido')
-      if (!(await hasRecognizedSignature(file.path)))
+      if (!(await hasRecognizedSignature(file.path, kind === 'image' ? file.mimetype : undefined)))
         throw BadRequestError('Assinatura do arquivo inválida')
 
       let probe: ProbeResult
@@ -163,10 +169,10 @@ export class AdMediaService {
       } catch {
         throw UnprocessableError('Não foi possível ler o arquivo de mídia')
       }
-      const requiredStream = kind === 'clip' ? 'video' : 'audio'
+      const requiredStream = kind === 'music' ? 'audio' : 'video'
       const stream = probe.streams?.find((item) => item.codec_type === requiredStream)
-      const durationSeconds = Number(probe.format?.duration)
-      if (!stream || !Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+      const durationSeconds = kind === 'image' ? 0 : Number(probe.format?.duration)
+      if (!stream || (kind !== 'image' && (!Number.isFinite(durationSeconds) || durationSeconds <= 0))) {
         throw UnprocessableError(
           `O arquivo não contém ${kind === 'clip' ? 'vídeo' : 'áudio'} válido`,
         )
@@ -175,8 +181,8 @@ export class AdMediaService {
         throw BadRequestError('Cada clipe pode ter até 2 minutos')
       if (kind === 'music' && durationSeconds > 600)
         throw BadRequestError('A música pode ter até 10 minutos')
-      if (kind === 'clip' && (stream.width ?? 0) * (stream.height ?? 0) > 40_000_000) {
-        throw BadRequestError('A resolução do clipe excede o limite permitido')
+      if (kind !== 'music' && (!(stream.width && stream.height) || stream.width * stream.height > 40_000_000)) {
+        throw BadRequestError('A resolução da mídia é inválida ou excede 40 megapixels')
       }
 
       const storagePath = await adObjectStorage.putFile(
@@ -287,7 +293,7 @@ export class AdMediaService {
         const storagePath = await adObjectStorage.putFile(
           `projects/${projectId}/renders/${jobId}/${attemptId}/${output.fileName}`,
           output.storagePath,
-          'video/mp4',
+          output.mimeType ?? 'video/mp4',
           { removeSource: true, signal },
         )
         persisted.push({ ...output, storagePath })

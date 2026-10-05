@@ -19,6 +19,7 @@ export type AdRenderJobStatus = (typeof AD_RENDER_JOB_STATUS)[number]
 
 export interface AdRenderOutput {
   index: number
+  mimeType?: 'video/mp4' | 'image/jpeg'
   fileName: string
   storagePath: string
   sizeBytes: number

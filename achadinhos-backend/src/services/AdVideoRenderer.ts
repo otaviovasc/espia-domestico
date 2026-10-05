@@ -239,6 +239,71 @@ async function detectBeatCuts(
 
 @injectable()
 export class AdVideoRenderer {
+  private async renderCarousel(
+    job: AdRenderJob,
+    assets: AdAsset[],
+    onProgress: (progress: number) => Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<AdRenderOutput[]> {
+    const config = job.configSnapshot
+    const byId = new Map(assets.map((asset) => [asset.id, asset]))
+    const workRoot = path.join(adMediaRoot, '.work')
+    await mkdir(workRoot, { recursive: true })
+    const workDir = await mkdtemp(path.join(workRoot, `carousel-${job.id}-`))
+    const outputDir = path.join(adMediaRoot, 'projects', String(job.projectId), 'renders', String(job.id), randomUUID())
+    await mkdir(outputDir, { recursive: true })
+    const outputs: AdRenderOutput[] = []
+    let completed = false
+    try {
+      for (const [index, slide] of config.carousel.slides.entries()) {
+        signal?.throwIfAborted()
+        const asset = byId.get(slide.assetId)
+        if (!asset || (asset.kind !== 'image' && asset.kind !== 'clip')) throw new Error('Mídia do carrossel indisponível')
+        const image = asset.kind === 'image'
+        const duration = image ? 1 / config.output.fps : slide.durationSeconds
+        const inputArgs = image
+          ? ['-loop', '1', '-framerate', String(config.output.fps)]
+          : ['-stream_loop', '-1']
+        // The demuxer repeats video and audio together. Avoid the short-clip
+        // frame buffer/frozen tail used by the video ad renderer.
+        const videoFilter = segmentVideoFilter(config, DEFAULT_CLIP_EDIT, false, duration, duration)
+        const filters = [videoFilter.complex ? videoFilter.filter : `[0:v]${videoFilter.filter}[vout]`]
+        let label = 'vout'
+        if (hasVisualGlow(config)) {
+          filters.push(buildGlowGraph(label, 'glowed', config, `carousel${index}`))
+          label = 'glowed'
+        }
+        const args = ['-v', 'error', '-y', ...inputArgs, '-i', asset.storagePath]
+        if (slide.text) {
+          const overlayPath = path.join(workDir, `caption-${index}.png`)
+          await writeFile(overlayPath, rasterizeCaptionArtwork(createCaptionArtwork({ text: slide.text, output: config.output, textStyle: config.textStyle })))
+          args.push('-i', overlayPath)
+          filters.push(`[${label}][1:v]overlay=eof_action=repeat:shortest=0[captioned]`)
+          label = 'captioned'
+        }
+        const fileName = `slide-${String(index + 1).padStart(2, '0')}.${image ? 'jpg' : 'mp4'}`
+        const storagePath = path.join(outputDir, fileName)
+        args.push('-filter_complex', filters.join(';'), '-map', `[${label}]`)
+        if (image) args.push('-frames:v', '1', '-an', '-q:v', '2', '-update', '1')
+        else args.push('-t', String(duration), '-map', '0:a?', '-c:a', 'aac', '-b:a', '192k', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-movflags', '+faststart')
+        args.push(storagePath)
+        await runProcess('ffmpeg', args, { signal })
+        outputs.push({
+          index, fileName, storagePath, mimeType: image ? 'image/jpeg' : 'video/mp4',
+          sizeBytes: (await stat(storagePath)).size, durationSeconds: image ? 0 : duration,
+          seed: `${job.id}:${index}`, cutTimes: image ? [] : [0, duration], timingSource: 'fixed',
+          clipAssetIds: [asset.id], textOrder: slide.text ? [slide.text] : [],
+        })
+        await onProgress(Math.round(((index + 1) / config.carousel.slides.length) * 100))
+      }
+      completed = true
+      return outputs
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+      if (!completed) await rm(outputDir, { recursive: true, force: true })
+    }
+  }
+
   async getTiming(
     config: AdProjectConfig,
     music: AdAsset[],
@@ -289,6 +354,7 @@ export class AdVideoRenderer {
     signal?: AbortSignal,
   ): Promise<AdRenderOutput[]> {
     const config = job.configSnapshot
+    if (config.kind === 'carousel') return await this.renderCarousel(job, clips, onProgress, signal)
     const duration = config.output.durationSeconds
     const musicById = new Map(music.map((asset) => [asset.id, asset]))
     const configuredTracks = config.musicTracks?.length
@@ -383,14 +449,14 @@ export class AdVideoRenderer {
         for (let index = 0; index < cuts.length - 1; index += 1) {
           const clip = clipOrder[index % clipOrder.length]
           const storedEdit = storedClipEdit(config, clip.id)
-          const edit = storedEdit ?? DEFAULT_CLIP_EDIT
+          const edit: ClipEdit = clip.kind === 'image' ? { ...(storedEdit ?? DEFAULT_CLIP_EDIT), speed: 1, trimStart: 0, trimEnd: null } : storedEdit ?? DEFAULT_CLIP_EDIT
           const baseDuration = cuts[index + 1] - cuts[index]
           const transitionTail = transition.preset !== 'cut' && index < cuts.length - 2
             ? transition.durationSeconds
             : 0
           const segmentDuration = baseDuration + transitionTail
-          const trimEnd = Math.min(edit.trimEnd ?? clip.durationSeconds, clip.durationSeconds)
-          const trimStart = Math.min(edit.trimStart, Math.max(0, trimEnd - 0.01))
+          const trimEnd = clip.kind === 'image' ? segmentDuration : Math.min(edit.trimEnd ?? clip.durationSeconds, clip.durationSeconds)
+          const trimStart = clip.kind === 'image' ? 0 : Math.min(edit.trimStart, Math.max(0, trimEnd - 0.01))
           const availableSourceDuration = Math.max(0.01, trimEnd - trimStart)
           const requestedSourceDuration = segmentDuration * edit.speed
           const sourceDuration = Math.min(availableSourceDuration, requestedSourceDuration)
@@ -405,7 +471,9 @@ export class AdVideoRenderer {
             await runProcess(
               'ffmpeg',
               [
-                '-v', 'error', '-y', '-ss', trimStart.toFixed(3), '-i', clip.storagePath,
+                '-v', 'error', '-y',
+                  ...(clip.kind === 'image' ? ['-loop', '1', '-framerate', String(config.output.fps)] : ['-ss', trimStart.toFixed(3)]),
+                  '-i', clip.storagePath,
                 '-t', segmentDuration.toFixed(3), '-an', videoFilter.complex ? '-filter_complex' : '-vf', videoFilter.filter,
                 ...(videoFilter.complex ? ['-map', '[vout]'] : []),
               '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-movflags', '+faststart', segmentPath,

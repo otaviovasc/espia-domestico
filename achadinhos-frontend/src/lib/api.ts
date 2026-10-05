@@ -367,7 +367,7 @@ export interface ImportResult {
 export type AdTimingMode = 'fixed' | 'beat'
 export type AdColorPreset = 'natural' | 'vibrant' | 'warm' | 'cool' | 'none'
 export type AdFramingMode = 'cover' | 'contain-blur' | 'contain-solid'
-export type AdAssetKind = 'clip' | 'music'
+export type AdAssetKind = 'clip' | 'image' | 'music'
 export type AdRenderStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 export type AdClipSpeed = 0.5 | 0.75 | 1 | 1.25 | 1.5 | 2
 export type AdTransitionPreset = 'cut' | 'fade' | 'dissolve' | 'slide-left' | 'slide-up' | 'zoom'
@@ -420,7 +420,15 @@ export interface AdMusicTrack {
   fadeOutSeconds: number
 }
 
+export interface AdCarouselSlide {
+  assetId: number
+  text: string
+  durationSeconds: number
+}
+
 export interface AdProjectConfig {
+  kind?: 'video' | 'carousel'
+  carousel?: { slides: AdCarouselSlide[]; caption: string }
   variationCount: number
   texts: string[]
   selectedClipIds: number[]
@@ -468,6 +476,7 @@ export interface AdAsset {
 }
 
 export interface AdRenderOutput {
+  mimeType?: 'image/jpeg' | 'video/mp4'
   index: number
   fileName: string
   sizeBytes: number
@@ -857,10 +866,10 @@ export const adProjectApi = {
   assetContentUrl(projectId: number, assetId: number): string {
     return adMediaUrl(`/ad-projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/content`)
   },
-  async assetContent(projectId: number, assetId: number): Promise<Blob> {
+  async assetContent(projectId: number, assetId: number, signal?: AbortSignal): Promise<Blob> {
     const response = await api.get(
       `/ad-projects/${encodeURIComponent(projectId)}/assets/${encodeURIComponent(assetId)}/content`,
-      { responseType: 'blob' },
+      { responseType: 'blob', signal },
     )
     return response.data as Blob
   },

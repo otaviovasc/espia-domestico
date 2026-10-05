@@ -27,7 +27,7 @@ AdAsset.init(
   {
     id: { type: DataTypes.INTEGER, autoIncrement: true, primaryKey: true },
     projectId: { type: DataTypes.INTEGER, allowNull: false, field: 'project_id' },
-    kind: { type: DataTypes.ENUM('clip', 'music'), allowNull: false },
+    kind: { type: DataTypes.ENUM('clip', 'image', 'music'), allowNull: false },
     originalName: { type: DataTypes.STRING(255), allowNull: false, field: 'original_name' },
     mimeType: { type: DataTypes.STRING(100), allowNull: false, field: 'mime_type' },
     sizeBytes: { type: DataTypes.INTEGER, allowNull: false, field: 'size_bytes' },

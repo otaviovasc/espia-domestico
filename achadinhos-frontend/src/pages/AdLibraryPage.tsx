@@ -42,6 +42,8 @@ import {
 } from '@/lib/api'
 import { Button, Input, Spinner } from '@/components/ui'
 import ClipSequenceEditor from '@/components/ClipSequenceEditor'
+import { CarouselEditor, CarouselPreview } from '@/components/CarouselCreator'
+import { addUploadedMedia, carouselValidation } from '@/lib/adCarouselConfig'
 import CreativeControls from '@/components/CreativeControls'
 import EmojiPicker from '@/components/EmojiPicker'
 import { DEFAULT_HOOK, DEFAULT_VISUAL_EFFECTS, normaliseCreativeConfig } from '@/lib/adCreativeConfig'
@@ -55,6 +57,8 @@ import {
 } from '@/lib/adPreviewParity'
 
 const DEFAULT_CONFIG: AdProjectConfig = {
+  kind: 'video',
+  carousel: { slides: [], caption: '' },
   variationCount: 5,
   texts: [
     'Sua casa merece esse achadinho ✨',
@@ -166,6 +170,8 @@ function copyConfig(config: AdProjectConfig): AdProjectConfig {
   const normalized = normaliseCreativeConfig(config)
   return {
     ...normalized,
+    kind: normalized.kind ?? 'video',
+    carousel: { caption: normalized.carousel?.caption ?? '', slides: (normalized.carousel?.slides ?? []).map((slide) => ({ ...slide })) },
     musicVolume: normalized.musicVolume ?? 0.8,
     texts: [...normalized.texts],
     selectedClipIds: [...normalized.selectedClipIds],
@@ -357,14 +363,14 @@ function UploadZone({
   busy,
   onFiles,
 }: {
-  kind: 'clip' | 'music'
+  kind: 'clip' | 'image' | 'music'
   multiple: boolean
   busy: boolean
   onFiles: (files: File[]) => void
 }) {
   const input = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
-  const accept = kind === 'clip' ? 'video/mp4,video/quicktime,video/webm' : 'audio/mpeg,audio/mp4,audio/x-m4a,audio/m4a,audio/wav,audio/x-wav,audio/ogg,audio/flac'
+  const accept = kind === 'image' ? 'image/jpeg,image/png,image/webp' : kind === 'clip' ? 'video/mp4,video/quicktime,video/webm' : 'audio/mpeg,audio/mp4,audio/x-m4a,audio/m4a,audio/wav,audio/x-wav,audio/ogg,audio/flac'
 
   function receive(files: File[]) {
     const accepted = multiple ? files : files.slice(0, 1)
@@ -407,8 +413,8 @@ function UploadZone({
         {busy ? <LoaderCircle size={17} className="animate-spin" /> : <Upload size={17} />}
         {busy
           ? 'Enviando…'
-          : kind === 'clip'
-            ? 'Adicionar clipes'
+          : kind === 'image' ? 'Adicionar imagens' : kind === 'clip'
+            ? 'Adicionar vídeos'
             : 'Escolher trilha'}
       </button>
     </>
@@ -522,7 +528,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
   exactPreviewPending: boolean
   canRenderExact: boolean
 }) {
-  const clipAssets = (project.assets ?? []).filter((asset) => asset.kind === 'clip')
+  const clipAssets = (project.assets ?? []).filter((asset) => asset.kind === 'clip' || asset.kind === 'image')
   const clips = config.selectedClipIds
     .map((assetId) => clipAssets.find((asset) => asset.id === assetId))
     .filter((asset): asset is AdAsset => Boolean(asset))
@@ -1090,7 +1096,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
               {preparedOutgoingClip && preparedOutgoingUrl ? (
                 <div className="ad-preview-transition-layer pointer-events-none absolute inset-0 z-0 overflow-hidden" style={{ ...transitionFrame.outgoing, backgroundColor: framing.backgroundColor }} aria-hidden="true">
                   {framing.mode === 'contain-blur' ? (
-                    <video
+                    preparedOutgoingClip.kind === 'image' ? <img src={preparedOutgoingUrl} alt=""  className="absolute max-w-none" style={{ ...outgoingBackgroundGeometry, filter: `${filter === 'none' ? '' : filter} blur(${backgroundBlur})` }} /> : (<video
                       ref={outgoingBackgroundVideo}
                       src={preparedOutgoingUrl}
                       muted
@@ -1103,9 +1109,9 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
                         ...outgoingBackgroundGeometry,
                         filter: `${filter === 'none' ? '' : filter} blur(${backgroundBlur})`,
                       }}
-                    />
+                    />)
                   ) : null}
-                  <video
+                  {preparedOutgoingClip.kind === 'image' ? <img src={preparedOutgoingUrl} alt="" onLoad={() => setOutgoingLayerReadyKey(preparedOutgoingUrl)} className="absolute max-w-none" style={{ ...outgoingClipGeometry, filter }} /> : (<video
                     ref={outgoingForegroundVideo}
                     src={preparedOutgoingUrl}
                     muted
@@ -1121,7 +1127,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
                       ...outgoingClipGeometry,
                       filter,
                     }}
-                  />
+                  />)}
                 </div>
               ) : null}
               <div
@@ -1140,7 +1146,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
                 }}
               >
               {framing.mode === 'contain-blur' ? (
-                <video
+                activeClip.kind === 'image' ? <img src={media.url} alt=""  className="absolute max-w-none" style={{ ...backgroundGeometry, filter: `${filter === 'none' ? '' : filter} blur(${backgroundBlur})` }} /> : (<video
                   ref={backgroundVideo}
                   aria-hidden="true"
                   src={media.url}
@@ -1151,9 +1157,9 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
                   onTimeUpdate={keepWithinTrim}
                   className="absolute max-w-none"
                   style={{ ...backgroundGeometry, filter: `${filter === 'none' ? '' : filter} blur(${backgroundBlur})` }}
-                />
+                />)
               ) : null}
-              <video
+              {activeClip.kind === 'image' ? <img src={media.url} alt="" onLoad={() => setActiveLayerReadyKey(activeLayerKey)} className="absolute max-w-none" style={{ ...activeClipGeometry, filter }} /> : (<video
                 ref={foregroundVideo}
                 src={media.url}
                 muted
@@ -1166,7 +1172,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
                 onTimeUpdate={keepWithinTrim}
                 className="absolute max-w-none"
                 style={{ ...activeClipGeometry, filter }}
-              />
+              />)}
               </div>
             </>
         ) : (
@@ -1255,9 +1261,9 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
           />
         ) : null
       })}
-      {previousClip && previousMedia.url ? <video src={previousMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
-      {nextClip && nextMedia.url ? <video src={nextMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
-      {followingClip && followingMedia.url ? <video src={followingMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
+      {previousClip && previousMedia.url ? previousClip.kind === 'image' ? <img src={previousMedia.url} alt="" className="sr-only" /> : <video src={previousMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
+      {nextClip && nextMedia.url ? nextClip.kind === 'image' ? <img src={nextMedia.url} alt="" className="sr-only" /> : <video src={nextMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
+      {followingClip && followingMedia.url ? followingClip.kind === 'image' ? <img src={followingMedia.url} alt="" className="sr-only" /> : <video src={followingMedia.url} muted playsInline preload="auto" className="sr-only" aria-hidden="true" /> : null}
 
       <div className="ad-preview-timeline">
         <input
@@ -1358,11 +1364,11 @@ function RenderOutput({
   return (
     <div className="overflow-hidden rounded-xl bg-zinc-950">
       {media.url ? (
-          <video src={media.url} controls preload="metadata" className="w-full bg-black object-contain" style={{ aspectRatio }} />
+          output.mimeType === 'image/jpeg' ? <img src={media.url} alt={`Slide ${output.index + 1}`} className="w-full bg-black object-contain" style={{ aspectRatio }} /> : <video src={media.url} controls preload="metadata" className="w-full bg-black object-contain" style={{ aspectRatio }} />
       ) : (
           <div className="flex flex-col items-center justify-center gap-3 px-4 text-center text-xs text-white/60" style={{ aspectRatio }}>
           {media.error ? (
-            <><CircleAlert size={20} className="text-red-300" />Não foi possível carregar este vídeo.</>
+            <><CircleAlert size={20} className="text-red-300" />Não foi possível carregar este arquivo.</>
           ) : loadMedia ? (
             <LoaderCircle size={20} className="animate-spin" />
           ) : (
@@ -1374,7 +1380,7 @@ function RenderOutput({
         <div className="min-w-0">
           <div className="truncate text-xs font-medium">{output.fileName}</div>
           <div className="text-[11px] text-white/50">{bytes(output.sizeBytes)}</div>
-          {output.timingSource ? (
+          {output.mimeType !== 'image/jpeg' && output.timingSource ? (
             <span className={`mt-1.5 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${TIMING_SOURCE[output.timingSource].className}`}>
               {TIMING_SOURCE[output.timingSource].label}
             </span>
@@ -1383,7 +1389,7 @@ function RenderOutput({
           <details className="mt-1.5 text-[10px] text-white/50">
             <summary className="cursor-pointer select-none hover:text-white/75">Sequência usada</summary>
             <div className="mt-1 max-w-52 space-y-0.5 break-words">
-              <div>{output.clipAssetIds.length} clipes · cortes em {output.cutTimes.map((cut) => `${cut.toFixed(1)}s`).join(', ')}</div>
+              <div>{output.clipAssetIds.length} mídias{output.cutTimes.length ? ` · cortes em ${output.cutTimes.map((cut) => `${cut.toFixed(1)}s`).join(', ')}` : ''}</div>
               <div>{output.textOrder.length} textos nesta ordem</div>
             </div>
           </details>
@@ -1421,14 +1427,14 @@ function RenderCard({ projectId, job, onCancel, initiallyExpanded }: { projectId
         )}
         {job.status === 'completed' && job.outputs.length > 0 && (
           <button type="button" onClick={() => setExpanded((value) => !value)} className="text-xs font-medium text-violet-700 hover:text-violet-900">
-            {expanded ? 'Ocultar vídeos' : `Ver ${job.outputs.length} ${job.outputs.length === 1 ? 'vídeo' : 'vídeos'}`}
+            {expanded ? 'Ocultar arquivos' : `Ver ${job.outputs.length} ${job.config.kind === 'carousel' ? 'slides' : job.outputs.length === 1 ? 'vídeo' : 'vídeos'}`}
           </button>
         )}
       </div>
       {active && (
         <div className="px-4 py-4">
           <div className="mb-2 flex justify-between text-xs text-zinc-500">
-            <span>{job.status === 'queued' ? 'Aguardando processador' : 'Criando variações'}</span>
+            <span>{job.status === 'queued' ? 'Aguardando processador' : job.config.kind === 'carousel' ? 'Criando slides' : 'Criando variações'}</span>
             <span>{Math.round(job.progress)}%</span>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
@@ -1477,6 +1483,7 @@ function QueryErrorState({
 export default function AdLibraryPage() {
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [carouselIndex, setCarouselIndex] = useState(0)
   const [draftName, setDraftName] = useState('')
   const [draft, setDraft] = useState<AdProjectConfig>(copyConfig(DEFAULT_CONFIG))
   const [feedback, setFeedback] = useState<string | null>(null)
@@ -1533,6 +1540,7 @@ export default function AdLibraryPage() {
       setDraftName(project.data.name)
       setDraft(copyConfig(project.data.config))
     }
+    setCarouselIndex(0)
     setHydratedProjectId(project.data.id)
     setFeedback(null)
     setError(null)
@@ -1540,7 +1548,7 @@ export default function AdLibraryPage() {
   }, [project.data])
 
   const current = project.data
-  const clips = current?.assets?.filter((asset) => asset.kind === 'clip') ?? []
+  const clips = current?.assets?.filter((asset) => asset.kind === 'clip' || asset.kind === 'image') ?? []
   const music = current?.assets?.filter((asset) => asset.kind === 'music') ?? []
   const selectedClips = clips.filter((asset) => draft.selectedClipIds.includes(asset.id))
   const outputRatio = draft.output.width / draft.output.height
@@ -1552,11 +1560,12 @@ export default function AdLibraryPage() {
     if (!asset.width || !asset.height) return false
     return asset.width < draft.output.width && asset.height < draft.output.height
   }).length
-  const clipValidationError = clipSequenceValidation(clips, draft)
+  const isCarousel = draft.kind === 'carousel'
+  const clipValidationError = isCarousel ? carouselValidation(clips, draft) : clipSequenceValidation(clips, draft)
   const hasActiveJob = jobs.data?.some((job) => job.status === 'queued' || job.status === 'running') ?? false
 
   const createProject = useMutation({
-    mutationFn: () => adProjectApi.create({ name: `Campanha ${new Date().toLocaleDateString('pt-BR')}`, config: copyConfig(DEFAULT_CONFIG) }),
+    mutationFn: (kind: 'video' | 'carousel') => adProjectApi.create({ name: `${kind === 'carousel' ? 'Carrossel' : 'Campanha'} ${new Date().toLocaleDateString('pt-BR')}`, config: { ...copyConfig(DEFAULT_CONFIG), kind, ...(kind === 'carousel' ? { output: { ...DEFAULT_CONFIG.output, width: 1080, height: 1350 } } : {}) } }),
     onSuccess: async (created) => {
       setSelectedId(created.id)
       setError(null)
@@ -1606,28 +1615,11 @@ export default function AdLibraryPage() {
     onError: (cause) => setError(apiErrorMessage(cause)),
   })
   const upload = useMutation({
-    mutationFn: async (variables: { kind: 'clip' | 'music'; files: File[] }) => {
+    mutationFn: async (variables: { kind: 'clip' | 'image' | 'music'; files: File[] }) => {
       const assets = await adProjectApi.uploadAssets(activeId!, variables.kind, variables.files)
       const persisted = normaliseCreativeConfig(draft)
-      const persistedConfig: AdProjectConfig = variables.kind === 'clip'
-        ? { ...persisted, selectedClipIds: [...new Set([...persisted.selectedClipIds, ...draft.selectedClipIds, ...assets.map((asset) => asset.id)])] }
-        : {
-            ...persisted,
-            musicAssetId: persisted.musicAssetId ?? assets[0]?.id ?? null,
-            musicTracks: [
-              ...persisted.musicTracks,
-              ...assets.map((asset) => ({
-                assetId: asset.id,
-                volume: 0.75,
-                startSeconds: 0,
-                endSeconds: null,
-                sourceStartSeconds: 0,
-                fadeInSeconds: 0.25,
-                fadeOutSeconds: 0.5,
-              })),
-            ],
-          }
       try {
+        const persistedConfig = addUploadedMedia(persisted, variables.kind, assets)
         await adProjectApi.update(activeId!, { config: persistedConfig })
       } catch (cause) {
         await Promise.allSettled(assets.map((asset) => adProjectApi.removeAsset(activeId!, asset.id)))
@@ -1638,24 +1630,7 @@ export default function AdLibraryPage() {
     onSuccess: async ({ assets, variables }) => {
       setDraft((value) => {
         const normalized = normaliseCreativeConfig(value)
-        return variables.kind === 'clip'
-          ? { ...normalized, selectedClipIds: [...new Set([...normalized.selectedClipIds, ...assets.map((asset) => asset.id)])] }
-          : {
-              ...normalized,
-              musicAssetId: normalized.musicAssetId ?? assets[0]?.id ?? null,
-              musicTracks: [
-                ...normalized.musicTracks,
-                ...assets.map((asset) => ({
-                  assetId: asset.id,
-                  volume: 0.75,
-                  startSeconds: 0,
-                  endSeconds: null,
-                  sourceStartSeconds: 0,
-                  fadeInSeconds: 0.25,
-                  fadeOutSeconds: 0.5,
-                })),
-              ],
-            }
+        return addUploadedMedia(normalized, variables.kind, assets)
       })
       setError(null)
       await Promise.all([
@@ -1703,6 +1678,7 @@ export default function AdLibraryPage() {
       delete clipEdits[String(asset.id)]
       const persistedConfig: AdProjectConfig = {
         ...persisted,
+        carousel: { caption: persisted.carousel?.caption ?? '', slides: (persisted.carousel?.slides ?? []).filter((slide) => slide.assetId !== asset.id) },
         selectedClipIds: persisted.selectedClipIds.filter((id) => id !== asset.id),
         clipEdits,
         musicAssetId: persisted.musicAssetId === asset.id ? null : persisted.musicAssetId,
@@ -1726,6 +1702,7 @@ export default function AdLibraryPage() {
         delete clipEdits[String(asset.id)]
         return {
           ...normaliseCreativeConfig(value),
+          carousel: { caption: value.carousel?.caption ?? '', slides: (value.carousel?.slides ?? []).filter((slide) => slide.assetId !== asset.id) },
           selectedClipIds: value.selectedClipIds.filter((id) => id !== asset.id),
           clipEdits,
           musicAssetId: value.musicAssetId === asset.id ? null : value.musicAssetId,
@@ -1901,15 +1878,15 @@ export default function AdLibraryPage() {
           <div className="mb-2 flex items-center gap-2 text-sm font-medium text-violet-700">
             <WandSparkles size={17} /> Biblioteca de anúncios
           </div>
-          <h1 className="text-3xl font-bold tracking-[-0.035em] text-[#17172a] sm:text-4xl">Transforme clipes em criativos prontos</h1>
+          <h1 className="text-3xl font-bold tracking-[-0.035em] text-[#17172a] sm:text-4xl">Crie vídeos e carrosséis para Instagram</h1>
           <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-600">
-            Combine vídeos, textos e música em variações verticais com cortes ritmados e tratamento de cor.
+            Combine imagens e vídeos em anúncios ou monte um carrossel com slides na ordem que você escolher.
           </p>
         </div>
-        <Button onClick={() => createProject.mutate()} disabled={createProject.isPending}>
+        <div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => createProject.mutate('carousel')} disabled={createProject.isPending || upload.isPending || save.isPending || render.isPending}><Plus size={17} /> Novo carrossel</Button><Button onClick={() => createProject.mutate('video')} disabled={createProject.isPending || upload.isPending || save.isPending || render.isPending}>
           {createProject.isPending ? <LoaderCircle size={17} className="animate-spin" /> : <Plus size={17} />}
-          Novo projeto
-        </Button>
+          Novo vídeo
+        </Button></div>
       </header>
 
       {error && (
@@ -1937,7 +1914,7 @@ export default function AdLibraryPage() {
           <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-100 text-violet-700"><Clapperboard size={30} /></div>
           <h2 className="mt-5 text-xl font-semibold text-zinc-900">Crie seu primeiro projeto</h2>
           <p className="mt-2 max-w-md text-sm leading-6 text-zinc-500">Separe seus melhores clipes. A biblioteca cuida das combinações, do texto, da trilha e do acabamento.</p>
-          <Button className="mt-5" onClick={() => createProject.mutate()} disabled={createProject.isPending}><Plus size={17} /> Criar projeto</Button>
+          <Button className="mt-5" onClick={() => createProject.mutate('video')} disabled={createProject.isPending || upload.isPending || save.isPending || render.isPending}><Plus size={17} /> Criar projeto</Button>
         </div>
       ) : (
         <>
@@ -1953,6 +1930,7 @@ export default function AdLibraryPage() {
                     key={item.id}
                     type="button"
                     onClick={() => selectProject(item.id)}
+                    disabled={upload.isPending || save.isPending || render.isPending}
                     className={`min-w-[190px] rounded-xl px-3 py-3 text-left transition xl:min-w-0 ${activeId === item.id ? 'bg-[#19192c] text-white' : 'text-zinc-700 hover:bg-zinc-100'}`}
                   >
                     <span className="block truncate text-sm font-semibold">{item.name}</span>
@@ -1973,14 +1951,14 @@ export default function AdLibraryPage() {
               <div className="col-span-2 flex min-h-[520px] items-center justify-center rounded-2xl border border-zinc-200 bg-white"><Spinner /></div>
             ) : (
               <>
-                <PhonePreview
+                {isCarousel ? <CarouselPreview project={current} config={draft} index={carouselIndex} onIndexChange={setCarouselIndex} /> : <PhonePreview
                   key={current.id}
                   project={current}
                   config={draft}
                   onExactPreview={() => render.mutate(true)}
                   exactPreviewPending={render.isPending || hasActiveJob}
                   canRenderExact={draft.selectedClipIds.length > 0 && !clipValidationError && !hasActiveJob}
-                />
+                />}
 
                 <div className="min-w-0 space-y-5">
                   <section className="rounded-2xl border border-zinc-200 bg-white p-5">
@@ -1991,7 +1969,7 @@ export default function AdLibraryPage() {
                         onChange={(event) => setDraftName(event.target.value)}
                         className="min-w-[220px] flex-1 border-0 bg-zinc-100 text-base font-semibold focus:bg-white"
                       />
-                      <Button variant="secondary" onClick={() => duplicate.mutate()} disabled={duplicate.isPending}><Copy size={16} /> Duplicar</Button>
+                      <Button variant="secondary" onClick={() => duplicate.mutate()} disabled={duplicate.isPending || upload.isPending || save.isPending || render.isPending}><Copy size={16} /> Duplicar</Button>
                       {confirmDelete ? (
                         <div className="flex items-center gap-1">
                           <Button variant="danger" onClick={() => removeProject.mutate()} disabled={removeProject.isPending}>Excluir</Button>
@@ -2003,11 +1981,18 @@ export default function AdLibraryPage() {
                     </div>
                   </section>
 
+                  {isCarousel ? <CarouselEditor
+                    assets={clips} config={draft} onChange={setDraft} onPreview={setCarouselIndex}
+                    onRemove={(asset) => removeAsset.mutate(asset)} removingAssetId={removeAsset.isPending ? removeAsset.variables?.id ?? null : null}
+                    uploading={upload.isPending}
+                    uploadImages={<UploadZone kind="image" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'image', files })} />}
+                    uploadVideos={<UploadZone kind="clip" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />}
+                  /> : <>
                   <section className="rounded-2xl border border-zinc-200 bg-white p-5">
                     <div className="mb-4 flex items-start justify-between gap-3">
                       <div>
-                        <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Video size={18} className="text-violet-600" /> Clipes</h2>
-                        <p className="mt-1 text-xs leading-5 text-zinc-500">Organize, corte, acelere e ajuste cada clipe. O áudio original será removido.</p>
+                        <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Video size={18} className="text-violet-600" /> Imagens e vídeos</h2>
+                        <p className="mt-1 text-xs leading-5 text-zinc-500">Organize as imagens e corte, acelere ou ajuste os vídeos. O áudio original será removido.</p>
                       </div>
                       <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">{clips.length}</span>
                     </div>
@@ -2019,7 +2004,10 @@ export default function AdLibraryPage() {
                       onRemove={(asset) => removeAsset.mutate(asset)}
                     />
                     <div className={clips.length > 0 ? 'mt-3' : ''}>
-                      <UploadZone kind="clip" multiple busy={upload.isPending && upload.variables?.kind === 'clip'} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <UploadZone kind="clip" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />
+                        <UploadZone kind="image" multiple busy={upload.isPending} onFiles={(files) => upload.mutate({ kind: 'image', files })} />
+                      </div>
                     </div>
                   </section>
 
@@ -2289,15 +2277,17 @@ export default function AdLibraryPage() {
                     <CreativeControls config={draft} assets={current.assets ?? []} onChange={setDraft} />
                   </section>
 
+                  </>}
+
                   <div className="sticky bottom-3 z-30 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white/95 p-3 shadow-xl shadow-zinc-900/10 backdrop-blur">
-                    <Button variant="secondary" onClick={() => save.mutate()} disabled={!dirty || save.isPending || Boolean(clipValidationError)}><Save size={16} /> {save.isPending ? 'Salvando…' : dirty ? 'Salvar projeto' : 'Salvo'}</Button>
+                    <Button variant="secondary" onClick={() => save.mutate()} disabled={!dirty || save.isPending || upload.isPending || render.isPending || Boolean(clipValidationError)}><Save size={16} /> {save.isPending ? 'Salvando…' : dirty ? 'Salvar projeto' : 'Salvo'}</Button>
                     <Button
                       onClick={() => render.mutate(false)}
-                      disabled={draft.selectedClipIds.length === 0 || render.isPending || hasActiveJob || Boolean(clipValidationError)}
+                      disabled={(isCarousel ? (draft.carousel?.slides.length ?? 0) < 2 : draft.selectedClipIds.length === 0) || render.isPending || upload.isPending || save.isPending || hasActiveJob || Boolean(clipValidationError)}
                       className="bg-[#ee5b47] hover:bg-[#db4c39] disabled:bg-[#f4a397]"
                     >
                       {render.isPending || hasActiveJob ? <LoaderCircle size={16} className="animate-spin" /> : <Clapperboard size={16} />}
-                      {hasActiveJob ? 'Renderizando…' : `Gerar ${draft.variationCount} ${draft.variationCount === 1 ? 'variação' : 'variações'}`}
+                      {hasActiveJob ? 'Renderizando…' : isCarousel ? 'Gerar carrossel' : `Gerar ${draft.variationCount} ${draft.variationCount === 1 ? 'variação' : 'variações'}`}
                     </Button>
                   </div>
                 </div>
@@ -2309,7 +2299,7 @@ export default function AdLibraryPage() {
             <section className="mt-7">
               <div className="mb-4 flex items-end justify-between gap-4">
                 <div>
-                  <h2 className="text-xl font-bold tracking-tight text-zinc-900">Vídeos gerados</h2>
+                  <h2 className="text-xl font-bold tracking-tight text-zinc-900">Arquivos gerados</h2>
                   <p className="mt-1 text-sm text-zinc-500">Pré-visualize, baixe e acompanhe os renders deste projeto.</p>
                 </div>
                 {hasActiveJob && <span className="flex items-center gap-2 text-xs font-medium text-violet-700"><Clock3 size={15} /> Atualizando automaticamente</span>}
@@ -2328,7 +2318,7 @@ export default function AdLibraryPage() {
                   {jobs.data.map((job, index) => <RenderCard key={job.id} projectId={current.id} job={job} initiallyExpanded={index === 0} onCancel={() => cancelJob.mutate(job.id)} />)}
                 </div>
               ) : (
-                <div className="flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-zinc-300 bg-white/60 px-6 text-center text-sm text-zinc-500">Os vídeos aparecerão aqui depois do primeiro render.</div>
+                <div className="flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-zinc-300 bg-white/60 px-6 text-center text-sm text-zinc-500">Os arquivos aparecerão aqui depois de gerar o projeto.</div>
               )}
             </section>
           )}

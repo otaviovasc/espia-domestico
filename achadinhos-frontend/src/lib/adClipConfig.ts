@@ -45,6 +45,7 @@ export function clipSequenceValidation(assets: AdAsset[], config: AdProjectConfi
     const found = assetById.get(id)
     if (!found) return 'Um clipe selecionado não está mais disponível.'
     const { asset, index } = found
+    if (asset.kind === 'image') continue
     const label = getAdAssetDisplayLabel(asset, index)
     const edit = getAdClipEdit(config, id)
     const sourceEnd = edit.trimEnd ?? asset.durationSeconds

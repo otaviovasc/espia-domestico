@@ -104,7 +104,18 @@ export const AdMusicTrackSchema = z
     }
   })
 
+export const AdCarouselSlideSchema = z.object({
+  assetId: z.number().int().positive(),
+  text: z.string().trim().max(280).default(''),
+  durationSeconds: z.number().min(3).max(60).default(5),
+})
+
 export const AdProjectConfigSchema = z.object({
+  kind: z.enum(['video', 'carousel']).default('video'),
+  carousel: z.object({
+    slides: z.array(AdCarouselSlideSchema).max(20).default([]),
+    caption: z.string().max(2200).default(''),
+  }).default({}),
   variationCount: z.number().int().min(1).max(20).default(5),
   texts: z.array(z.string().trim().min(1).max(280)).min(1).max(20),
   selectedClipIds: z.array(z.number().int().positive()).max(50).default([]),
@@ -137,6 +148,15 @@ export const AdProjectConfigSchema = z.object({
   visualEffects: AdVisualEffectsSchema,
   hook: AdHookSchema,
   textStyle: AdTextStyleSchema,
+}).superRefine((config, context) => {
+  if (config.kind === 'carousel' && !(
+    config.output.width === 1080 && [1080, 1350].includes(config.output.height)
+  )) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['output'], message: 'Use 1080×1080 ou 1080×1350 para o carrossel' })
+  }
+  if (config.output.width % 2 || config.output.height % 2) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['output'], message: 'As dimensões devem ser números pares' })
+  }
 })
 
 export const CreateAdProjectSchema = z.object({
@@ -153,7 +173,7 @@ export const PreviewAdTimingSchema = z.object({
   config: AdProjectConfigSchema,
 })
 
-export const AdAssetKindSchema = z.enum(['clip', 'music'])
+export const AdAssetKindSchema = z.enum(['clip', 'image', 'music'])
 
 export const ImportAdMusicSchema = z.object({
   url: z.string().trim().url().max(2048),

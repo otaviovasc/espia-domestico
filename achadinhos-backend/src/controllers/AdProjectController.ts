@@ -219,6 +219,6 @@ export class AdProjectController {
       z.coerce.number().int().min(0).parse(req.params.index),
       req.headers.range,
     )
-    await this.sendContent(res, content, 'video/mp4', `inline; filename="${output.fileName}"`)
+    await this.sendContent(res, content, output.mimeType ?? 'video/mp4', `inline; filename="${output.fileName}"`)
   }
 }
