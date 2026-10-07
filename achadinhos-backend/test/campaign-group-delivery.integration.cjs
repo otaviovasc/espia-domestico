@@ -19,6 +19,7 @@ const {
   DELIVERY_CLAIM_RECOVERY_MS,
 } = require('../dist/services/CampaignService.js')
 const { BadRequestError } = require('../dist/middleware/Error/AppError.js')
+const { OfferSchema } = require('../dist/dtos/campaign.js')
 
 const safety = {
   minDelaySeconds: 0,
@@ -110,9 +111,24 @@ test('campaign delivery ledger skips successful product/group pairs and retries 
   const mercadoOffer = {
     title: 'Panela doméstica',
     discountedPrice: 80,
+    currency: 'BRL',
     affiliateUrl: `https://meli.la/${stamp}`,
     source: 'mercadolivre',
     productId: `MLB-${stamp}`,
+    extensionEvidence: {
+      commission: {
+        percent: 12,
+        priceBrl: 80,
+        estimatedBrl: 9.6,
+        basis: 'visible_current_price_times_displayed_percent',
+        guaranteed: false,
+      },
+      searchMatch: {
+        keywords: ['panela', 'doméstico'],
+        matchMode: 'any',
+        commission: { minPercent: 10, maxPercent: null, minEstimatedBrl: 5 },
+      },
+    },
   }
 
   try {
@@ -148,6 +164,15 @@ test('campaign delivery ledger skips successful product/group pairs and retries 
       affiliateUrlHash: createHash('sha256').update(mercadoOffer.affiliateUrl).digest('hex'),
       offer: mercadoOffer,
     })
+    const catalogProduct = await SavedProduct.findByPk(ownProduct.id)
+    const evidenceCampaign = await service.create(user.id, {
+      name: 'Evidências JSONB sem alterações',
+      offers: [OfferSchema.parse({ ...catalogProduct.offer, savedProductId: ownProduct.id })],
+      groups: [groups[0]],
+      safety,
+      sendImages: false,
+    })
+    assert.deepEqual(evidenceCampaign.offers[0].extensionEvidence, mercadoOffer.extensionEvidence)
     await assert.rejects(
       service.create(user.id, {
         name: 'ID divergente',

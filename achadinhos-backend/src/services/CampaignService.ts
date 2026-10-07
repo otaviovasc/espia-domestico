@@ -1,6 +1,7 @@
 import { injectable, inject } from 'tsyringe'
 import { Op, UniqueConstraintError } from 'sequelize'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import {
   Campaign,
   CAMPAIGN_STATUS_ENUM,
@@ -64,15 +65,11 @@ function sameOffer(candidate: CheckOfferInput, offer: CheckOfferInput): boolean 
   )
 }
 
-function comparableOffer(offer: CampaignOffer): string {
-  return JSON.stringify(
-    Object.fromEntries(
-      Object.entries(offer)
-        .filter(
-          ([key, value]) =>
-            key !== 'savedProductId' && key !== 'classificationProfileName' && value !== undefined,
-        )
-        .sort(([left], [right]) => left.localeCompare(right)),
+function comparableOffer(offer: CampaignOffer): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(offer).filter(
+      ([key, value]) =>
+        key !== 'savedProductId' && key !== 'classificationProfileName' && value !== undefined,
     ),
   )
 }
@@ -1301,7 +1298,8 @@ export class CampaignService {
       if (!offer.savedProductId) continue
       const saved = byId.get(offer.savedProductId)
       if (!saved) throw BadRequestError('Produto salvo inválido ou não pertence ao usuário')
-      const unchanged = comparableOffer(saved.offer) === comparableOffer(offer)
+      // JSONB and request validation can reorder nested object keys without changing values.
+      const unchanged = isDeepStrictEqual(comparableOffer(saved.offer), comparableOffer(offer))
       const rating = offer.classificationProfileId
         ? saved.classifications[offer.classificationProfileId]
         : undefined
@@ -1321,7 +1319,7 @@ export class CampaignService {
           else Object.assign(ratedOffer, { [field]: value })
         }
       }
-      if (!unchanged && (!rating || comparableOffer(ratedOffer) !== comparableOffer(offer))) {
+      if (!unchanged && (!rating || !isDeepStrictEqual(comparableOffer(ratedOffer), comparableOffer(offer)))) {
         throw BadRequestError(
           `O produto salvo #${offer.savedProductId} foi alterado. Atualize a campanha antes de enviar.`,
         )
