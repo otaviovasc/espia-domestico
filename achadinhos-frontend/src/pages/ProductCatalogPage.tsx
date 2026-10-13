@@ -323,6 +323,7 @@ export default function ProductCatalogPage() {
       const progress = { total: entries.length, saved: 0, failed: 0 }
       let created = 0
       let updated = 0
+      let merged = 0
       setSaveProgress({ ...progress })
       setError(null)
       await saveInChunks(entries,
@@ -330,6 +331,7 @@ export default function ProductCatalogPage() {
           const data = await savedProductApi.save(batch.map(({ offer }) => offer))
           created += data.created
           updated += data.updated
+          merged += data.merged ?? 0
           if (groupIds.length && data.saved.length) {
             try { await productGroupApi.assign({ productIds: data.saved.map((item) => item.id), groupIds, mode: 'add' }) }
             catch (cause) {
@@ -347,7 +349,7 @@ export default function ProductCatalogPage() {
         () => cancelRequested.current,
       )
       if (failedGroupIds.size) setGroupRetry({ productIds: [...failedGroupIds], groupIds })
-      setFeedback(`${created} produto(s) criado(s), ${updated} atualizado(s). ${progress.failed} falha(s), ${progress.total - progress.saved - progress.failed} pendente(s). A seleção mantém apenas os produtos que ainda precisam ser salvos.`)
+      setFeedback(`${created} produto(s) criado(s), ${updated} atualizado(s)${merged ? `, ${merged} duplicado(s) unificado(s) automaticamente` : ''}. ${progress.failed} falha(s), ${progress.total - progress.saved - progress.failed} pendente(s). A seleção mantém apenas os produtos que ainda precisam ser salvos.`)
       await invalidateCatalog()
     },
     onError: (cause) => setError(apiErrorMessage(cause)),

@@ -15,6 +15,7 @@ import type {
   SavedProductOfferPatch,
 } from '@/dtos/savedProduct'
 import { ConflictError, NotFoundError, UnauthorizedError } from '@/middleware/Error/AppError'
+import { logger } from '@/utils/logger'
 import { offerIdentity } from '@/utils/offerIdentity'
 
 export interface SavedProductResult {
@@ -133,6 +134,117 @@ export class SavedProductService {
     return profile.name
   }
 
+  /**
+   * Smart autofix for split identities: the same marketplace product was saved
+   * twice under different keys (e.g. one row holds the affiliate URL, another
+   * holds the source+productId after a link rotation). The incoming offer
+   * bridges both rows. Instead of rejecting the batch, fold the duplicates
+   * into the oldest row (which preserves the most delivery history) and keep
+   * going. Returns the survivor; the caller refreshes it with the incoming
+   * offer as usual.
+   */
+  private async mergeConflictingProducts(
+    matches: SavedProduct[],
+    transaction: Transaction,
+  ): Promise<{ survivor: SavedProduct; merged: number }> {
+    const ordered = [...matches].sort((a, b) => a.id - b.id)
+    const survivor = ordered[0]
+    const duplicates = ordered.slice(1)
+    const duplicateIds = duplicates.map((product) => product.id)
+
+    const [survivorMemberships, duplicateMemberships] = await Promise.all([
+      SavedProductGroupMembership.findAll({
+        attributes: ['productGroupId'],
+        where: { savedProductId: survivor.id },
+        transaction,
+      }),
+      SavedProductGroupMembership.findAll({
+        attributes: ['savedProductId', 'productGroupId'],
+        where: { savedProductId: duplicateIds },
+        transaction,
+      }),
+    ])
+    const ownedGroups = new Set(survivorMemberships.map((item) => item.productGroupId))
+    const seen = new Set<number>()
+    const toCreate = duplicateMemberships
+      .filter((item) => {
+        if (ownedGroups.has(item.productGroupId) || seen.has(item.productGroupId)) return false
+        seen.add(item.productGroupId)
+        return true
+      })
+      .map((item) => ({ savedProductId: survivor.id, productGroupId: item.productGroupId }))
+    if (toCreate.length) {
+      await SavedProductGroupMembership.bulkCreate(toCreate, {
+        ignoreDuplicates: true,
+        transaction,
+      })
+      for (const row of toCreate) ownedGroups.add(row.productGroupId)
+    }
+
+    const mergedClassifications = { ...survivor.classifications }
+    for (const duplicate of duplicates) {
+      for (const [profileId, classification] of Object.entries(duplicate.classifications ?? {})) {
+        if (!mergedClassifications[profileId]) {
+          mergedClassifications[profileId] = classification
+        }
+      }
+    }
+    survivor.classifications = mergedClassifications
+    survivor.manualOverrides = [
+      ...new Set([...survivor.manualOverrides, ...duplicates.flatMap((item) => item.manualOverrides)]),
+    ].sort()
+
+    await SavedProductGroupMembership.destroy({
+      where: { savedProductId: duplicateIds },
+      transaction,
+    })
+    await SavedProduct.destroy({ where: { id: duplicateIds }, transaction })
+    return { survivor, merged: duplicates.length }
+  }
+
+  private async refreshProductWithOffer(
+    product: SavedProduct,
+    normalized: OfferInput,
+    profileId: string,
+    profileName: string,
+    source: string | null,
+    productId: string | null,
+  ): Promise<void> {
+    // A later import can omit optional signals. Keep the last known
+    // category, score, commission, and marketplace identity in that case.
+    const refreshed = Object.fromEntries(
+      Object.entries(normalized).filter(([field]) => {
+        if ((CLASSIFICATION_FIELDS as readonly string[]).includes(field)) {
+          return !hasClassificationOverride(
+            product.manualOverrides,
+            profileId,
+            field as ClassificationField,
+          )
+        }
+        return !product.manualOverrides.includes(field)
+      }),
+    )
+    const classification = mergeClassification(
+      normalized,
+      profileId,
+      profileName,
+      product.classifications[profileId],
+      product.manualOverrides,
+    )
+    const currentOffer = { ...product.offer, ...refreshed }
+    for (const field of CLASSIFICATION_FIELDS) {
+      const value = classification[field]
+      if (value === undefined) delete (currentOffer as Record<string, unknown>)[field]
+      else (currentOffer as Record<string, unknown>)[field] = value
+    }
+    product.offer = currentOffer
+    product.classifications = { ...product.classifications, [profileId]: classification }
+    product.source = source ?? product.source
+    product.productId = productId ?? product.productId
+    product.affiliateUrl = product.offer.affiliateUrl
+    product.affiliateUrlHash = createHash('sha256').update(product.affiliateUrl).digest('hex')
+  }
+
   async save(userId: number, offers: OfferInput[]) {
     return sequelize.transaction(async (transaction) => {
       // Serialize this user's batches so concurrent requests cannot both create
@@ -143,6 +255,7 @@ export class SavedProductService {
       const savedModels: SavedProduct[] = []
       let created = 0
       let updated = 0
+      let merged = 0
       const profileNames = new Map<string, string>()
 
       for (const offer of offers) {
@@ -184,47 +297,22 @@ export class SavedProductService {
           transaction,
           lock: transaction.LOCK.UPDATE,
         })
-        if (matches.length > 1) {
-          throw ConflictError('A oferta corresponde a dois produtos salvos diferentes')
-        }
 
-        let product = matches[0]
+        let product: SavedProduct | undefined = matches[0]
+        if (matches.length > 1) {
+          const result = await this.mergeConflictingProducts(matches, transaction)
+          product = result.survivor
+          merged += result.merged
+          logger.info(
+            { userId, survivorId: product.id, absorbed: matches.map((item) => item.id) },
+            'saved products auto-merged on conflicting identities',
+          )
+        }
         if (product) {
-          // A later import can omit optional signals. Keep the last known
-          // category, score, commission, and marketplace identity in that case.
-          const refreshed = Object.fromEntries(
-            Object.entries(normalized).filter(([field]) => {
-              if ((CLASSIFICATION_FIELDS as readonly string[]).includes(field)) {
-                return !hasClassificationOverride(
-                  product.manualOverrides,
-                  profileId,
-                  field as ClassificationField,
-                )
-              }
-              return !product.manualOverrides.includes(field)
-            }),
-          )
-          const classification = mergeClassification(
-            normalized,
-            profileId,
-            profileName,
-            product.classifications[profileId],
-            product.manualOverrides,
-          )
-          const currentOffer = { ...product.offer, ...refreshed }
-          for (const field of CLASSIFICATION_FIELDS) {
-            const value = classification[field]
-            if (value === undefined) delete (currentOffer as Record<string, unknown>)[field]
-            else (currentOffer as Record<string, unknown>)[field] = value
-          }
-          product.offer = currentOffer
-          product.classifications = { ...product.classifications, [profileId]: classification }
-          product.source = source ?? product.source
-          product.productId = productId ?? product.productId
-          product.affiliateUrl = product.offer.affiliateUrl
-          product.affiliateUrlHash = createHash('sha256').update(product.affiliateUrl).digest('hex')
+          await this.refreshProductWithOffer(product, normalized, profileId, profileName, source, productId)
           await product.save({ transaction })
           updated++
+          savedModels.push(product)
         } else {
           const classification = mergeClassification(
             normalized,
@@ -233,25 +321,52 @@ export class SavedProductService {
             undefined,
             [],
           )
-          product = await SavedProduct.create(
-            {
-              userId,
-              source,
-              productId,
-              affiliateUrl,
-              affiliateUrlHash,
-              offer: normalized,
-              classifications: { [profileId]: classification },
-            },
-            { transaction },
-          )
-          created++
+          try {
+            product = await SavedProduct.create(
+              {
+                userId,
+                source,
+                productId,
+                affiliateUrl,
+                affiliateUrlHash,
+                offer: normalized,
+                classifications: { [profileId]: classification },
+              },
+              { transaction },
+            )
+            created++
+          } catch (error) {
+            // A concurrent batch (or an intra-batch duplicate with divergent
+            // keys) may have created the row after our lookup. Heal by
+            // re-reading and applying the offer instead of failing the batch.
+            if ((error as Error)?.name !== 'SequelizeUniqueConstraintError') throw error
+            const retry = await SavedProduct.findAll({
+              where: { userId, [Op.or]: identities },
+              transaction,
+              lock: transaction.LOCK.UPDATE,
+            })
+            if (!retry.length) throw error
+            if (retry.length > 1) {
+              const result = await this.mergeConflictingProducts(retry, transaction)
+              product = result.survivor
+              merged += result.merged
+              logger.info(
+                { userId, survivorId: product.id, absorbed: retry.map((item) => item.id) },
+                'saved products auto-merged after unique conflict',
+              )
+            } else {
+              product = retry[0]
+            }
+            await this.refreshProductWithOffer(product, normalized, profileId, profileName, source, productId)
+            await product.save({ transaction })
+            updated++
+          }
+          savedModels.push(product)
         }
-        savedModels.push(product)
       }
 
       saved.push(...(await serializeProducts(savedModels, transaction)))
-      return { saved, created, updated }
+      return { saved, created, updated, merged }
     })
   }
 

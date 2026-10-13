@@ -795,8 +795,8 @@ export const savedProductApi = {
       await api.get('/saved-products', { params: { limit, offset } }),
     )
   },
-  async save(offers: Offer[]): Promise<{ saved: SavedProduct[]; created: number; updated: number }> {
-    return unwrap<{ saved: SavedProduct[]; created: number; updated: number }>(
+  async save(offers: Offer[]): Promise<{ saved: SavedProduct[]; created: number; updated: number; merged?: number }> {
+    return unwrap<{ saved: SavedProduct[]; created: number; updated: number; merged?: number }>(
       await api.post('/saved-products', { offers }),
     )
   },
