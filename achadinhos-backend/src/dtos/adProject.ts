@@ -114,15 +114,58 @@ export const AdCarouselSlideSchema = z.object({
   textStyle: AdTextStyleSchema.optional(),
 })
 
+const AdOverlayCommon = {
+  id: z.string().trim().min(1).max(64),
+  name: z.string().trim().max(80).default('Camada'),
+  x: z.number().min(0).max(100).default(10),
+  y: z.number().min(0).max(100).default(10),
+  width: z.number().min(1).max(100).default(40),
+  height: z.number().min(1).max(100).default(20),
+  opacity: z.number().min(0).max(1).default(1),
+  hidden: z.boolean().default(false),
+}
+const AdOverlayColor = z.string().regex(/^#[0-9a-f]{6}$/i)
+export const AdOverlaySchema = z.discriminatedUnion('type', [
+  z.object({
+    ...AdOverlayCommon,
+    type: z.literal('text'),
+    text: z.string().max(280).default(''),
+    color: AdOverlayColor.default('#FFFFFF'),
+    fontSize: z.number().int().min(12).max(200).default(48),
+    backgroundColor: AdOverlayColor.default('#101018'),
+  }),
+  z.object({
+    ...AdOverlayCommon,
+    type: z.literal('shape'),
+    shape: z.enum(['rectangle', 'ellipse']).default('rectangle'),
+    color: AdOverlayColor.default('#FFFFFF'),
+  }),
+  z.object({
+    ...AdOverlayCommon,
+    type: z.literal('image'),
+    assetId: z.number().int().positive(),
+    fit: z.enum(['contain', 'cover']).default('contain'),
+  }),
+])
+export type AdOverlay = z.infer<typeof AdOverlaySchema>
+export const AdAudioFinishingSchema = z
+  .object({
+    normalizeLoudness: z.boolean().default(false),
+    targetLufs: z.union([z.literal(-16), z.literal(-14), z.literal(-12)]).default(-14),
+  })
+  .default({})
+
 export const AdProjectConfigSchema = z.object({
   kind: z.enum(['video', 'carousel']).default('video'),
+  overlays: z.array(AdOverlaySchema).max(8).default([]),
+  audioFinishing: AdAudioFinishingSchema,
   productIds: z.array(z.number().int().positive()).max(50).default([]),
   carousel: z.object({
     slides: z.array(AdCarouselSlideSchema).max(20).default([]),
     caption: z.string().max(2200).default(''),
   }).default({}),
   variationCount: z.number().int().min(1).max(20).default(5),
-  texts: z.array(z.string().trim().min(1).max(280)).min(1).max(20),
+  texts: z.array(z.string().trim().min(1).max(280)).max(20),
   selectedClipIds: z.array(z.number().int().positive()).max(50).default([]),
   clipEdits: z
     .record(z.string().regex(/^[1-9]\d*$/), AdClipEditSchema)
@@ -154,6 +197,12 @@ export const AdProjectConfigSchema = z.object({
   hook: AdHookSchema,
   textStyle: AdTextStyleSchema,
 }).superRefine((config, context) => {
+  if (config.kind === 'video' && !config.texts.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['texts'], message: 'Adicione ao menos um texto ao vídeo' })
+  }
+  if (new Set(config.overlays.map((overlay) => overlay.id)).size !== config.overlays.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['overlays'], message: 'Cada camada deve ter um identificador único' })
+  }
   if (config.kind === 'carousel' && !(
     config.output.width === 1080 && [1080, 1350].includes(config.output.height)
   )) {

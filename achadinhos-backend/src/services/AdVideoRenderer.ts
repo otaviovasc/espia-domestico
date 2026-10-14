@@ -6,6 +6,8 @@ import { AdAsset } from '@/database/models/AdAsset'
 import type { AdRenderJob, AdRenderOutput } from '@/database/models/AdRenderJob'
 import type { AdProjectConfig } from '@/dtos/adProject'
 import { adMediaRoot, runProcess } from '@/services/AdMediaService'
+import { rasterizeAdComposition } from '@/services/adComposition'
+import { buildAudioFinishingFilter } from '@/services/adAudioFinishing'
 import { sfxFilter } from '@/services/adTransitionSfx'
 import { createCaptionArtwork, rasterizeCaptionArtwork } from '@/services/adCaptionArtwork'
 import {
@@ -283,6 +285,7 @@ export class AdVideoRenderer {
     assets: AdAsset[],
     onProgress: (progress: number) => Promise<void>,
     signal?: AbortSignal,
+    compositionAssets: AdAsset[] = [],
   ): Promise<AdRenderOutput[]> {
     const config = job.configSnapshot
     const byId = new Map(assets.map((asset) => [asset.id, asset]))
@@ -301,6 +304,13 @@ export class AdVideoRenderer {
     const outputs: AdRenderOutput[] = []
     let completed = false
     try {
+      const composition = await rasterizeAdComposition(
+        config,
+        [...assets, ...compositionAssets],
+        signal,
+      )
+      const compositionPath = path.join(workDir, 'composition.png')
+      if (composition) await writeFile(compositionPath, composition)
       for (const [index, slide] of config.carousel.slides.entries()) {
         signal?.throwIfAborted()
         const asset = byId.get(slide.assetId)
@@ -372,6 +382,7 @@ export class AdVideoRenderer {
           label = 'glowed'
         }
         const args = ['-v', 'error', '-y', ...inputArgs, '-i', inputPath]
+        let nextInput = 1
         if (slide.text) {
           const overlayPath = path.join(workDir, `caption-${index}.png`)
           await writeFile(
@@ -385,8 +396,15 @@ export class AdVideoRenderer {
             ),
           )
           args.push('-i', overlayPath)
-          filters.push(`[${label}][1:v]overlay=eof_action=repeat:shortest=0[captioned]`)
+          filters.push(
+            `[${label}][${nextInput++}:v]overlay=eof_action=repeat:shortest=0[captioned]`,
+          )
           label = 'captioned'
+        }
+        if (composition) {
+          args.push('-i', compositionPath)
+          filters.push(`[${label}][${nextInput}:v]overlay=eof_action=repeat:shortest=0[composed]`)
+          label = 'composed'
         }
         const fileName = `slide-${String(index + 1).padStart(2, '0')}.${image ? 'jpg' : 'mp4'}`
         const storagePath = path.join(outputDir, fileName)
@@ -402,7 +420,13 @@ export class AdVideoRenderer {
                   '-map',
                   '0:a?',
                   '-af',
-                  `volume=${edit.volume},atempo=${edit.speed}`,
+                  [
+                    `volume=${edit.volume}`,
+                    `atempo=${edit.speed}`,
+                    buildAudioFinishingFilter(config.audioFinishing),
+                  ]
+                    .filter(Boolean)
+                    .join(','),
                   '-c:a',
                   'aac',
                   '-b:a',
@@ -495,9 +519,11 @@ export class AdVideoRenderer {
     music: AdAsset[],
     onProgress: (progress: number) => Promise<void>,
     signal?: AbortSignal,
+    compositionAssets: AdAsset[] = [],
   ): Promise<AdRenderOutput[]> {
     const config = job.configSnapshot
-    if (config.kind === 'carousel') return await this.renderCarousel(job, clips, onProgress, signal)
+    if (config.kind === 'carousel')
+      return await this.renderCarousel(job, clips, onProgress, signal, compositionAssets)
     const duration = config.output.durationSeconds
     const musicById = new Map(music.map((asset) => [asset.id, asset]))
     const configuredTracks = config.musicTracks?.length
@@ -571,6 +597,13 @@ export class AdVideoRenderer {
       }
     }
     try {
+      const composition = await rasterizeAdComposition(
+        config,
+        [...clips, ...compositionAssets],
+        signal,
+      )
+      const compositionPath = path.join(workDir, 'composition.png')
+      if (composition) await writeFile(compositionPath, composition)
       for (let variation = 0; variation < config.variationCount; variation += 1) {
         if (signal?.aborted) throw signal.reason
         const variationDir = path.join(workDir, String(variation))
@@ -712,6 +745,8 @@ export class AdVideoRenderer {
             asset.storagePath,
           )
         }
+        const compositionInput = firstMusicInput + musicTracks.length
+        if (composition) args.push('-i', compositionPath)
         let currentLabel = '0:v'
         const complexFilters: string[] = []
         if (hasVisualGlow(config)) {
@@ -723,6 +758,12 @@ export class AdVideoRenderer {
           `[${currentLabel}][captionstream]overlay=eof_action=repeat:shortest=0[captioned]`,
         )
         currentLabel = 'captioned'
+        if (composition) {
+          complexFilters.push(
+            `[${currentLabel}][${compositionInput}:v]overlay=eof_action=repeat:shortest=0[composed]`,
+          )
+          currentLabel = 'composed'
+        }
         complexFilters.push(`[${currentLabel}]null[vout]`)
         const transitionTimes = cuts.slice(1, -1)
         const hasSfx = transition.sfx !== 'none' && transitionTimes.length > 0
@@ -762,6 +803,10 @@ export class AdVideoRenderer {
               `${audioLabels.join('')}amix=inputs=${audioLabels.length}:duration=longest:normalize=0,alimiter=limit=0.92[aout]`,
             )
         }
+        const audioFinishing = buildAudioFinishingFilter(config.audioFinishing)
+        const finishedAudioLabel = audioFinishing ? 'afinal' : 'aout'
+        if (audioFinishing && (musicTracks.length || hasSfx))
+          complexFilters.push(`[aout]${audioFinishing}[afinal]`)
         args.push(
           '-t',
           String(duration),
@@ -770,7 +815,8 @@ export class AdVideoRenderer {
           '-map',
           '[vout]',
         )
-        if (musicTracks.length || hasSfx) args.push('-map', '[aout]', '-c:a', 'aac', '-b:a', '192k')
+        if (musicTracks.length || hasSfx)
+          args.push('-map', `[${finishedAudioLabel}]`, '-c:a', 'aac', '-b:a', '192k')
         else args.push('-an')
         args.push(
           '-c:v',

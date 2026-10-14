@@ -433,7 +433,31 @@ export interface AdCarouselSlide {
   durationSeconds: number
 }
 
+export interface AdOverlayBase {
+  id: string
+  name: string
+  x: number
+  y: number
+  width: number
+  height: number
+  opacity: number
+  hidden: boolean
+}
+
+export type AdOverlay = AdOverlayBase & (
+  | { type: 'text'; text: string; color: string; fontSize: number; backgroundColor: string }
+  | { type: 'shape'; shape: 'rectangle' | 'ellipse'; color: string }
+  | { type: 'image'; assetId: number; fit: 'contain' | 'cover' }
+)
+
+export interface AdAudioFinishing {
+  normalizeLoudness: boolean
+  targetLufs: -16 | -14 | -12
+}
+
 export interface AdProjectConfig {
+  audioFinishing?: AdAudioFinishing
+  overlays?: AdOverlay[]
   kind?: 'video' | 'carousel'
   productIds?: number[]
   carousel?: { slides: AdCarouselSlide[]; caption: string }

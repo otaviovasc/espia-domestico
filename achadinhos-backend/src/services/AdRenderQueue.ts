@@ -58,30 +58,50 @@ async function processJob(jobId: number): Promise<void> {
       where: { projectId: job.projectId },
       order: [['id', 'ASC']],
     })
-    const selectedIds = new Set(job.configSnapshot.kind === 'carousel'
-      ? job.configSnapshot.carousel.slides.map((slide) => slide.assetId)
-      : job.configSnapshot.selectedClipIds)
+    const selectedIds = new Set(
+      job.configSnapshot.kind === 'carousel'
+        ? job.configSnapshot.carousel.slides.map((slide) => slide.assetId)
+        : job.configSnapshot.selectedClipIds,
+    )
     const clips = assets.filter(
       (asset) => (asset.kind === 'clip' || asset.kind === 'image') && selectedIds.has(asset.id),
     )
-    if (clips.length !== selectedIds.size) throw new Error('Uma ou mais mídias selecionadas não estão disponíveis')
-    const musicIds = job.configSnapshot.kind === 'carousel' ? [] : job.configSnapshot.musicTracks?.length
-      ? job.configSnapshot.musicTracks.map((track) => track.assetId)
-      : job.configSnapshot.musicAssetId ? [job.configSnapshot.musicAssetId] : []
+    if (clips.length !== selectedIds.size)
+      throw new Error('Uma ou mais mídias selecionadas não estão disponíveis')
+    const musicIds =
+      job.configSnapshot.kind === 'carousel'
+        ? []
+        : job.configSnapshot.musicTracks?.length
+          ? job.configSnapshot.musicTracks.map((track) => track.assetId)
+          : job.configSnapshot.musicAssetId
+            ? [job.configSnapshot.musicAssetId]
+            : []
     const musicIdSet = new Set(musicIds)
-    const music = assets.filter(
-      (asset) => asset.kind === 'music' && musicIdSet.has(asset.id),
-    )
+    const music = assets.filter((asset) => asset.kind === 'music' && musicIdSet.has(asset.id))
     if (!clips.length) throw new Error('Nenhum clipe selecionado está disponível')
     if (music.length !== musicIdSet.size)
       throw new Error('Uma ou mais músicas selecionadas não estão disponíveis')
+
+    const overlayIds = new Set(
+      (job.configSnapshot.overlays ?? []).flatMap((overlay) =>
+        overlay.type === 'image' ? [overlay.assetId] : [],
+      ),
+    )
+    const overlayAssets = assets.filter(
+      (asset) => asset.kind === 'image' && overlayIds.has(asset.id),
+    )
+    if (overlayAssets.length !== overlayIds.size) throw new Error('Imagem da camada indisponível')
 
     // A queued job has no committed outputs. Clear files left by a crashed
     // attempt, then materialize private bucket objects into this attempt only.
     await media.removeRenderJobStorage(job.projectId, job.id)
     stage = await media.stageAssets(
       job.id,
-      [...clips, ...music],
+      [
+        ...new Map(
+          [...clips, ...music, ...overlayAssets].map((asset) => [asset.id, asset]),
+        ).values(),
+      ],
       controller.signal,
     )
     const stagedById = new Map(stage.assets.map((asset) => [asset.id, asset]))
@@ -100,6 +120,7 @@ async function processJob(jobId: number): Promise<void> {
         )
       },
       controller.signal,
+      overlayAssets.map((asset) => stagedById.get(asset.id)!).filter(Boolean),
     )
     persistedOutputs = await media.persistRenderOutputs(
       job.projectId,

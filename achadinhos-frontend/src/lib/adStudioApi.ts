@@ -119,8 +119,8 @@ export const studioApi = {
   ): Promise<StudioRecord<LibraryMedia>> {
     return data(await api.patch(`${base}/studio/library/${recordId}`, metadata))
   },
-  async attach(projectId: number, recordId: number): Promise<AdAsset> {
-    return data(await api.post(`${base}/${projectId}/library/attach`, { recordId }))
+  async attach(projectId: number, recordId: number, requestKey?: string): Promise<AdAsset> {
+    return data(await api.post(`${base}/${projectId}/library/attach`, { recordId, ...(requestKey ? { requestKey } : {}) }))
   },
   async importProducts(
     projectId: number,

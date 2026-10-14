@@ -62,12 +62,19 @@ export class AdStudioController {
     })
   }
   async attach(req: Request, res: Response) {
+    const input = z
+      .object({
+        recordId: id,
+        requestKey: z.string().uuid().optional(),
+      })
+      .parse(req.body)
     res.json({
       success: true,
       data: await this.studio.attachMedia(
         this.user(req),
         id.parse(req.params.id),
-        id.parse(req.body.recordId),
+        input.recordId,
+        input.requestKey,
       ),
     })
   }
@@ -144,7 +151,13 @@ export class AdStudioController {
                   c.carousel.slides.filter((s) => s.edit).map((s) => [String(s.assetId), s.edit!]),
                 )
               : c.clipEdits,
-          texts: texts.length ? texts : c.texts,
+          texts: texts.length
+            ? texts
+            : c.texts.length
+              ? c.texts
+              : carousel
+                ? []
+                : ['Confira os detalhes'],
           carousel: { ...c.carousel, slides: slides.slice(0, 20) },
           output: {
             ...c.output,

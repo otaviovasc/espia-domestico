@@ -588,7 +588,7 @@ body {
 
 .ad-safe-area {
   position: absolute;
-  z-index: 5;
+  z-index: 20;
   border: 1px dashed rgba(255, 255, 255, 0.52);
   border-radius: 0.75rem;
   pointer-events: none;

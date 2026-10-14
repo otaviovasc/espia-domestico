@@ -269,8 +269,21 @@ async function main() {
   await queue.startAdRenderQueue()
   async function completed(projectId, jobId) {
     const deadline = Date.now() + 120000
+    let connectionResets = 0
     while (Date.now() < deadline) {
-      const result = await json(`/${projectId}/render-jobs/${jobId}`)
+      let result
+      try {
+        result = await json(`/${projectId}/render-jobs/${jobId}`)
+        connectionResets = 0
+      } catch (error) {
+        // A stale local keep-alive socket may reset when FFmpeg tests load the
+        // host. Retry this read only; HTTP, assertions and job failures remain
+        // fatal, and no upload, mutation or render submission is replayed.
+        if (!['ECONNRESET', 'UND_ERR_SOCKET'].includes(error.cause?.code) || ++connectionResets > 2) throw error
+        console.warn(`Retrying local render status GET after ${error.cause.code} (${connectionResets}/2)`)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+        continue
+      }
       if (result.status === 'failed') throw new Error(result.error)
       if (result.status === 'completed') return result
       await new Promise((resolve) => setTimeout(resolve, 300))

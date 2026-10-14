@@ -372,4 +372,5 @@ module.exports = async function validateStudio({
   console.log(
     `PASS: studio revisions/conflicts, media reuse/dedup/search/ownership, server brands/templates/presets, ${process.argv.includes('--live-image') ? 'live' : 'mocked HTTP'} catalog import, calendar/attributed metrics, ZIP snapshot/cover, real motion/trim/mute worker, format variants.`,
   )
+  await require('./artcraft-studio-qa.cjs')({ json, base, token, otherToken, fromBackend, user, other, carousel, config, images, video, job, directory, command, completed })
 }

@@ -15,6 +15,7 @@ import {
   Volume2,
   VolumeX,
   Trash2,
+  Scan,
 } from 'lucide-react'
 import {
   adProjectApi,
@@ -27,6 +28,7 @@ import { usePreviewFullscreen } from '@/hooks/usePreviewFullscreen'
 import { DEFAULT_CLIP_EDIT } from '@/lib/adClipConfig'
 import { Button } from '@/components/ui'
 import { previewClipGeometry } from '@/lib/adPreviewFraming'
+import { CompositionOverlay, SafeZoneOverlay } from '@/components/CompositionLayers'
 
 function CarouselMedia({
   projectId,
@@ -202,6 +204,7 @@ export function CarouselPreview({
   const { ref, expanded, toggle } = usePreviewFullscreen()
   const [playingIndex, setPlayingIndex] = useState<number | null>(null)
   const [muted, setMuted] = useState(true)
+  const [safeZone, setSafeZone] = useState(false)
   const slides = config.carousel?.slides ?? []
   const selectedIndex = Math.min(index, Math.max(0, slides.length - 1))
   const slide = slides[selectedIndex]
@@ -230,6 +233,7 @@ export function CarouselPreview({
     <section ref={ref} className={`ad-stage-panel ${expanded ? 'ad-stage-expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label="Prévia do carrossel" style={{ '--ad-preview-ratio': config.output.width / config.output.height } as React.CSSProperties}>
       <div className="ad-preview-toolbar">
         <h2 className="text-sm font-semibold text-white">Prévia <span className="ml-2 text-xs font-normal text-white/50">{config.output.width === config.output.height ? '1:1' : '4:5'}</span></h2>
+          <button type="button" onClick={() => setSafeZone(!safeZone)} className="ad-preview-tool-button ml-auto" aria-label="Mostrar área segura" aria-pressed={safeZone} title="Área segura (guia, não aparece na exportação)"><Scan size={16} /></button>
         <button type="button" onClick={() => void toggle()} className="ad-preview-tool-button" aria-label={expanded ? 'Reduzir prévia' : 'Ampliar prévia'} title={expanded ? 'Reduzir prévia' : 'Ampliar prévia'}>
           {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
         </button>
@@ -268,6 +272,8 @@ export function CarouselPreview({
               className="pointer-events-none absolute inset-0 h-full w-full"
             />
           ) : null}
+            <CompositionOverlay project={project} config={config} />
+            {safeZone ? <SafeZoneOverlay output={config.output} /> : null}
         </div>
         {captions.isError && slide?.text ? (
           <p role="alert" className="mt-2 text-xs text-red-200">

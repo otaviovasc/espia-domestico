@@ -48,6 +48,10 @@ import { addUploadedMedia, carouselValidation } from '@/lib/adCarouselConfig'
 import { usePreviewFullscreen } from '@/hooks/usePreviewFullscreen'
 import { useCreativeHistory } from '@/hooks/useCreativeHistory'
 import { StudioTools } from '@/components/StudioTools'
+import { CompositionLayers, CompositionOverlay } from '@/components/CompositionLayers'
+import AudioFinishingControls from '@/components/AudioFinishingControls'
+import { ExportReadiness } from '@/components/ExportReadiness'
+import { getAdExportReadiness } from '@/lib/adExportReadiness'
 import { studioApi } from '@/lib/adStudioApi'
 import CreativeControls from '@/components/CreativeControls'
 import EmojiPicker from '@/components/EmojiPicker'
@@ -1208,6 +1212,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
             draggable={false}
           />
         ) : null}
+        <CompositionOverlay project={project} config={config} />
       </div>
 
       {captions.isFetching || captionInput !== settledCaptionInput ? <p className="mt-2 text-center text-xs text-white/50" role="status">Atualizando texto da prévia…</p> : null}
@@ -1597,7 +1602,7 @@ export default function AdLibraryPage() {
     mutationFn: () => {
       if (!draftName.trim()) throw new Error('Dê um nome ao projeto antes de salvar.')
       const texts = draft.texts.map((text) => text.trim()).filter(Boolean)
-      if (texts.length === 0) throw new Error('Adicione pelo menos um texto.')
+      if (!isCarousel && texts.length === 0) throw new Error('Adicione pelo menos um texto.')
       const submittedState = JSON.stringify({ draftName, draft })
       return adProjectApi.update(activeId!, { name: draftName.trim(), config: { ...draft, texts }, expectedRevision: writeRevision })
         .then((saved) => ({ saved, submittedState }))
@@ -1706,6 +1711,7 @@ export default function AdLibraryPage() {
       delete clipEdits[String(asset.id)]
       const persistedConfig: AdProjectConfig = {
         ...persisted,
+        overlays: (persisted.overlays ?? []).filter((layer) => layer.type !== 'image' || layer.assetId !== asset.id),
         carousel: { caption: persisted.carousel?.caption ?? '', slides: (persisted.carousel?.slides ?? []).filter((slide) => slide.assetId !== asset.id) },
         selectedClipIds: persisted.selectedClipIds.filter((id) => id !== asset.id),
         clipEdits,
@@ -1739,7 +1745,7 @@ export default function AdLibraryPage() {
   const render = useMutation({
     mutationFn: async (previewOnly: boolean) => {
       if (!draftName.trim()) throw new Error('Dê um nome ao projeto antes de gerar.')
-      if (draft.texts.every((text) => !text.trim())) throw new Error('Adicione pelo menos um texto.')
+      if (!isCarousel && draft.texts.every((text) => !text.trim())) throw new Error('Adicione pelo menos um texto.')
       const normalizedConfig = { ...draft, texts: draft.texts.map((text) => text.trim()).filter(Boolean) }
       const saved = await adProjectApi.update(activeId!, {
         name: draftName.trim(),
@@ -1773,6 +1779,11 @@ export default function AdLibraryPage() {
   })
 
   const blocked = studioBusy || upload.isPending || save.isPending || render.isPending || importMusic.isPending || removeAsset.isPending || removeProject.isPending || duplicate.isPending || createProject.isPending
+  const exportReadiness = getAdExportReadiness({
+    assets: current?.assets ?? [], config: draft, name: draftName,
+    saveBlocked: autosaveError ?? false, saving: blocked, activeJob: hasActiveJob,
+    jobs: jobs.data ?? [],
+  })
 
   const dirty = useMemo(() => {
     if (!current) return false
@@ -1780,12 +1791,12 @@ export default function AdLibraryPage() {
   }, [current, draft, draftName])
 
   useEffect(() => {
-    if (!dirty || blocked || autosaveError || !activeId || current?.id !== activeId || hydratedProjectId !== activeId || clipValidationError || !draftName.trim() || draft.texts.every((text) => !text.trim())) return
+    if (!dirty || blocked || autosaveError || !activeId || current?.id !== activeId || hydratedProjectId !== activeId || clipValidationError || !draftName.trim() || (!isCarousel && draft.texts.every((text) => !text.trim()))) return
     const fingerprint = JSON.stringify({ activeId, draftName, draft })
     if (autosaveAttempt.current === fingerprint) return
     const timer = window.setTimeout(() => { autosaveAttempt.current = fingerprint; save.mutate() }, 1500)
     return () => window.clearTimeout(timer)
-  }, [dirty, blocked, autosaveError, activeId, current?.id, hydratedProjectId, draftName, draft, clipValidationError, save])
+  }, [dirty, blocked, autosaveError, activeId, current?.id, hydratedProjectId, draftName, draft, clipValidationError, save, isCarousel])
 
   useEffect(() => {
     if (!dirty) return undefined
@@ -2018,7 +2029,7 @@ export default function AdLibraryPage() {
                   config={draft}
                   onExactPreview={() => render.mutate(true)}
                   exactPreviewPending={render.isPending || hasActiveJob}
-                  canRenderExact={draft.selectedClipIds.length > 0 && !clipValidationError && !hasActiveJob}
+                  canRenderExact={exportReadiness.ready}
                 />}
 
                 <div className="min-w-0 space-y-5">
@@ -2340,11 +2351,14 @@ export default function AdLibraryPage() {
 
                   </>}
 
+                  <CompositionLayers project={current} config={draft} onChange={setDraft} disabled={blocked || Boolean(autosaveError)} />
+                  <AudioFinishingControls value={draft.audioFinishing} disabled={blocked} onChange={(audioFinishing) => setDraft((value) => ({ ...value, audioFinishing }))} />
+                  <ExportReadiness readiness={exportReadiness} />
                   <div className="sticky bottom-3 z-30 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white/95 p-3 shadow-xl shadow-zinc-900/10 backdrop-blur">
                     <Button variant="secondary" onClick={() => save.mutate()} disabled={!dirty || blocked || Boolean(autosaveError) || Boolean(clipValidationError)}><Save size={16} /> {save.isPending ? 'Salvando…' : dirty ? 'Salvar projeto' : 'Salvo'}</Button>
                     <Button
                       onClick={() => render.mutate(false)}
-                      disabled={(isCarousel ? (draft.carousel?.slides.length ?? 0) < 2 : draft.selectedClipIds.length === 0) || blocked || Boolean(autosaveError) || hasActiveJob || Boolean(clipValidationError)}
+                      disabled={!exportReadiness.ready}
                       className="bg-[#ee5b47] hover:bg-[#db4c39] disabled:bg-[#f4a397]"
                     >
                       {render.isPending || hasActiveJob ? <LoaderCircle size={16} className="animate-spin" /> : <Clapperboard size={16} />}

@@ -9,6 +9,7 @@ import { AdRenderJob, type AdRenderOutput } from '@/database/models/AdRenderJob'
 import {
   AdProjectConfigSchema,
   type AdProjectConfig,
+  type AdOverlay,
   type AdAssetKind,
   type CreateAdProjectInput,
   type ImportAdMusicInput,
@@ -145,7 +146,8 @@ export class AdProjectService {
       input.config.musicAssetId ||
       Object.keys(input.config.clipEdits ?? {}).length ||
       input.config.musicTracks?.length ||
-      input.config.hook?.clipAssetId
+      input.config.hook?.clipAssetId ||
+      input.config.overlays?.some((overlay) => overlay.type === 'image')
     )
       throw UnprocessableError('Envie as mídias antes de selecioná-las no projeto')
     const project = await AdProject.create({ userId, name: input.name, config: input.config })
@@ -186,6 +188,7 @@ export class AdProjectService {
       name: `${source.name} (cópia)`.slice(0, 120),
       config: {
         ...sourceConfig,
+        overlays: sourceConfig.overlays.filter((overlay) => overlay.type !== 'image'),
         selectedClipIds: [],
         carousel: { ...sourceConfig.carousel, slides: [] },
         musicAssetId: null,
@@ -211,6 +214,11 @@ export class AdProjectService {
       await clone.update({
         config: {
           ...sourceConfig,
+          overlays: sourceConfig.overlays.flatMap<AdOverlay>((overlay) => {
+            if (overlay.type !== 'image') return [overlay]
+            const copiedId = assetMap.get(overlay.assetId)
+            return copiedId ? [{ ...overlay, assetId: copiedId }] : []
+          }),
           carousel: {
             ...sourceConfig.carousel,
             slides: sourceConfig.carousel.slides.map((slide) => ({
@@ -346,6 +354,9 @@ export class AdProjectService {
     })
     if (active) throw ConflictError('Cancele as renderizações ativas antes de excluir a mídia')
     if (
+      project.config.overlays?.some(
+        (overlay) => overlay.type === 'image' && overlay.assetId === assetId,
+      ) ||
       project.config.selectedClipIds.includes(assetId) ||
       project.config.carousel?.slides.some((slide) => slide.assetId === assetId) ||
       project.config.musicAssetId === assetId ||
@@ -457,9 +468,15 @@ export class AdProjectService {
       ...(config.musicAssetId ? [config.musicAssetId] : []),
     ]
     const slideIds = config.carousel.slides.map((slide) => slide.assetId)
-    const ids = [...config.selectedClipIds, ...slideIds, ...musicIds]
+    const overlayIds = (config.overlays ?? []).flatMap((overlay) =>
+      overlay.type === 'image' ? [overlay.assetId] : [],
+    )
+    const ids = [...config.selectedClipIds, ...slideIds, ...musicIds, ...overlayIds]
     if (!ids.length) return
     const assets = await AdAsset.findAll({ where: { projectId, id: { [Op.in]: ids } } })
+    const imageIds = new Set(assets.filter((item) => item.kind === 'image').map((item) => item.id))
+    if (overlayIds.some((id) => !imageIds.has(id)))
+      throw UnprocessableError('Uma ou mais imagens das camadas são inválidas')
     const clips = new Set(
       assets.filter((item) => item.kind === 'clip' || item.kind === 'image').map((item) => item.id),
     )

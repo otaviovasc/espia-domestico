@@ -18,7 +18,11 @@ import type {
 } from "@/lib/adStudioApi";
 import { Button } from "@/components/ui";
 import { PublicationPlanner } from "./PublicationPlanner";
+import { MediaLibraryPicker } from "./MediaLibraryPicker";
+import { preflightMediaLibrary } from "@/lib/adMediaLibrary";
+import { CreativeWorkbench } from "./CreativeWorkbench";
 const tabs = [
+  "Layouts e arquivos",
   "Produtos",
   "Mídias",
   "Marca e templates",
@@ -84,7 +88,7 @@ export function StudioTools({
   const library = useQuery({
     queryKey: ["studio", "library", search],
     enabled: tab === "Mídias",
-    queryFn: () => studioApi.all<LibraryMedia>("library", search),
+    queryFn: () => studioApi.all<LibraryMedia>("library", search.trim().split(/\s+/)[0] ?? ""),
   });
   const brands = useQuery({
     queryKey: ["studio", "brand"],
@@ -222,11 +226,12 @@ export function StudioTools({
           <button
             type="button"
             key={t}
+            disabled={disabled}
             onClick={() => {
               setTab(tab === t ? null : t);
               setSearch("");
             }}
-            className={`rounded-lg px-3 py-2 text-xs font-semibold ${tab === t ? "bg-violet-100 text-violet-800" : "text-zinc-600 hover:bg-zinc-100"}`}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold disabled:cursor-wait disabled:opacity-60 ${tab === t ? "bg-violet-100 text-violet-800" : "text-zinc-600 hover:bg-zinc-100"}`}
           >
             {t}
           </button>
@@ -244,6 +249,9 @@ export function StudioTools({
         <p role="alert" className="mt-3 text-xs text-red-700">
           {apiErrorMessage(queryError)}
         </p>
+      ) : null}
+      {tab === "Layouts e arquivos" ? (
+        <CreativeWorkbench project={project} config={config} onChange={onChange} disabled={disabled} onError={onError} />
       ) : null}
       {tab === "Produtos" ? (
         <div className="mt-4 space-y-3">
@@ -363,14 +371,9 @@ export function StudioTools({
                 e.target.value = "";
                 if (!files.length) return;
                 void run(async () => {
-                  if (
-                    files.length > 50 ||
-                    (config.kind === "carousel" &&
-                      (config.carousel?.slides.length ?? 0) + files.length > 20)
-                  )
-                    throw new Error(
-                      "Selecione arquivos dentro do limite do projeto",
-                    );
+                  preflightMediaLibrary(config, files.map((file) => ({
+                    kind: file.type.startsWith("image/") ? "image" : "clip",
+                  })));
                   const assets: AdAsset[] = [];
                   try {
                     // Sequential uploads preserve mixed selection order across MIME types.
@@ -444,83 +447,32 @@ export function StudioTools({
               </div>
             ))}
           </div>
-          <input
-            className={field}
-            aria-label="Buscar biblioteca de mídias"
-            placeholder="Buscar por nome, tag ou ID do produto"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+          <MediaLibraryPicker
+            records={library.data ?? []}
+            loading={library.isFetching}
+            search={search}
+            onSearch={setSearch}
+            project={project}
+            config={config}
+            name={name}
+            disabled={disabled}
+            onBusy={onBusy}
+            onChange={onChange}
+            onProject={onProject}
+            onError={onError}
+            onEdit={(record) => void run(async () => {
+              await studioApi.editMedia(record.id, {
+                name: record.payload.name,
+                tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+                productIds: config.productIds ?? [],
+              });
+              await client.invalidateQueries({ queryKey: ["studio", "library"] });
+            })}
+            onDelete={(record) => void run(async () => {
+              await studioApi.remove(record.id);
+              await client.invalidateQueries({ queryKey: ["studio", "library"] });
+            })}
           />
-          <div className="grid max-h-64 gap-2 overflow-auto sm:grid-cols-2">
-            {library.data?.map((r) => (
-              <div
-                key={r.id}
-                className="space-y-2 rounded-lg border border-zinc-200 p-3 text-xs"
-              >
-                <p className="font-medium">{r.payload.name}</p>
-                <p>
-                  {r.payload.kind} ·{" "}
-                  {(r.payload.sizeBytes / 1024 / 1024).toFixed(1)} MB ·{" "}
-                  {r.payload.tags.join(", ")}
-                </p>
-                <p>Produtos: {r.payload.productIds.join(", ") || "Nenhum"}</p>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    variant="secondary"
-                    disabled={disabled}
-                    onClick={() =>
-                      void run(async () => {
-                        const asset = await studioApi.attach(project.id, r.id);
-                        try {
-                          await persist(addAssets([asset]));
-                        } catch (error) {
-                          await adProjectApi.removeAsset(project.id, asset.id);
-                          throw error;
-                        }
-                      })
-                    }
-                  >
-                    Usar neste projeto
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={disabled}
-                    onClick={() =>
-                      void run(async () => {
-                        await studioApi.editMedia(r.id, {
-                          name: r.payload.name,
-                          tags: tags
-                            .split(",")
-                            .map((t) => t.trim())
-                            .filter(Boolean),
-                          productIds: config.productIds ?? [],
-                        });
-                        await client.invalidateQueries({
-                          queryKey: ["studio", "library"],
-                        });
-                      })
-                    }
-                  >
-                    Aplicar tags e produtos
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={disabled}
-                    onClick={() =>
-                      void run(async () => {
-                        await studioApi.remove(r.id);
-                        await client.invalidateQueries({
-                          queryKey: ["studio", "library"],
-                        });
-                      })
-                    }
-                  >
-                    Excluir
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
       ) : null}
       {tab === "Marca e templates" ? (

@@ -108,7 +108,9 @@ export class AdStudioService {
     const input = StudioSaveSchema.parse(raw)
     const payload = schemas[kind].parse(input.payload)
     if (kind === 'template') {
-      const config = TemplateSchema.parse(payload).config
+      const template = payload as z.infer<typeof TemplateSchema>
+      const config = template.config
+      config.overlays = config.overlays.filter((overlay) => overlay.type !== 'image')
       if (
         config.selectedClipIds.length ||
         config.carousel.slides.length ||
@@ -174,7 +176,9 @@ export class AdStudioService {
     return publicRecord(record)
   }
   async remove(userId: number, id: number) {
-    const record = await AdStudioRecord.findOne({ where: { id, userId } })
+    const record = await AdStudioRecord.findOne({
+      where: { id, userId, kind: { [Op.ne]: 'attachment' } },
+    })
     if (!record) throw NotFoundError('Registro não encontrado')
     // Independent library objects can be deleted without affecting attached copies.
     if (record.kind === 'library') await adObjectStorage.remove(String(record.payload.storagePath))
@@ -235,7 +239,15 @@ export class AdStudioService {
     })
     return publicRecord(record)
   }
-  async attachMedia(userId: number, projectId: number, id: number) {
+  async attachMedia(userId: number, projectId: number, id: number, requestKey?: string) {
+    if (requestKey !== undefined) {
+      return await this.attachMediaOnce(
+        userId,
+        projectId,
+        id,
+        z.string().uuid().parse(requestKey).toLowerCase(),
+      )
+    }
     await this.project(userId, projectId)
     const record = await AdStudioRecord.findOne({ where: { id, userId, kind: 'library' } })
     if (!record) throw NotFoundError('Mídia não encontrada')
@@ -262,6 +274,83 @@ export class AdStudioService {
       await adObjectStorage.remove(storagePath)
       throw error
     }
+  }
+  private async attachMediaOnce(userId: number, projectId: number, recordId: number, key: string) {
+    return await sequelize.transaction(async (transaction) => {
+      // Lock ownership before consulting receipts or copying. Same-project retries
+      // wait for the first attempt to commit and then return its existing asset.
+      const project = await AdProject.findOne({
+        where: { id: projectId, userId },
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      })
+      if (!project) throw NotFoundError('Projeto não encontrado')
+      const receipt = await AdStudioRecord.findOne({
+        where: { userId, kind: 'attachment', key },
+        transaction,
+      })
+      if (receipt) {
+        if (receipt.projectId !== projectId || receipt.payload.recordId !== recordId)
+          throw ConflictError('Esta solicitação já foi usada para outra mídia ou projeto')
+        const assetId = z.number().int().positive().safeParse(receipt.payload.assetId)
+        if (!assetId.success) throw ConflictError('Recibo de importação inválido. Inicie uma nova importação.')
+        const attached = await AdAsset.findOne({
+          where: { id: assetId.data, projectId },
+          transaction,
+        })
+        if (!attached)
+          throw ConflictError('A mídia desta solicitação foi removida. Inicie uma nova importação.')
+        return serializeAdAsset(attached)
+      }
+      const record = await AdStudioRecord.findOne({
+        where: { id: recordId, userId, kind: 'library' },
+        transaction,
+      })
+      if (!record) throw NotFoundError('Mídia não encontrada')
+      const p = record.payload
+      let storagePath: string | undefined
+      try {
+        // An interrupted attempt can leave this object behind. The next retry
+        // overwrites the same key instead of leaving another orphaned copy.
+        storagePath = await adObjectStorage.copyToKey(
+          String(p.storagePath),
+          `projects/${projectId}/assets/attach-${key}`,
+          String(p.mimeType),
+        )
+        const asset = await AdAsset.create(
+          {
+            projectId,
+            storagePath,
+            originalName: String(p.name),
+            kind: z.enum(['clip', 'image', 'music']).parse(p.kind),
+            mimeType: String(p.mimeType),
+            sizeBytes: Number(p.sizeBytes),
+            durationSeconds: Number(p.durationSeconds),
+            width: p.width === null ? null : Number(p.width),
+            height: p.height === null ? null : Number(p.height),
+          },
+          { transaction },
+        )
+        await AdStudioRecord.create(
+          {
+            userId,
+            projectId,
+            kind: 'attachment',
+            key,
+            payload: { recordId, assetId: asset.id },
+          },
+          { transaction },
+        )
+        return serializeAdAsset(asset)
+      } catch (error) {
+        // Clean before releasing the project lock, so a retry cannot commit the
+        // deterministic object while this failed attempt is still deleting it.
+        if (storagePath) await adObjectStorage.remove(storagePath).catch(() => undefined)
+        if (error instanceof Error && error.name === 'SequelizeUniqueConstraintError')
+          throw ConflictError('Esta solicitação já foi usada para outra mídia ou projeto')
+        throw error
+      }
+    })
   }
   async importProducts(userId: number, projectId: number, ids: number[]) {
     await this.project(userId, projectId)
