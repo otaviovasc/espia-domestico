@@ -106,6 +106,11 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(`${value.slice(0, 10)}T12:00:00Z`))
 }
 
+function addLocalDays(value: string, days: number): string {
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
+}
+
 function formatDateTime(value?: string | null): string {
   if (!value) return '—'
   return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
@@ -508,7 +513,8 @@ function ImportPlanner({ audiences, selected, setSelected, planDate, setPlanDate
               <div className="flex justify-between gap-2"><dt className="text-muted">Início</dt><dd className="font-medium">{formatDate(planDate)}</dd></div>
               <div className="flex justify-between gap-2"><dt className="text-muted">Públicos</dt><dd className="font-medium">{selected.size}</dd></div>
             </dl>
-            <div className="mt-4"><Label htmlFor={daysId}>Dias para distribuir</Label><select id={daysId} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={1}>1 dia</option><option value={2}>2 dias</option><option value={3}>3 dias</option></select></div>
+            <div className="mt-4"><Label htmlFor={daysId}>Espalhar a campanha por</Label><select id={daysId} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={1}>1 dia · {formatDate(planDate)}</option><option value={2}>2 dias · até {formatDate(addLocalDays(planDate, 1))}</option><option value={3}>3 dias · até {formatDate(addLocalDays(planDate, 2))}</option></select>
+              <p className="mt-2 rounded-lg bg-surface-muted p-3 text-xs leading-relaxed text-muted">Define por quantas datas a proposta pode se estender. A IA tenta equilibrar os melhores produtos entre elas, com limite de <strong>50 produtos no total por dia</strong>, compartilhado entre os públicos. Ex.: 60 produtos elegíveis em 2 dias → até 30 por dia. Ofertas que perderem o frescor antes do envio ficam de fora.</p></div>
             <div className="mt-4 rounded-lg border border-accent/30 bg-accent-soft p-3 text-xs leading-relaxed text-accent">A proposta considera encaixe no público, valor, comissão, sazonalidade, frescor e variedade. Usa IA para até {aiStatus?.limits.batchSize ?? 'o limite configurado de'} produtos por lote. Você revisa a proposta antes de confirmar os envios.</div>
             <Button className="mt-4 w-full" loading={mutation.isPending || reading} loadingText={reading ? "Lendo arquivos…" : "Criando plano…"} type="button" disabled={mutation.isPending || reading || !!fileError || !validPlanDate(planDate, today()) || !(filePayloads.length > 0 || (rawJson.trim() && jsonValid)) || selected.size === 0 || invalidTargets || aiBlocked} onClick={() => submit()}>
               {mutation.isPending ? <Spinner /> : <BrainCircuit size={17} />} Usar IA: analisar e montar proposta

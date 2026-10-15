@@ -212,7 +212,7 @@ test('analysis has hard item and concurrency bounds and never invents a missing 
   )
   await assert.rejects(
     intelligence.analyze([offer('item')], ['pet', 'pesca'], '2026-10-15'),
-    (error) => error.code === 'SMART_AI_INVALID_RESPONSE',
+    (error) => error.code === 'SMART_AI_INCOMPLETE_RESPONSE',
   )
   assert.equal(calls, SMART_AI_RETRIES + 1)
   assert.equal(SMART_AI_CONCURRENCY, 3)
@@ -258,6 +258,18 @@ test('analysis shares the niche prompt across bounded product batches and preser
     [0, 1, 2, 3, 4, 5, 6, 7],
   )
   assert.ok(requests.every(({ prompt }) => !/private-|discountedPrice/.test(prompt)))
+})
+
+test('analysis batch leaves enough output headroom for strict structured responses', async () => {
+  const intelligence = new SmartCampaignIntelligence({
+    async generate(request) {
+      assert.equal(request.maxOutputTokens, 6_000)
+      const productData = JSON.parse(request.prompt).productData
+      return { items: productData.map(({ id }) => ({ id, analysis: { fits: [{ slug: 'pet', score: 90, reason: 'Uso direto para gatos.', category: 'pet', seasonalScore: 50 }], warnings: [] } })) }
+    },
+  })
+  const [result] = await intelligence.analyze([offer('Arranhador para gatos'), offer('Outro arranhador')], ['pet'], '2026-10-15')
+  assert.equal(result.fits[0].score, 90)
 })
 
 test('standout copy returns safe use-case copy and rejects commercial claims', async () => {

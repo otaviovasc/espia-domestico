@@ -1065,6 +1065,13 @@ export class SmartCampaignService {
           errorName: error instanceof Error ? error.name : 'Error',
           errorCode: error instanceof AppError ? error.code : 'SMART_ANALYSIS_FAILED',
           errorCategory,
+          errorCause: error instanceof AppError && typeof error.details?.cause === 'string'
+            ? error.details.cause.slice(0, 100)
+            : undefined,
+          providerStatus: error instanceof AppError && typeof error.details?.providerStatus === 'number'
+            ? error.details.providerStatus
+            : undefined,
+          analysisModel: env.SMART_CLASSIFICATION_MODEL,
           planId: plan.id,
           userId: plan.userId,
         },
@@ -1153,6 +1160,10 @@ export class SmartCampaignService {
       }
       allowedRoutes.set(index, allowed)
     })
+    const globallySelected = new Set<string>()
+    const globalCategoryCounts = new Map<string, number>()
+    const globalDailyCap = 50
+    const globalDailyCounts = new Map<string, number>()
     for (const audience of audiences) {
       const policy = settings.audiences[audience.slug]
       const candidates: SmartPlanItem[] = []
@@ -1212,29 +1223,37 @@ export class SmartCampaignService {
       const eligible = candidates
         .filter((item) => item.state !== 'REJECTED')
         .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
-      const categoryCounts = new Map<string, number>()
+      const capacity = Math.min(
+        policy.dailyCap,
+        Math.floor(
+          ((minutes(policy.endTime) - minutes(policy.startTime)) * 60) / policy.minGapSeconds,
+        ) + 1,
+      )
       const selected: SmartPlanItem[] = []
       for (let dayOffset = 0; dayOffset < plan.days; dayOffset++) {
         const date = addDays(plan.startDate, dayOffset)
-        const used = new Set(selected.map((item) => item.id))
-        const dayCandidates = eligible.filter((item) => !used.has(item.id))
-        const maximum = Math.min(
-          policy.dailyCap,
-          Math.floor(
-            ((minutes(policy.endTime) - minutes(policy.startTime)) * 60) / policy.minGapSeconds,
-          ) + 1,
-        )
+        const maximum = capacity
         const categoryLimit = Math.max(1, Math.ceil(maximum * 0.25))
         const chosen: SmartPlanItem[] = []
+        const dayCandidates = eligible.filter((item) => !globallySelected.has(item.id))
+        // Evenly distribute this audience's best remaining offers across the selected dates.
+        const remainingDays = plan.days - dayOffset
+        const audienceTarget = Math.ceil(
+          Math.min(eligible.length - selected.length, capacity * remainingDays) / remainingDays,
+        )
         for (const item of dayCandidates) {
+          const scheduledToday = selected.filter((entry) => entry.date === date).length
+          if (chosen.length >= Math.min(maximum, audienceTarget - scheduledToday)) break
+          const alreadyOnDate = globalDailyCounts.get(date) ?? 0
+          if (alreadyOnDate >= globalDailyCap) break
           if (chosen.length >= maximum) break
           const category = item.category ?? 'outros'
-          const count = categoryCounts.get(`${date}:${category}`) ?? 0
+          const count = globalCategoryCounts.get(`${date}:${category}`) ?? 0
           if (count >= categoryLimit) continue
           const sendAt = smartZonedInstant(date, policy.startTime, policy.timezone)
           if (!isEvidenceFresh(item.observedAt, sendAt, policy.freshnessHours)) continue
           chosen.push(item)
-          categoryCounts.set(`${date}:${category}`, count + 1)
+          globalCategoryCounts.set(`${date}:${category}`, count + 1)
         }
         const slots = buildSmartSchedule(
           date,
@@ -1247,6 +1266,8 @@ export class SmartCampaignService {
           item.date = date
           item.scheduledAt = slots[index].toISOString()
           selected.push(item)
+          globallySelected.add(item.id)
+          globalDailyCounts.set(date, (globalDailyCounts.get(date) ?? 0) + 1)
         })
       }
       const standoutsByDate = new Map<string, SmartPlanItem[]>()
@@ -1537,6 +1558,13 @@ export class SmartCampaignService {
         throw BadRequestError('O plano contém produtos em datas passadas; mova-os antes de aprovar')
       }
       const rows: CreationAttributes<SmartSend>[] = []
+      const selectedByDate = new Map<string, number>()
+      for (const item of selected) {
+        selectedByDate.set(item.date, (selectedByDate.get(item.date) ?? 0) + 1)
+      }
+      if ([...selectedByDate.values()].some((count) => count > 50)) {
+        throw BadRequestError('A campanha não pode enviar mais de 50 produtos no total por dia')
+      }
       for (const slug of usedSlugs) {
         const audience = selectedAudiences.get(slug)!
         const policy = settings.audiences[slug] ?? audience.policy
