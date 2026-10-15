@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" fill="none">
+  <defs>
+    <pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="1.7" fill="#AFC4FF" fill-opacity=".25"/></pattern>
+    <clipPath id="bounds"><path fill="#fff" d="M0 0h1200v800H0z"/></clipPath>
+  </defs>
+  <g clip-path="url(#bounds)">
+    <path d="M1206-140a264 264 0 0 1 0 528" stroke="#AFC4FF" stroke-opacity=".11" stroke-width="46"/>
+    <path d="M1206-80a204 204 0 0 1 0 408" stroke="#EFF4FF" stroke-opacity=".15" stroke-width="2"/>
+    <path d="M1113 10h131v131h-131z" fill="url(#dots)"/>
+    <g transform="rotate(-16 1066 230)">
+      <path d="M1030 204h43a8 8 0 0 1 5.7 2.3l24 24a7 7 0 0 1 0 9.9l-24 24a8 8 0 0 1-5.7 2.3h-43a10 10 0 0 1-10-10V214a10 10 0 0 1 10-10Z" fill="#F8D95A" fill-opacity=".18" stroke="#EFF4FF" stroke-opacity=".2" stroke-width="2"/>
+      <circle cx="1085" cy="235" r="3.5" fill="#EFF4FF" fill-opacity=".28"/>
+    </g>
+    <path d="M1154 437q24-26 48 0t48 0" stroke="#AFC4FF" stroke-opacity=".24" stroke-width="6" stroke-linecap="round"/>
+    <path d="M1188 612a64 64 0 0 1 0 128" stroke="#AFC4FF" stroke-opacity=".16" stroke-width="18"/>
+  </g>
+</svg>

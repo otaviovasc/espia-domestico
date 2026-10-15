@@ -568,15 +568,7 @@ function unwrap<T>(res: { data: Envelope<T> }): T {
   return res.data.data
 }
 
-export function apiErrorMessage(error: unknown): string {
-  if (axios.isAxiosError(error)) {
-    return (
-      (error.response?.data as { error?: { message?: string } })?.error?.message ??
-      error.message
-    )
-  }
-  return error instanceof Error ? error.message : 'Erro desconhecido'
-}
+export { apiErrorMessage } from './apiErrorMessage'
 
 // ── Auth ────────────────────────────────────────────
 export const authApi = {

@@ -1,0 +1,46 @@
+/* The editing shell follows the app theme. Media stages retain the artwork's
+   own colors and dimensions, independently of display preference. */
+.ad-library { background: transparent; color: var(--color-ink); padding: 0; }
+.ad-library .ad-phone-stage { width: min(100%, calc((100dvh - 18rem) * var(--ad-preview-ratio, .5625))); }
+.ad-library .ad-editor-workspace { gap: 1rem; }
+.studio-controls { min-width: 0; }
+.studio-section > summary { cursor: pointer; list-style: none; }
+.studio-section > summary::-webkit-details-marker { display: none; }
+.studio-section-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .2rem .75rem; padding: 1rem; font-size: .875rem; }
+.studio-section-summary::after { content: '+'; grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--color-accent); font-size: 1.25rem; line-height: 1; }
+.studio-section[open] > .studio-section-summary::after { content: '−'; }
+.studio-section-description { grid-column: 1; font-size: .8125rem; font-weight: 400; line-height: 1.4; }
+.ad-library :is(button, summary, a, input, select, textarea):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.ad-library :is(input, select, textarea) { max-width: 100%; }
+.ad-library input:not([type='range']):not([type='checkbox']):not([type='color']):not([type='file']), .ad-library textarea, .ad-library select { background-color: var(--color-surface); color: var(--color-ink); }
+.ad-library :is(input[type='range'], input[type='checkbox']) { accent-color: var(--color-accent); }
+.ad-library .ad-stage-panel :is(button, input):focus-visible { outline-color: #c5ebd3; }
+.ad-library .ad-stage-panel { background: #1b2638; box-shadow: none; }
+.ad-library .ad-preview-tool-button { min-width: 2.75rem; min-height: 2.75rem; color: rgba(255,255,255,.8); font-size: .75rem; }
+.ad-library .ad-preview-details { color: rgba(255,255,255,.75); font-size: .75rem; }
+.ad-library .ad-preview-render-button { min-height: 2.75rem; font-size: .75rem; }
+.ad-library .ad-preview-time { font-variant-numeric: tabular-nums; }
+.studio-icon-button { min-width: 2.5rem; min-height: 2.5rem; display: inline-flex; align-items: center; justify-content: center; }
+.studio-export-bar { box-shadow: 0 -2px 12px rgb(0 0 0 / .04); }
+.ad-library .studio-secondary-tools { min-width: 0; }
+@media (min-width: 1024px) {
+  .ad-library .ad-editor-workspace { grid-template-columns: minmax(0, 1.2fr) minmax(360px, 1fr); gap: 1.25rem; }
+  .ad-library .ad-stage-panel { top: 1rem; }
+}
+@media (max-width: 639px) {
+  .ad-library .ad-stage-panel:not(.ad-stage-expanded) { position: relative; top: auto; }
+  .ad-library .ad-phone-stage { width: min(100%, calc(min(55dvh, 28rem) * var(--ad-preview-ratio, .5625))); }
+  .ad-library .ad-preview-toolbar { flex-wrap: wrap; }
+  .ad-library .ad-preview-toolbar-actions { margin-left: auto; }
+  .ad-library .clip-sequence-card > div:first-child { gap: .25rem; padding: .5rem; flex-wrap: wrap; }
+  .ad-library .clip-sequence-card > div:first-child > .min-w-0 { flex-basis: calc(100% - 8.5rem); }
+  .studio-export-bar { bottom: .5rem; }
+  .studio-export-bar > button { flex: 1 1 9rem; }
+  .studio-section-summary { padding: .875rem; }
+  .studio-icon-button { min-width: 2.75rem; min-height: 2.75rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ad-library *, .ad-library *::before, .ad-library *::after { scroll-behavior: auto; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
+
+.ad-library .ad-stage-panel.ad-stage-expanded { position: fixed; inset: 0; top: 0; width: 100%; height: 100dvh; z-index: 100; }

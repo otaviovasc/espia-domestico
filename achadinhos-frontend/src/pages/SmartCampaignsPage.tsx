@@ -1,5 +1,5 @@
 import { buildSmartSearchPreset } from '@/lib/smartSearchPreset'
-import { useDeferredValue, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -23,6 +23,7 @@ import {
   Square,
   Upload,
   Users,
+  House, Shirt, TreePine, Fish, PawPrint, Package, ArrowLeft,
 } from 'lucide-react'
 import { apiErrorMessage, groupApi, type Group } from '@/lib/api'
 import { Badge, Button, Card, Input, Label, Spinner } from '@/components/ui'
@@ -43,6 +44,15 @@ import {
   type SmartPlanStatus,
   type SmartSendResolution,
 } from '@/lib/smartCampaignApi'
+import { ActionStatus } from '@/components/ActionStatus'
+import { AnimatedSelection } from '@/components/AnimatedSelection'
+import { BrandPattern } from '@/components/BrandPattern'
+import { CampaignConfirmDialog } from '@/components/CampaignConfirmDialog'
+import { GroupCombobox } from '@/components/GroupCombobox'
+import { useDraftBaseline } from '@/hooks/useDraftBaseline'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import { audienceInput, audienceValidation, validPlanDate, inferFileAudience, countFileOffers } from '@/lib/smartCampaignUi'
+import './smart-campaigns.css'
 import { createSmartAIRequestId } from '@/lib/smartAiSafety'
 
 type Stage = 'audiences' | 'keywords' | 'import' | 'review' | 'monitor'
@@ -55,12 +65,20 @@ const STAGES: { id: Stage; label: string; icon: typeof Users }[] = [
   { id: 'monitor', label: 'Acompanhar', icon: History },
 ]
 
-const NICHE_STYLES: Record<SmartAudienceSlug, { emoji: string; color: string; soft: string }> = {
-  DOMESTICA: { emoji: '🏡', color: 'text-fuchsia-700', soft: 'border-fuchsia-200 bg-fuchsia-50' },
-  MASCULINO: { emoji: '🧔', color: 'text-blue-700', soft: 'border-blue-200 bg-blue-50' },
-  NATAL: { emoji: '🎄', color: 'text-red-700', soft: 'border-red-200 bg-red-50' },
-  PESCA: { emoji: '🎣', color: 'text-cyan-700', soft: 'border-cyan-200 bg-cyan-50' },
-  PET: { emoji: '🐾', color: 'text-amber-700', soft: 'border-amber-200 bg-amber-50' },
+const NICHE_STYLES: Record<SmartAudienceSlug, { icon: typeof Users; label: string; color: string; soft: string }> = {
+  DOMESTICA: { icon: House, label: 'Casa e autocuidado', color: 'text-accent', soft: 'border-accent/30 bg-accent-soft' },
+  MASCULINO: { icon: Shirt, label: 'Masculino', color: 'text-info', soft: 'border-info/30 bg-info-soft' },
+  NATAL: { icon: TreePine, label: 'Natal', color: 'text-success', soft: 'border-success/30 bg-success-soft' },
+  PESCA: { icon: Fish, label: 'Pesca', color: 'text-info', soft: 'border-info/30 bg-info-soft' },
+  PET: { icon: PawPrint, label: 'Pets', color: 'text-warning', soft: 'border-warning/30 bg-warning-soft' },
+}
+function audienceLabel(audience: Pick<SmartAudience, 'name' | 'slug'>) {
+  return !audience.name || audience.name.toUpperCase() === audience.slug ? NICHE_STYLES[audience.slug].label : audience.name
+}
+type DirtyChange = (key: string, dirty: boolean) => void
+function NicheIcon({ slug, size = 20 }: { slug: SmartAudienceSlug; size?: number }) {
+  const Icon = NICHE_STYLES[slug].icon
+  return <Icon size={size} aria-hidden="true" className="shrink-0" />
 }
 
 function formatUsd(value: number): string {
@@ -122,9 +140,9 @@ function isAnalysisFailure(plan: SmartPlan): boolean {
 
 function ErrorState({ message, retry }: { message: string; retry?: () => void }) {
   return (
-    <Card className="border-red-200 bg-red-50">
-      <div className="flex flex-col gap-3 text-sm text-red-800 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex items-start gap-2"><AlertCircle className="mt-0.5 shrink-0" size={18} /><span>{message}</span></div>
+    <Card className="border-danger/30 bg-danger-soft">
+      <div className="flex flex-col gap-3 text-sm text-danger sm:flex-row sm:items-center sm:justify-between">
+        <div role="alert" className="flex items-start gap-2"><AlertCircle className="mt-0.5 shrink-0" size={18} /><span>{message}</span></div>
         {retry && <Button type="button" variant="secondary" onClick={retry}><RefreshCw size={15} /> Tentar novamente</Button>}
       </div>
     </Card>
@@ -134,163 +152,108 @@ function ErrorState({ message, retry }: { message: string; retry?: () => void })
 function EmptyState({ title, children }: { title: string; children: string }) {
   return (
     <Card className="border-dashed py-10 text-center">
-      <BrainCircuit className="mx-auto mb-3 text-zinc-300" size={32} />
-      <h3 className="font-semibold text-zinc-800">{title}</h3>
-      <p className="mx-auto mt-1 max-w-lg text-sm text-zinc-500">{children}</p>
+      <BrainCircuit className="mx-auto mb-3 text-subtle" size={32} />
+      <h3 className="font-semibold text-ink">{title}</h3>
+      <p className="mx-auto mt-1 max-w-lg text-sm text-muted">{children}</p>
     </Card>
   )
 }
 
 function AIStatusBanner({ status, error }: { status?: SmartAIStatus; error?: unknown }) {
   if (error) {
-    return <div role="status" className="mb-5 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Não foi possível conferir o orçamento da IA. Nenhuma análise foi iniciada. Os botões continuam disponíveis e o servidor ainda aplicará os limites configurados.</div>
+    return <div role="status" className="mb-5 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm text-warning">Não foi possível conferir o orçamento da IA. Nenhuma análise foi iniciada. Os botões continuam disponíveis e o servidor ainda aplicará os limites configurados.</div>
   }
-  if (!status) return <div className="mb-5 h-12 animate-pulse rounded-xl bg-zinc-100" aria-label="Carregando configuração da IA" />
+  if (!status) return <div className="mb-5 h-12 animate-pulse rounded-xl bg-surface-muted" aria-label="Carregando configuração da IA" />
   if (aiUnavailable(status)) {
-    return <div role="alert" className="mb-5 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-900"><strong>IA indisponível.</strong> {status.enabled ? 'Configure a chave do provedor no servidor para liberar análises.' : 'As análises estão desativadas no servidor.'} Consultar e revisar planos não gera custo.</div>
+    return <div role="alert" className="mb-5 rounded-xl border border-danger/30 bg-danger-soft p-3 text-sm text-danger"><strong>IA indisponível.</strong> {status.enabled ? 'Configure a chave do provedor no servidor para liberar análises.' : 'As análises estão desativadas no servidor.'} Consultar e revisar planos não gera custo.</div>
   }
   return (
-    <div className="mb-5 flex flex-col justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950 sm:flex-row sm:items-center">
+    <div className="mb-5 flex flex-col justify-between gap-2 rounded-xl border border-success/30 bg-success-soft p-3 text-sm text-success sm:flex-row sm:items-center">
       <span><strong>IA sob demanda:</strong> nenhuma chamada ocorre ao abrir, navegar, atualizar ou revisar esta página.</span>
       <span className="text-xs">{status.model || 'Modelo configurado'} · máx. {formatUsd(status.limits.requestCostUsd)}/ação · {status.limits.dailyRequests}/dia · orçamento {formatUsd(status.limits.dailyCostUsd)}/dia</span>
     </div>
   )
 }
 
-function AudienceCard({ audience, groups }: { audience: SmartAudience; groups: Group[] }) {
+function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudience; groups: Group[]; onDirtyChange: DirtyChange }) {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState(audience)
+  const [keywords, setKeywords] = useState(audience.profile.keywords.join(', '))
+  const [negative, setNegative] = useState(audience.profile.negativeKeywords.join(', '))
   const [expanded, setExpanded] = useState(false)
-
+  const input = audienceInput(draft, keywords, negative)
+  const snapshot = JSON.stringify(input)
+  const reportDirty = useCallback((dirty: boolean) => onDirtyChange(`audience:${audience.slug}`, dirty), [audience.slug, onDirtyChange])
+  const { dirty, markClean } = useDraftBaseline(snapshot)
+  const validation = audienceValidation(input)
+  const prefix = useId()
   const mutation = useMutation({
-    mutationFn: () => smartCampaignApi.updateAudience(audience.slug, {
-      enabled: draft.enabled,
-      destinationGroupIds: draft.destinationGroupIds,
-      profile: draft.profile,
-      dailyCap: draft.dailyCap,
-      startTime: draft.startTime,
-      endTime: draft.endTime,
-      minIntervalMinutes: draft.minIntervalMinutes,
-      maxIntervalMinutes: draft.maxIntervalMinutes,
-      minCommissionPercent: draft.minCommissionPercent,
-      minEstimatedCommission: draft.minEstimatedCommission,
-      maxStandoutMessages: draft.maxStandoutMessages,
-    }),
+    mutationFn: () => smartCampaignApi.updateAudience(audience.slug, input),
     onSuccess: (updated) => {
       setDraft(updated)
-      queryClient.invalidateQueries({ queryKey: ['smart-audiences'] })
+      setKeywords(updated.profile.keywords.join(', '))
+      setNegative(updated.profile.negativeKeywords.join(', '))
+      markClean(JSON.stringify(audienceInput(updated, updated.profile.keywords.join(', '), updated.profile.negativeKeywords.join(', '))))
+      void queryClient.invalidateQueries({ queryKey: ['smart-audiences'] })
     },
   })
-
+  useEffect(() => { reportDirty(dirty || mutation.isPending) }, [dirty, mutation.isPending, reportDirty])
+  useEffect(() => () => reportDirty(false), [reportDirty])
   const style = NICHE_STYLES[audience.slug]
-  const toggleGroup = (groupId: string) => setDraft((current) => ({
-    ...current,
-    destinationGroupIds: current.destinationGroupIds.includes(groupId)
-      ? current.destinationGroupIds.filter((id) => id !== groupId)
-      : [...current.destinationGroupIds, groupId],
-  }))
-
-  return (
-    <Card className={`overflow-hidden p-0 ${draft.enabled ? style.soft : ''}`}>
-      <div className="p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className="text-2xl" aria-hidden="true">{style.emoji}</span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h3 className={`font-bold ${style.color}`}>{audience.name || audience.slug}</h3>
-                <Badge tone={draft.enabled ? 'green' : 'zinc'}>{draft.enabled ? 'Ativo' : 'Inativo'}</Badge>
-              </div>
-              <p className="mt-1 text-sm text-zinc-600">{audience.description}</p>
-            </div>
-          </div>
-          <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-zinc-700">
-            <input
-              type="checkbox"
-              className="h-4 w-4 accent-violet-600"
-              checked={draft.enabled}
-              onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })}
-            />
-            Usar
-          </label>
-        </div>
-
-        <div className="mt-4 grid gap-2 text-xs text-zinc-600 sm:grid-cols-3">
-          <div className="rounded-lg bg-white/80 px-3 py-2"><strong>{draft.dailyCap}</strong> produtos/dia</div>
-          <div className="rounded-lg bg-white/80 px-3 py-2"><strong>{draft.startTime}–{draft.endTime}</strong></div>
-          <div className="rounded-lg bg-white/80 px-3 py-2"><strong>{draft.minIntervalMinutes}–{draft.maxIntervalMinutes} min</strong> entre envios</div>
-        </div>
-
-        <div className="mt-4">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <span className="text-sm font-medium text-zinc-700">Grupos de WhatsApp</span>
-            <span className="text-xs text-zinc-500">{draft.destinationGroupIds.length} selecionado(s)</span>
-          </div>
-          {groups.length === 0 ? (
-            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">Conecte o WhatsApp para carregar seus grupos.</p>
-          ) : (
-            <div className="max-h-32 space-y-1 overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2">
-              {groups.map((group) => (
-                <label key={group.id} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-zinc-50">
-                  <input type="checkbox" className="accent-violet-600" checked={draft.destinationGroupIds.includes(group.id)} onChange={() => toggleGroup(group.id)} />
-                  <span className="min-w-0 flex-1 truncate">{group.name}</span>
-                  <span className="text-xs text-zinc-400">{group.size} membros</span>
-                </label>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <button type="button" className="mt-4 flex items-center gap-1 text-sm font-medium text-violet-700 hover:text-violet-900" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-          <Settings2 size={15} /> {expanded ? 'Ocultar inteligência e limites' : 'Ajustar inteligência e limites'}
-        </button>
-
-        {expanded && (
-          <div className="mt-4 space-y-4 border-t border-zinc-200 pt-4">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <div><Label>Máximo por dia</Label><Input type="number" min={1} max={50} value={draft.dailyCap} onChange={(e) => setDraft({ ...draft, dailyCap: Number(e.target.value) })} /></div>
-              <div><Label>Início</Label><Input type="time" value="09:00" readOnly /></div>
-              <div><Label>Fim</Label><Input type="time" min="09:01" max="21:00" value={draft.endTime} onChange={(e) => setDraft({ ...draft, endTime: e.target.value })} /></div>
-              <div><Label>Destaques por dia</Label><Input type="number" min={0} max={10} value={draft.maxStandoutMessages} onChange={(e) => setDraft({ ...draft, maxStandoutMessages: Number(e.target.value) })} /></div>
-              <div><Label>Intervalo mínimo (min)</Label><Input type="number" min={12} max={16} value={draft.minIntervalMinutes} onChange={(e) => setDraft({ ...draft, minIntervalMinutes: Number(e.target.value) })} /></div>
-              <div><Label>Intervalo máximo (min)</Label><Input type="number" min={12} max={16} value={draft.maxIntervalMinutes} onChange={(e) => setDraft({ ...draft, maxIntervalMinutes: Number(e.target.value) })} /></div>
-              <div><Label>Comissão mínima (%)</Label><Input type="number" min={0} step="0.1" value={draft.minCommissionPercent ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minCommissionPercent: e.target.value ? Number(e.target.value) : undefined })} /></div>
-              <div><Label>Comissão estimada mínima</Label><Input type="number" min={0} step="0.01" value={draft.minEstimatedCommission ?? ''} placeholder="R$ por venda" onChange={(e) => setDraft({ ...draft, minEstimatedCommission: e.target.value ? Number(e.target.value) : undefined })} /></div>
-            </div>
-            <div>
-              <Label>O que combina com este público</Label>
-              <textarea className="min-h-24 w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" value={draft.profile.instructions} onChange={(e) => setDraft({ ...draft, profile: { ...draft.profile, instructions: e.target.value } })} />
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div><Label>Termos-base (separados por vírgula)</Label><Input value={draft.profile.keywords.join(', ')} onChange={(e) => setDraft({ ...draft, profile: { ...draft.profile, keywords: e.target.value.split(',').map((v) => v.trim()).filter(Boolean) } })} /></div>
-              <div><Label>Excluir (separados por vírgula)</Label><Input value={draft.profile.negativeKeywords.join(', ')} onChange={(e) => setDraft({ ...draft, profile: { ...draft.profile, negativeKeywords: e.target.value.split(',').map((v) => v.trim()).filter(Boolean) } })} /></div>
-            </div>
-          </div>
-        )}
+  const selectedGroups = draft.destinationGroupIds.map((id) => groups.find((group) => group.id === id) ?? { id, name: audience.destinations.find((destination) => destination.groupId === id)?.groupName ?? id, size: 0, announceOnly: false })
+  const numberField = (key: 'dailyCap' | 'maxStandoutMessages' | 'minIntervalMinutes' | 'maxIntervalMinutes', label: string, min: number, max: number) => <div><Label htmlFor={`${prefix}-${key}`}>{label}</Label><Input id={`${prefix}-${key}`} type="number" min={min} max={max} value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: Number(e.target.value) })} /></div>
+  function reset() {
+    setDraft(audience); setKeywords(audience.profile.keywords.join(', ')); setNegative(audience.profile.negativeKeywords.join(', '))
+    markClean(JSON.stringify(audienceInput(audience, audience.profile.keywords.join(', '), audience.profile.negativeKeywords.join(', '))))
+    mutation.reset()
+  }
+  return <Card className="smart-audience overflow-hidden p-0">
+    <div className={`flex items-start justify-between gap-3 border-b p-5 ${draft.enabled ? style.soft : 'border-line bg-surface-muted'}`}>
+      <div className="flex min-w-0 items-start gap-3">
+        <span className={`smart-niche-icon ${style.color}`}><NicheIcon slug={audience.slug} size={22} /></span>
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-display text-lg font-semibold text-ink">{audienceLabel(audience)}</h3><Badge tone={draft.enabled ? 'success' : 'neutral'}>{draft.enabled ? 'Ativo' : 'Inativo'}</Badge></div><p className="mt-1 text-sm leading-relaxed text-muted">{audience.description}</p></div>
       </div>
-      <div className="flex items-center justify-between border-t border-zinc-200 bg-white/70 px-5 py-3">
-        <span className="text-xs text-zinc-500">Fuso: America/Sao_Paulo</span>
-        <Button type="button" onClick={() => mutation.mutate()} disabled={mutation.isPending}>
-          {mutation.isPending ? <Spinner /> : <Save size={15} />} Salvar público
-        </Button>
+      <label className="flex min-h-11 shrink-0 cursor-pointer items-center gap-2 text-sm font-medium"><input type="checkbox" aria-label={`Ativar ${audienceLabel(audience)}`} className="h-4 w-4 accent-accent" checked={draft.enabled} disabled={mutation.isPending} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />Ativar</label>
+    </div>
+    <fieldset disabled={mutation.isPending} className="min-w-0 space-y-4 p-5">
+      <legend className="sr-only">Configurar {audienceLabel(audience)}</legend>
+      <div className="grid gap-2 text-xs text-muted sm:grid-cols-3"><p><strong className="block text-base tabular-nums text-ink">{draft.dailyCap}</strong>produtos por dia</p><p><strong className="block text-base tabular-nums text-ink">{draft.startTime}–{draft.endTime}</strong>horário de Brasília</p><p><strong className="block text-base tabular-nums text-ink">{draft.minIntervalMinutes}–{draft.maxIntervalMinutes} min</strong>entre envios</p></div>
+      {groups.length === 0 && <p className="rounded-lg bg-warning-soft p-3 text-sm text-warning">Conecte o WhatsApp para carregar os grupos. Os vínculos salvos continuam disponíveis abaixo.</p>}
+      <GroupCombobox label={`Grupos de ${audienceLabel(audience)}`} description="Busque e vincule os destinos deste público. As alterações só valem depois de salvar." items={groups} value={selectedGroups} onChange={(next) => setDraft({ ...draft, destinationGroupIds: next.map((group) => group.id) })} disabled={mutation.isPending} />
+      <button type="button" className="flex min-h-11 items-center gap-2 rounded-lg text-sm font-semibold text-accent" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} aria-controls={`${prefix}-rules`}><Settings2 size={16} />{expanded ? 'Ocultar regras e limites' : 'Ajustar regras e limites'}</button>
+      <div id={`${prefix}-rules`} hidden={!expanded} className="space-y-4 border-t border-line pt-4">
+        <div className="grid gap-4 sm:grid-cols-2">
+          {numberField('dailyCap', 'Máximo por dia', 1, 50)}
+          <div><Label htmlFor={`${prefix}-end`}>Encerrar até</Label><Input id={`${prefix}-end`} type="time" min="09:01" max="21:00" value={draft.endTime} onChange={(e) => setDraft({ ...draft, endTime: e.target.value })} /></div>
+          {numberField('minIntervalMinutes', 'Intervalo mínimo (min)', 12, 16)}
+          {numberField('maxIntervalMinutes', 'Intervalo máximo (min)', 12, 16)}
+          {numberField('maxStandoutMessages', 'Destaques por dia', 0, 10)}
+          <div><Label htmlFor={`${prefix}-commission`}>Comissão mínima (%)</Label><Input id={`${prefix}-commission`} type="number" min={0} max={100} step="0.1" value={draft.minCommissionPercent ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minCommissionPercent: e.target.value === '' ? null : Number(e.target.value) })} /></div>
+          <div className="sm:col-span-2"><Label htmlFor={`${prefix}-estimated`}>Comissão estimada mínima por venda (R$)</Label><Input id={`${prefix}-estimated`} type="number" min={0} max={1000000} step="0.01" value={draft.minEstimatedCommission ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minEstimatedCommission: e.target.value === '' ? null : Number(e.target.value) })} /></div>
+        </div>
+        <div><Label htmlFor={`${prefix}-instructions`}>O que combina com este público</Label><textarea id={`${prefix}-instructions`} className="field-control min-h-28 w-full" maxLength={2000} value={draft.profile.instructions} onChange={(e) => setDraft({ ...draft, profile: { ...draft.profile, instructions: e.target.value } })} /></div>
+        <div><Label htmlFor={`${prefix}-keywords`}>Termos-base, separados por vírgula</Label><Input id={`${prefix}-keywords`} value={keywords} onChange={(e) => setKeywords(e.target.value)} /></div>
+        <div><Label htmlFor={`${prefix}-negative`}>Excluir termos, separados por vírgula</Label><Input id={`${prefix}-negative`} value={negative} onChange={(e) => setNegative(e.target.value)} /></div>
       </div>
-      {mutation.isError && <p className="px-5 pb-3 text-xs text-red-700">{apiErrorMessage(mutation.error)}</p>}
-    </Card>
-  )
+    </fieldset>
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface-muted px-5 py-3">
+      <ActionStatus state={mutation.isPending ? 'saving' : mutation.isError ? 'error' : dirty ? 'unsaved' : 'saved'} label={mutation.isPending ? 'Salvando público…' : mutation.isError ? 'Falha ao salvar' : dirty ? 'Alterações pendentes' : 'Configuração salva'} />
+      <div className="flex flex-wrap gap-2"><Button variant="ghost" disabled={!dirty || mutation.isPending} onClick={reset}>Restaurar salvo</Button><Button loading={mutation.isPending} loadingText="Salvando…" disabled={!dirty || !!validation} onClick={() => mutation.mutate()}><Save size={15} />Salvar público</Button></div>
+    </div>
+    {dirty && validation && <p role="status" className="px-5 py-3 text-sm text-warning">{validation}</p>}
+    {mutation.isError && <p role="alert" className="px-5 py-3 text-sm text-danger">{apiErrorMessage(mutation.error)}</p>}
+  </Card>
 }
 
-function AudienceSetup({ audiences, groups }: { audiences: SmartAudience[]; groups: Group[] }) {
-  return (
-    <section aria-labelledby="audience-title">
-      <div className="mb-5">
-        <h2 id="audience-title" className="text-xl font-bold">Públicos e regras</h2>
-        <p className="mt-1 text-sm text-zinc-500">Vincule cada nicho aos grupos reais e defina os limites usados para selecionar e agendar ofertas.</p>
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        {audiences.map((audience) => <AudienceCard key={audience.slug} audience={audience} groups={groups} />)}
-      </div>
-    </section>
-  )
+function AudienceSetup({ audiences, groups, onDirtyChange }: { audiences: SmartAudience[]; groups: Group[]; onDirtyChange: DirtyChange }) {
+  return <section aria-labelledby="audience-title"><div className="mb-5"><h2 id="audience-title" className="section-heading">Públicos e regras</h2><p className="page-description">Escolha os destinos e salve as regras de cada público antes de planejar as ofertas.</p></div><div className="grid gap-5 xl:grid-cols-2">{audiences.map((audience) => <AudienceCard key={audience.slug} audience={audience} groups={groups} onDirtyChange={onDirtyChange} />)}</div></section>
+}
+
+function WorkflowSelection({ audiences, selected, setSelected, planDate, setPlanDate, disabled = false }: {
+  audiences: SmartAudience[]; selected: Set<SmartAudienceSlug>; setSelected: (next: Set<SmartAudienceSlug>) => void; planDate: string; setPlanDate: (date: string) => void; disabled?: boolean
+}) {
+  const id = useId()
+  return <fieldset disabled={disabled} className="grid min-w-0 gap-4 sm:grid-cols-[12rem_minmax(0,1fr)]"><legend className="sr-only">Data e públicos do plano</legend><div><Label htmlFor={id}>Data da campanha</Label><Input id={id} type="date" min={today()} value={planDate} onChange={(e) => setPlanDate(e.target.value)} /></div><fieldset className="min-w-0"><legend className="field-label">Públicos incluídos</legend><div className="flex flex-wrap gap-2">{audiences.filter((audience) => audience.enabled).map((audience) => <label key={audience.slug} className={`smart-audience-choice flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border-2 px-3 py-2 text-sm ${selected.has(audience.slug) ? 'border-accent bg-accent-soft text-accent' : 'border-line bg-surface text-muted'}`}><input type="checkbox" className="h-4 w-4 accent-accent" checked={selected.has(audience.slug)} onChange={() => { const next = new Set(selected); if (next.has(audience.slug)) next.delete(audience.slug); else next.add(audience.slug); setSelected(next) }} /><NicheIcon slug={audience.slug} size={16} />{audienceLabel(audience)}</label>)}</div>{audiences.every((audience) => !audience.enabled) && <p className="text-sm text-warning">Ative e salve pelo menos um público na primeira etapa.</p>}</fieldset>{!validPlanDate(planDate, today()) && <p role="status" className="text-sm text-warning sm:col-span-2">Escolha uma data válida a partir de hoje, no horário de Brasília.</p>}</fieldset>
 }
 
 function KeywordPackCard({ pack, date }: { pack: SmartKeywordPack; date: string }) {
@@ -321,11 +284,11 @@ function KeywordPackCard({ pack, date }: { pack: SmartKeywordPack; date: string 
     <Card className="p-0">
       <div className={`rounded-t-2xl border-b p-4 ${style.soft}`}>
         <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2"><span className="text-xl">{style.emoji}</span><h3 className={`font-bold ${style.color}`}>{pack.name || pack.audienceSlug}</h3></div>
+          <div className="flex items-center gap-2"><span className="text-xl"><NicheIcon slug={pack.audienceSlug} /></span><h3 className={`font-bold ${style.color}`}>{pack.name && pack.name.toUpperCase() !== pack.audienceSlug ? pack.name : NICHE_STYLES[pack.audienceSlug].label}</h3></div>
           <Badge tone="violet">Modo {pack.mode || 'ANY'}</Badge>
         </div>
-        {pack.reason && <p className="mt-2 text-xs text-zinc-600">{pack.reason}</p>}
-        <p className="mt-2 text-xs text-zinc-500">Prefira o preset: palavras inteiras, sem diferenciar acentos. Atualize e recarregue a extensão antes de usar.</p>
+        {pack.reason && <p className="mt-2 text-xs text-muted">{pack.reason}</p>}
+        <p className="mt-2 text-xs text-muted">Prefira o preset: palavras inteiras, sem diferenciar acentos. Atualize e recarregue a extensão antes de usar.</p>
       </div>
       <div className="p-4">
         {pack.calendarContext && pack.calendarContext.length > 0 && (
@@ -334,11 +297,11 @@ function KeywordPackCard({ pack, date }: { pack: SmartKeywordPack; date: string 
         <div className="flex flex-wrap gap-2">
           {phrases.map((phrase) => {
             const details = pack.phrases?.find((item) => item.keyword === phrase)
-            return <span key={phrase} title={details?.reason} className="rounded-lg border border-zinc-200 bg-zinc-50 px-2.5 py-1.5 text-sm text-zinc-700">{phrase}</span>
+            return <span key={phrase} title={details?.reason} className="rounded-lg border border-line bg-surface-muted px-2.5 py-1.5 text-sm text-ink">{phrase}</span>
           })}
         </div>
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-100 pt-3">
-          <span className="text-xs text-zinc-500">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
+          <span className="text-xs text-muted">
             {pack.minCommissionPercent !== undefined ? `Comissão ≥ ${pack.minCommissionPercent}%` : 'Sem comissão mínima'}
             {pack.minEstimatedCommission !== undefined ? ` · estimada ≥ ${formatMoney(pack.minEstimatedCommission)}` : ''}
           </span>
@@ -347,19 +310,20 @@ function KeywordPackCard({ pack, date }: { pack: SmartKeywordPack; date: string 
             <Button type="button" onClick={copyPreset}>{presetCopied ? <Check size={15} /> : <FileJson size={15} />}{presetCopied ? 'Preset copiado' : 'Copiar preset da extensão'}</Button>
           </div>
         </div>
-        {copyError && <p role="alert" className="mt-2 text-xs text-red-600">{copyError}</p>}
+        {copyError && <p role="alert" className="mt-2 text-xs text-danger">{copyError}</p>}
       </div>
     </Card>
   )
 }
 
-function KeywordPlanner({ audiences, selected, setSelected, planDate, setPlanDate, aiBlocked }: {
+function KeywordPlanner({ audiences, selected, setSelected, planDate, setPlanDate, aiBlocked, onDirtyChange }: {
   audiences: SmartAudience[]
   selected: Set<SmartAudienceSlug>
   setSelected: (next: Set<SmartAudienceSlug>) => void
   planDate: string
   setPlanDate: (date: string) => void
   aiBlocked: boolean
+  onDirtyChange: DirtyChange
 }) {
   type KeywordRequest = Parameters<typeof smartCampaignApi.keywords>[0]
   const submitting = useRef(false)
@@ -368,13 +332,13 @@ function KeywordPlanner({ audiences, selected, setSelected, planDate, setPlanDat
     retry: false,
     onSettled: () => { submitting.current = false },
   })
-  const enabled = audiences.filter((audience) => audience.enabled)
+  useEffect(() => { onDirtyChange('keywords-pending', mutation.isPending) }, [mutation.isPending, onDirtyChange])
   const fingerprint = `${planDate}:${[...selected].sort().join(',')}`
   const resultIsCurrent = mutation.variables
     ? `${mutation.variables.date}:${[...mutation.variables.audienceSlugs].sort().join(',')}` === fingerprint
     : false
   const submit = (input?: KeywordRequest) => {
-    if (submitting.current || mutation.isPending || aiBlocked) return
+    if (submitting.current || mutation.isPending || aiBlocked || !validPlanDate(planDate, today()) || selected.size === 0) return
     submitting.current = true
     mutation.mutate(input ?? { requestId: createSmartAIRequestId(), date: planDate, audienceSlugs: [...selected] })
   }
@@ -382,33 +346,18 @@ function KeywordPlanner({ audiences, selected, setSelected, planDate, setPlanDat
   return (
     <section aria-labelledby="keywords-title">
       <h2 id="keywords-title" className="text-xl font-bold">Busca inteligente para o dia</h2>
-      <p className="mt-1 text-sm text-zinc-500">Gere termos compatíveis com o nicho, a data e seus filtros. As sugestões são planejamento, não tendências ao vivo.</p>
+      <p className="mt-1 text-sm text-muted">Gere termos compatíveis com o nicho, a data e seus filtros. As sugestões são planejamento, não tendências ao vivo.</p>
       <Card className="mt-5">
-        <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 p-3 text-xs leading-relaxed text-blue-800">
+        <div className="mb-4 rounded-xl border border-info/30 bg-info-soft p-3 text-xs leading-relaxed text-info">
           A extensão aplica estes termos ao texto visível dos cards que o hub de afiliados já descobriu na página. Ela não executa novas pesquisas globais no Mercado Livre. Por isso, os pacotes priorizam palavras curtas em modo ANY; frases entram apenas quando ajudam a evitar resultados ambíguos.
         </div>
-        <div className="grid gap-4 lg:grid-cols-[220px_1fr_auto] lg:items-end">
-          <div><Label>Data da campanha</Label><Input type="date" min={today()} value={planDate} onChange={(e) => setPlanDate(e.target.value)} /></div>
-          <fieldset>
-            <legend className="mb-2 text-sm font-medium text-zinc-700">Públicos incluídos</legend>
-            <div className="flex flex-wrap gap-2">
-              {enabled.map((audience) => (
-                <label key={audience.slug} className={`cursor-pointer rounded-full border px-3 py-1.5 text-sm ${selected.has(audience.slug) ? NICHE_STYLES[audience.slug].soft : 'border-zinc-200 bg-white text-zinc-500'}`}>
-                  <input type="checkbox" className="sr-only" checked={selected.has(audience.slug)} onChange={() => { const next = new Set(selected); if (next.has(audience.slug)) next.delete(audience.slug); else next.add(audience.slug); setSelected(next) }} />
-                  {NICHE_STYLES[audience.slug].emoji} {audience.name}
-                </label>
-              ))}
-            </div>
-          </fieldset>
-          <Button type="button" onClick={() => submit()} disabled={mutation.isPending || !planDate || selected.size === 0 || aiBlocked}>
-            {mutation.isPending ? <Spinner /> : <Sparkles size={16} />} Usar IA: gerar palavras-chave
-          </Button>
-        </div>
+        <WorkflowSelection audiences={audiences} selected={selected} setSelected={setSelected} planDate={planDate} setPlanDate={setPlanDate} disabled={mutation.isPending} />
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4"><p className="max-w-lg text-xs leading-relaxed text-muted">As sugestões usam o orçamento de IA mostrado acima. Copie o resultado para a extensão e faça sua coleta.</p><Button type="button" loading={mutation.isPending} loadingText="Gerando palavras-chave…" onClick={() => submit()} disabled={!validPlanDate(planDate, today()) || selected.size === 0 || aiBlocked}><Sparkles size={16} />Usar IA: gerar palavras-chave</Button></div>
       </Card>
       <div className="mt-4">
         {mutation.isError && resultIsCurrent && <ErrorState message={apiErrorMessage(mutation.error)} retry={mutation.variables ? () => submit(mutation.variables) : undefined} />}
         {(!mutation.data || !resultIsCurrent) && !mutation.isPending && <EmptyState title="Escolha os públicos e a data">Clique em “Usar IA” para montar listas curtas para a seleção atual.</EmptyState>}
-        {mutation.isPending && <Card className="flex items-center gap-3 text-sm text-zinc-600"><Spinner /> Preparando as sugestões para a data escolhida…</Card>}
+        {mutation.isPending && <Card className="flex items-center gap-3 text-sm text-muted"><Spinner /> Preparando as sugestões para a data escolhida…</Card>}
         {mutation.data && resultIsCurrent && (
           <div className="grid gap-4 xl:grid-cols-2">{mutation.data.packs.map((pack) => <KeywordPackCard key={pack.audienceSlug} pack={pack} date={mutation.data.date} />)}</div>
         )}
@@ -417,46 +366,43 @@ function KeywordPlanner({ audiences, selected, setSelected, planDate, setPlanDat
   )
 }
 
-function inferFileAudience(name: string, selected: Set<SmartAudienceSlug>, audiences: SmartAudience[]): SmartAudienceSlug | undefined {
-  if (selected.size === 1) return [...selected][0]
-  const normalizedName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR')
-  const matches = audiences.filter((audience) => {
-    if (!selected.has(audience.slug)) return false
-    const labels = [audience.slug, audience.name].map((value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR'))
-    return labels.some((label) => label.length > 3 && normalizedName.includes(label)) || new RegExp(`(^|[^a-z])${audience.slug.toLocaleLowerCase()}([^a-z]|$)`).test(normalizedName)
-  })
-  return matches.length === 1 ? matches[0].slug : undefined
-}
-
-function countFileOffers(value: unknown): number | null {
-  if (Array.isArray(value)) return value.length
-  if (!value || typeof value !== 'object') return null
-  const record = value as Record<string, unknown>
-  for (const key of ['offers', 'products', 'items', 'produtos', 'ofertas', 'data', 'cards']) {
-    if (Array.isArray(record[key])) return (record[key] as unknown[]).length
-  }
-  return null
-}
-
-function ImportPlanner({ audiences, selected, planDate, onCreated, aiStatus, aiBlocked }: { audiences: SmartAudience[]; selected: Set<SmartAudienceSlug>; planDate: string; onCreated: (plan: SmartPlan) => void; aiStatus?: SmartAIStatus; aiBlocked: boolean }) {
+function ImportPlanner({ audiences, selected, setSelected, planDate, setPlanDate, onCreated, aiStatus, aiBlocked, onDirtyChange }: {
+  audiences: SmartAudience[]; selected: Set<SmartAudienceSlug>; setSelected: (next: Set<SmartAudienceSlug>) => void; planDate: string; setPlanDate: (date: string) => void; onCreated: (plan: SmartPlan) => void; aiStatus?: SmartAIStatus; aiBlocked: boolean; onDirtyChange: DirtyChange
+}) {
   const queryClient = useQueryClient()
   const [rawJson, setRawJson] = useState('')
   const [days, setDays] = useState(1)
   const [filePayloads, setFilePayloads] = useState<SmartImportPayload[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const submitting = useRef(false)
+  const readVersion = useRef(0)
+  const [reading, setReading] = useState(false)
+  const snapshot = JSON.stringify({ rawJson, days, files: filePayloads.map(({ name, targetAudienceSlug }) => ({ name, targetAudienceSlug })) })
+  const { dirty, markClean } = useDraftBaseline(snapshot)
+  useEffect(() => () => { readVersion.current++ }, [])
+  const daysId = useId()
   const mutation = useMutation({
     mutationFn: smartCampaignApi.createPlan,
     retry: false,
     onSuccess: (plan) => {
       queryClient.invalidateQueries({ queryKey: ['smart-plans'] })
+      setRawJson(''); setFilePayloads([]); setFileError(null)
+      markClean(JSON.stringify({ rawJson: '', days, files: [] }))
       onCreated(plan)
     },
     onSettled: () => { submitting.current = false },
   })
 
+  useEffect(() => { onDirtyChange('import', dirty || reading || mutation.isPending) }, [dirty, reading, mutation.isPending, onDirtyChange])
+
+  const invalidTargets = filePayloads.some((file) => file.targetAudienceSlug && !selected.has(file.targetAudienceSlug))
+  const previousRequest = mutation.variables
+  const requestIsCurrent = !!previousRequest && previousRequest.date === planDate && previousRequest.days === days
+    && [...previousRequest.audienceSlugs].sort().join(',') === [...selected].sort().join(',')
+    && (previousRequest.payloads ? previousRequest.payloads === filePayloads : previousRequest.rawJson === rawJson)
   const submit = (retryInput?: SmartCreatePlanInput) => {
-    if (submitting.current || mutation.isPending || aiBlocked) return
+    if (retryInput && !requestIsCurrent) return
+    if (submitting.current || mutation.isPending || aiBlocked || !validPlanDate(planDate, today()) || selected.size === 0 || reading || !!fileError || invalidTargets) return
     submitting.current = true
     mutation.mutate(retryInput ?? (filePayloads.length
       ? { requestId: createSmartAIRequestId(), date: planDate, days, audienceSlugs: [...selected], payloads: filePayloads }
@@ -466,21 +412,21 @@ function ImportPlanner({ audiences, selected, planDate, onCreated, aiStatus, aiB
   const loadFiles = async (event: ChangeEvent<HTMLInputElement>) => {
     const files = [...(event.target.files ?? [])]
     if (files.length === 0) return
+    const inputElement = event.target
+    const version = ++readVersion.current
+    setReading(true)
     setFileError(null)
-    setFilePayloads([])
-    setRawJson('')
     try {
       if (files.length > 50) throw new Error('files')
       if (files.some((file) => file.name.length > 255)) throw new Error('name')
       if (files.reduce((total, file) => total + file.size, 0) > 30 * 1024 * 1024) throw new Error('size')
       const parsed = await Promise.all(files.map(async (file) => JSON.parse(await file.text()) as unknown))
-      const payloads = parsed.map((json, index) => ({
-        name: files[index].name,
-        json,
-        targetAudienceSlug: inferFileAudience(files[index].name, selected, audiences),
-      }))
+      if (version !== readVersion.current) return
+      const payloads = parsed.map((json, index) => ({ name: files[index].name, json, targetAudienceSlug: inferFileAudience(files[index].name, selected, audiences) }))
+      setRawJson('')
       setFilePayloads(payloads)
     } catch (error) {
+      if (version !== readVersion.current) return
       const reason = error instanceof Error ? error.message : ''
       setFileError(reason === 'files'
         ? 'Selecione no máximo 50 arquivos por análise.'
@@ -490,7 +436,8 @@ function ImportPlanner({ audiences, selected, planDate, onCreated, aiStatus, aiB
             ? 'Um nome de arquivo é longo demais.'
             : 'Um dos arquivos não contém JSON válido. Revise o arquivo exportado pela extensão.')
     } finally {
-      event.target.value = ''
+      if (version === readVersion.current) setReading(false)
+      inputElement.value = ''
     }
   }
 
@@ -510,136 +457,127 @@ function ImportPlanner({ audiences, selected, planDate, onCreated, aiStatus, aiB
   return (
     <section aria-labelledby="import-title">
       <h2 id="import-title" className="text-xl font-bold">Importar arquivos e montar proposta</h2>
-      <p className="mt-1 text-sm text-zinc-500">A IA classifica os produtos e prepara uma agenda para revisão. Esta etapa não aprova o plano e não envia mensagens.</p>
-      <Card className="mt-4 border-blue-200 bg-blue-50">
-        <h3 className="font-semibold text-blue-950">Importação inteligente</h3>
-        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm leading-relaxed text-blue-900">
-          <li><strong>Recomendado para menor custo e melhor precisão:</strong> gere um preset por público, rode uma coleta separada na extensão e selecione o grupo daquela coleta.</li>
-          <li>Você também pode carregar arquivos genéricos ou uma coleta mista. Deixe “Classificar entre todos”; regras locais pré-selecionam nichos prováveis e a IA decide os casos ambíguos.</li>
-          <li>Não confie no nome do arquivo para definir o nicho: confirme o grupo abaixo. Produto com sinal claro de outro nicho pode ser redirecionado pela triagem, enquanto itens ambíguos são avaliados em todos os grupos selecionados.</li>
-          <li>Defina a data inicial e quantos dias usar. A proposta começa às 09h, respeita o limite diário e usa intervalos de 12–16 minutos.</li>
-        </ol>
-        <p className="mt-2 text-xs text-blue-800">Revise, mova, reserve ou rejeite produtos na etapa seguinte. Os envios só são ativados quando você confirma “Agendar campanha”.</p>
-      </Card>
-      <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_300px]">
+      <p className="mt-1 text-sm text-muted">Carregue a coleta, confira o público de cada arquivo e prepare uma agenda para revisão. Os envios só começam depois da aprovação.</p>
+      <Card className="mt-5"><WorkflowSelection audiences={audiences} selected={selected} setSelected={setSelected} planDate={planDate} setPlanDate={setPlanDate} disabled={mutation.isPending || reading} /></Card>
+      <fieldset disabled={mutation.isPending || reading} className="mt-5 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]"><legend className="sr-only">Importação e duração do plano</legend>
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div><Label>JSON da extensão</Label><p className="text-xs text-zinc-500">Confira o público de cada arquivo antes de analisar.</p></div>
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-200">
-              <Upload size={16} /> Carregar ou substituir arquivo(s)
+            <div><h3 className="font-semibold">JSON da extensão</h3><p className="text-xs text-muted">Você pode importar coletas separadas ou classificar um lote misto.</p></div>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-surface-muted px-4 py-2 text-sm font-medium text-ink hover:bg-surface">
+              <Upload size={16} /> Carregar ou substituir arquivos
               <input className="sr-only" type="file" accept="application/json,.json" multiple onChange={loadFiles} />
             </label>
           </div>
-          {filePayloads.length > 0 && <div className="mt-4 space-y-3">
+          {reading && <p role="status" className="mt-3 text-sm text-info">Lendo e validando arquivos…</p>}
+          {filePayloads.length > 0 ? <div className="mt-4 space-y-3">
+            <p className="text-sm leading-relaxed text-muted">Confira o público sugerido para cada arquivo. Ele indica a origem da coleta; a triagem pode incluir outro público quando houver evidência no produto.</p>
             {filePayloads.map((file, index) => {
               const target = file.targetAudienceSlug
-              const targetName = audiences.find((audience) => audience.slug === target)?.name ?? target
+              const invalid = !!target && !selected.has(target)
               const count = countFileOffers(file.json)
-              return <div key={`${file.name}-${index}`} className="rounded-xl border border-zinc-200 bg-white p-3">
-                <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-                  <div className="min-w-0"><p className="truncate text-sm font-medium text-zinc-800">{file.name}</p><p className="text-xs text-zinc-500">{count === null ? 'Formato detectado pelo servidor' : `${count} produto(s) no arquivo`}</p></div>
-                  <label className="shrink-0 text-xs font-medium text-zinc-600">Analisar para
-                    <select className="ml-2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-800" value={target ?? 'ALL'} onChange={(event) => {
-                      const value = event.target.value as SmartAudienceSlug | 'ALL'
-                      setFilePayloads((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, targetAudienceSlug: value === 'ALL' ? undefined : value } : item))
-                    }}>
-                      <option value="ALL">Classificar entre todos</option>
-                      {audiences.filter((audience) => selected.has(audience.slug)).map((audience) => <option key={audience.slug} value={audience.slug}>{audience.name}</option>)}
-                    </select>
-                  </label>
-                </div>
-                {target ? <p className="mt-2 text-xs text-green-700">Grupo de origem: {targetName}. A pré-triagem ainda pode incluir outro nicho se houver evidência clara no produto.</p> : <p className="mt-2 text-xs text-amber-700">Coleta genérica: regras locais limitam nichos óbvios; casos ambíguos vão para todos os públicos selecionados.</p>}
+              const inputId = `${daysId}-file-${index}`
+              return <div key={`${file.name}-${index}`} className="rounded-xl border border-line bg-surface-muted p-4">
+                <div className="flex flex-wrap items-start justify-between gap-2"><div className="min-w-0 flex-1"><h4 className="break-words text-sm font-semibold">{file.name}</h4><p className="mt-1 text-xs text-muted">{count === null ? 'O servidor identificará os produtos deste formato.' : `${count} produto(s) no arquivo`}</p></div><Button variant="ghost" aria-label={`Remover ${file.name}`} onClick={() => { setFilePayloads((current) => current.filter((_, itemIndex) => itemIndex !== index)); setFileError(null) }}>Remover</Button></div>
+                <Label htmlFor={inputId} className="mt-3">Público de origem</Label>
+                <select id={inputId} aria-label={`Público de ${file.name}`} aria-invalid={invalid} className="field-control w-full" value={target ?? 'ALL'} onChange={(event) => {
+                  const value = event.target.value as SmartAudienceSlug | 'ALL'
+                  setFilePayloads((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, targetAudienceSlug: value === 'ALL' ? undefined : value } : item))
+                  setFileError(null)
+                }}><option value="ALL">Classificar entre todos os selecionados</option>{invalid && <option value={target} disabled>{NICHE_STYLES[target].label} — não selecionado</option>}{audiences.filter((audience) => selected.has(audience.slug)).map((audience) => <option key={audience.slug} value={audience.slug}>{audienceLabel(audience)}</option>)}</select>
+                <p className={`mt-2 text-xs leading-relaxed ${invalid ? 'text-danger' : 'text-muted'}`}>{invalid ? 'Este público saiu da seleção do plano. Selecione-o acima ou altere a origem deste arquivo.' : target ? `Origem sugerida: ${NICHE_STYLES[target].label}. Confira antes de analisar.` : 'Coleta mista: a triagem busca públicos prováveis e a IA avalia os casos ambíguos.'}</p>
               </div>
             })}
-            <Button type="button" variant="secondary" onClick={() => { setFilePayloads([]); setRawJson(''); setFileError(null) }}>Remover arquivos e colar JSON manualmente</Button>
-          </div>}
-          {filePayloads.length === 0 && <textarea
-            className="mt-3 min-h-80 w-full rounded-xl border border-zinc-300 bg-zinc-950 p-4 font-mono text-xs text-zinc-100 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+            <Button variant="secondary" onClick={() => { setFilePayloads([]); setRawJson(''); setFileError(null) }}>Remover arquivos e colar JSON</Button>
+          </div> : <textarea
+            className="field-control mt-3 min-h-80 w-full font-mono text-xs"
             value={rawJson}
-            onChange={(e) => { setRawJson(e.target.value); setFilePayloads([]) }}
-            placeholder='Cole aqui o JSON exportado pela extensão…'
+            onChange={(e) => { setRawJson(e.target.value); setFilePayloads([]); setFileError(null) }}
+            placeholder="Cole aqui o JSON exportado pela extensão…"
             spellCheck={false}
             aria-label="JSON exportado pela extensão"
           />}
-          {fileError && <p className="mt-2 text-sm text-red-700">{fileError}</p>}
-          {rawJson && jsonCheckPending && <p className="mt-2 text-xs text-zinc-500">Validando JSON…</p>}
-          {rawJson && jsonValid && <p className="mt-2 text-xs text-green-700">JSON válido{parsedCount ? ` · ${parsedCount} registro(s) no nível principal` : ''}</p>}
-          {rawJson && !jsonCheckPending && !jsonValid && <p className="mt-2 text-xs text-red-700">O conteúdo ainda não é um JSON válido.</p>}
+          {fileError && <p role="alert" className="mt-2 text-sm text-danger">{fileError} A seleção anterior foi mantida; escolha novos arquivos ou edite o JSON.</p>}
+          {rawJson && jsonCheckPending && <p className="mt-2 text-xs text-muted">Validando JSON…</p>}
+          {rawJson && jsonValid && <p className="mt-2 text-xs text-success">JSON válido{parsedCount ? ` · ${parsedCount} registro(s) no nível principal` : ''}</p>}
+          {rawJson && !jsonCheckPending && !jsonValid && <p className="mt-2 text-xs text-danger">O conteúdo ainda não é um JSON válido.</p>}
         </Card>
         <div className="space-y-4">
           <Card>
             <h3 className="font-semibold">Proposta de agenda</h3>
             <dl className="mt-3 space-y-2 text-sm">
-              <div className="flex justify-between gap-2"><dt className="text-zinc-500">Início</dt><dd className="font-medium">{formatDate(planDate)}</dd></div>
-              <div className="flex justify-between gap-2"><dt className="text-zinc-500">Públicos</dt><dd className="font-medium">{selected.size}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-muted">Início</dt><dd className="font-medium">{formatDate(planDate)}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-muted">Públicos</dt><dd className="font-medium">{selected.size}</dd></div>
             </dl>
-            <div className="mt-4"><Label>Dias para distribuir</Label><select className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={1}>1 dia</option><option value={2}>2 dias</option><option value={3}>3 dias</option></select></div>
-            <div className="mt-4 rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs leading-relaxed text-violet-800">A IA considera encaixe no público, comissão, desconto comprovado, sazonalidade, frescor e variedade. Ela avalia até {aiStatus?.limits.batchSize ?? 'o limite configurado de'} produtos por lote. Ao concluir, você verá a proposta em <strong>Revisar agenda</strong>; nada é enviado até a aprovação explícita.</div>
-            <Button className="mt-4 w-full" type="button" disabled={mutation.isPending || !(filePayloads.length > 0 || (rawJson.trim() && jsonValid)) || selected.size === 0 || (filePayloads.length === 0 && !jsonValid) || aiBlocked} onClick={() => submit()}>
-              {mutation.isPending ? <Spinner /> : <BrainCircuit size={17} />} Analisar e montar proposta
+            <div className="mt-4"><Label htmlFor={daysId}>Dias para distribuir</Label><select id={daysId} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={1}>1 dia</option><option value={2}>2 dias</option><option value={3}>3 dias</option></select></div>
+            <div className="mt-4 rounded-lg border border-accent/30 bg-accent-soft p-3 text-xs leading-relaxed text-accent">A proposta considera encaixe no público, valor, comissão, sazonalidade, frescor e variedade. Usa IA para até {aiStatus?.limits.batchSize ?? 'o limite configurado de'} produtos por lote. Você revisa a proposta antes de confirmar os envios.</div>
+            <Button className="mt-4 w-full" loading={mutation.isPending || reading} loadingText={reading ? "Lendo arquivos…" : "Criando plano…"} type="button" disabled={mutation.isPending || reading || !!fileError || !validPlanDate(planDate, today()) || !(filePayloads.length > 0 || (rawJson.trim() && jsonValid)) || selected.size === 0 || invalidTargets || aiBlocked} onClick={() => submit()}>
+              {mutation.isPending ? <Spinner /> : <BrainCircuit size={17} />} Usar IA: analisar e montar proposta
             </Button>
           </Card>
-          {mutation.isError && <ErrorState message={apiErrorMessage(mutation.error)} retry={mutation.variables ? () => submit(mutation.variables) : undefined} />}
+          {mutation.isError && !requestIsCurrent && <p className="text-sm text-muted">A configuração mudou depois da última tentativa. Use “analisar e montar proposta” para enviar a seleção atual.</p>}
+          {mutation.isError && <ErrorState message={apiErrorMessage(mutation.error)} retry={mutation.variables && requestIsCurrent ? () => submit(mutation.variables) : undefined} />}
         </div>
-      </div>
+      </fieldset>
     </section>
   )
 }
 
 function ItemStateSelect({ item, onChange, disabled }: { item: SmartPlanItem; onChange: (state: SmartPlanItemState) => void; disabled: boolean }) {
   return (
-    <select aria-label={`Situação de ${item.product.title}`} className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-xs font-medium" value={item.state} onChange={(e) => onChange(e.target.value as SmartPlanItemState)} disabled={disabled}>
+    <select aria-label={`Situação de ${item.product.title}`} className="rounded-lg border border-line-strong bg-surface px-2 py-1.5 text-xs font-medium" value={item.state} onChange={(e) => onChange(e.target.value as SmartPlanItemState)} disabled={disabled}>
       <option value="SELECTED">Selecionado</option><option value="RESERVE">Reserva</option><option value="REJECTED">Rejeitado</option>
     </select>
   )
 }
 
-function PlanItemCard({ item, editable, saving, onPatch }: { item: SmartPlanItem; editable: boolean; saving: boolean; onPatch: (patch: Partial<SmartPlanItem>) => void }) {
-  const [editingMessage, setEditingMessage] = useState(false)
-  const [message, setMessage] = useState(item.customMessage ?? '')
+function PlanItemCard({ item, editable, saving, onPatch, message, onMessageChange, onSaveMessage, onCancelMessage }: {
+  item: SmartPlanItem; editable: boolean; saving: boolean; onPatch: (patch: Partial<SmartPlanItem>) => void;
+  message?: string; onMessageChange: (text: string) => void; onSaveMessage: () => void; onCancelMessage: () => void
+}) {
+  const editingMessage = message !== undefined
   const discount = item.product.originalPrice && item.product.originalPrice > item.product.discountedPrice
     ? Math.round((1 - item.product.discountedPrice / item.product.originalPrice) * 100) : undefined
 
   return (
-    <Card className={`${item.state === 'SELECTED' ? 'border-violet-200' : item.state === 'REJECTED' ? 'opacity-75' : ''}`}>
+    <Card className={`${item.state === 'SELECTED' ? 'border-accent/30' : item.state === 'REJECTED' ? 'opacity-75' : ''}`}>
       <div className="flex flex-col gap-4 md:flex-row">
-        <div className="h-24 w-24 shrink-0 overflow-hidden rounded-xl bg-zinc-100">
-          {item.product.imageUrl ? <img className="h-full w-full object-cover" src={item.product.imageUrl} alt="" loading="lazy" /> : <div className="flex h-full items-center justify-center text-2xl">🛍️</div>}
+        <div className="h-24 w-24 shrink-0 overflow-hidden rounded-xl bg-surface-muted">
+          {item.product.imageUrl ? <img className="h-full w-full object-contain" src={item.product.imageUrl} alt="" loading="lazy" /> : <div className="flex h-full items-center justify-center text-subtle"><Package size={28} /></div>}
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h4 className="font-semibold text-zinc-900">{item.product.title}</h4>
+                <h4 className="font-semibold text-ink">{item.product.title}</h4>
                 {item.standout && <Badge tone="violet">Destaque</Badge>}
                 {item.category && <Badge>{item.category}</Badge>}
               </div>
               <div className="mt-1 flex flex-wrap items-baseline gap-2 text-sm">
-                <strong className="text-lg text-zinc-900">{formatMoney(item.product.discountedPrice)}</strong>
-                {item.product.originalPrice && <span className="text-xs text-zinc-400 line-through">{formatMoney(item.product.originalPrice)}</span>}
-                {discount !== undefined && <span className="text-xs font-semibold text-green-700">-{discount}%</span>}
-                {item.estimatedCommission !== undefined && <span className="text-xs text-zinc-500">Comissão est. {formatMoney(item.estimatedCommission)}</span>}
+                <strong className="smart-price-tag">{formatMoney(item.product.discountedPrice)}</strong>
+                {item.product.originalPrice && <span className="text-xs text-subtle line-through">{formatMoney(item.product.originalPrice)}</span>}
+                {discount !== undefined && <span className="text-xs font-semibold text-success">-{discount}%</span>}
+                {item.estimatedCommission !== undefined && <span className="text-xs text-muted">Comissão est. {formatMoney(item.estimatedCommission)}</span>}
               </div>
             </div>
             <ItemStateSelect item={item} disabled={!editable || saving} onChange={(state) => onPatch({ state })} />
           </div>
-          <p className="mt-2 text-sm text-zinc-600">{item.reason || 'Sem justificativa informada.'}</p>
-          {item.rejectionReasons && item.rejectionReasons.length > 0 && <p className="mt-1 text-xs text-red-700">{item.rejectionReasons.join(' · ')}</p>}
+          <p className="mt-2 text-sm text-muted">{item.reason || 'Sem justificativa informada.'}</p>
+          {item.rejectionReasons && item.rejectionReasons.length > 0 && <p className="mt-1 text-xs text-danger">{item.rejectionReasons.join(' · ')}</p>}
           <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
-            <span className="rounded-lg bg-zinc-50 px-2.5 py-2"><strong>Nota</strong> {score(item.score)}</span>
-            <span className="rounded-lg bg-zinc-50 px-2.5 py-2"><strong>Encaixe</strong> {score(item.fitScore)}</span>
-            <span className="rounded-lg bg-zinc-50 px-2.5 py-2"><strong>Comissão</strong> {item.product.commissionRate !== undefined ? `${item.product.commissionRate}%` : 'desconhecida'}</span>
-            <span className="rounded-lg bg-zinc-50 px-2.5 py-2"><strong>Frescor</strong> {item.freshnessHours !== undefined ? `${Math.round(item.freshnessHours)}h` : 'desconhecido'}</span>
+            <span className="rounded-lg bg-surface-muted px-2.5 py-2"><strong>Nota</strong> {score(item.score)}</span>
+            <span className="rounded-lg bg-surface-muted px-2.5 py-2"><strong>Encaixe</strong> {score(item.fitScore)}</span>
+            <span className="rounded-lg bg-surface-muted px-2.5 py-2"><strong>Comissão</strong> {item.product.commissionRate !== undefined ? `${item.product.commissionRate}%` : 'desconhecida'}</span>
+            <span className="rounded-lg bg-surface-muted px-2.5 py-2"><strong>Frescor</strong> {item.freshnessHours !== undefined ? `${Math.round(item.freshnessHours)}h` : 'desconhecido'}</span>
           </div>
-          {item.warnings && item.warnings.length > 0 && <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">{item.warnings.join(' · ')}</div>}
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+          {item.warnings && item.warnings.length > 0 && <div className="mt-3 rounded-lg border border-warning/30 bg-warning-soft p-2 text-xs text-warning">{item.warnings.join(' · ')}</div>}
+          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
             <Clock3 size={14} /> {item.scheduledAt ? formatDateTime(item.scheduledAt) : item.state === 'SELECTED' ? 'Horário será calculado na aprovação' : 'Sem horário'}
-            {editable && item.state === 'SELECTED' && <label className="ml-auto flex cursor-pointer items-center gap-1.5"><input type="checkbox" className="accent-violet-600" checked={Boolean(item.standout)} onChange={(e) => onPatch({ standout: e.target.checked })} disabled={saving} /> Mensagem especial</label>}
+            {editable && item.state === 'SELECTED' && <label className="ml-auto flex cursor-pointer items-center gap-1.5"><input type="checkbox" className="accent-accent" checked={Boolean(item.standout)} onChange={(e) => onPatch({ standout: e.target.checked })} disabled={saving} /> Mensagem especial</label>}
           </div>
-          {(item.standout || item.customMessage) && (
-            <div className="mt-3 rounded-xl border border-violet-100 bg-violet-50 p-3">
-              <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-violet-800">Introdução especial</span>{editable && <button type="button" className="text-xs text-violet-700 underline" onClick={() => setEditingMessage((v) => !v)}>{editingMessage ? 'Fechar' : 'Editar'}</button>}</div>
-              {editingMessage ? <div className="mt-2"><textarea className="min-h-20 w-full rounded-lg border border-violet-200 bg-white p-2 text-sm" value={message} onChange={(e) => setMessage(e.target.value)} /><Button className="mt-2" type="button" disabled={saving} onClick={() => { onPatch({ customMessage: message }); setEditingMessage(false) }}><Save size={14} /> Salvar texto</Button></div> : <p className="mt-1 whitespace-pre-wrap text-sm text-zinc-700">{item.customMessage || 'A inteligência não sugeriu uma introdução especial.'}</p>}
+          {(item.standout || item.customMessage || editingMessage) && (
+            <div className="mt-3 rounded-xl border border-accent/30 bg-accent-soft p-3">
+              <div className="flex items-center justify-between gap-2"><span className="text-xs font-semibold text-accent">Introdução especial</span>{editable && <button type="button" className="text-xs text-accent underline" disabled={saving} onClick={() => { if (editingMessage) onCancelMessage(); else onMessageChange(item.customMessage ?? '') }}>{editingMessage ? 'Descartar edição' : 'Editar'}</button>}</div>
+              {editingMessage ? <div className="mt-2"><textarea className="min-h-20 w-full rounded-lg border border-accent/30 bg-surface p-2 text-sm" aria-label={`Introdução especial de ${item.product.title}`} maxLength={800} disabled={saving} value={message} onChange={(e) => onMessageChange(e.target.value)} /><Button className="mt-2" type="button" disabled={saving} onClick={onSaveMessage}><Save size={14} /> Salvar texto</Button></div> : <p className="mt-1 whitespace-pre-wrap text-sm text-ink">{item.customMessage || 'A inteligência não sugeriu uma introdução especial.'}</p>}
             </div>
           )}
         </div>
@@ -666,10 +604,13 @@ const RESOLUTION_COPY: Record<SmartSendResolution, { title: string; description:
   },
 }
 
-function UnknownSendResolution({ planId, sends }: { planId: string; sends: SmartPlanSend[] }) {
+function UnknownSendResolution({ planId, sends, onDirtyChange }: { planId: string; sends: SmartPlanSend[]; onDirtyChange: DirtyChange }) {
   const queryClient = useQueryClient()
   const [decision, setDecision] = useState<{ send: SmartPlanSend; resolution: SmartSendResolution } | null>(null)
   const [checked, setChecked] = useState(false)
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => { const timer = window.setInterval(() => setNow(Date.now()), 15000); return () => window.clearInterval(timer) }, [])
+  const cooling = (send: SmartPlanSend) => Boolean(send.resolutionAvailableAt && new Date(send.resolutionAvailableAt).getTime() > now)
   const mutation = useMutation({
     mutationFn: ({ send, resolution }: { send: SmartPlanSend; resolution: SmartSendResolution }) => smartCampaignApi.resolveSend(send.id, resolution),
     onSuccess: async () => {
@@ -681,54 +622,56 @@ function UnknownSendResolution({ planId, sends }: { planId: string; sends: Smart
       ])
     },
   })
+  useEffect(() => { onDirtyChange('resolution-pending', mutation.isPending) }, [mutation.isPending, onDirtyChange])
   const choose = (send: SmartPlanSend, resolution: SmartSendResolution) => {
     mutation.reset()
     setChecked(false)
     setDecision({ send, resolution })
   }
   return (
-    <Card className="mt-4 border-red-300 bg-red-50" >
+    <Card className="mt-4 border-danger/30 bg-danger-soft" >
       <div role="alert" className="flex items-start gap-3">
-        <AlertCircle className="mt-0.5 shrink-0 text-red-700" size={22} />
+        <AlertCircle className="mt-0.5 shrink-0 text-danger" size={22} />
         <div>
-          <h3 className="font-bold text-red-900">Ação necessária: resultado do envio desconhecido</h3>
-          <p className="mt-1 text-sm leading-relaxed text-red-800">O plano foi pausado automaticamente para evitar duplicatas. Aguarde pelo menos cinco minutos após a tentativa e confira diretamente no grupo do WhatsApp antes de decidir.</p>
+          <h3 className="font-bold text-danger">Ação necessária: resultado do envio desconhecido</h3>
+          <p className="mt-1 text-sm leading-relaxed text-danger">O plano foi pausado automaticamente para evitar duplicatas. Aguarde pelo menos cinco minutos após a tentativa e confira diretamente no grupo do WhatsApp antes de decidir.</p>
         </div>
       </div>
       <div className="mt-4 space-y-3">
         {sends.map((send) => (
-          <div key={send.id} className="rounded-xl border border-red-200 bg-white p-4">
+          <div key={send.id} className="rounded-xl border border-danger/30 bg-surface p-4">
             <div className="flex flex-col justify-between gap-3 lg:flex-row lg:items-center">
               <div>
-                <div className="flex flex-wrap items-center gap-2"><strong>{send.offerTitle || 'Oferta sem título'}</strong><Badge tone="red">A confirmar</Badge><Badge>{send.audienceSlug}</Badge></div>
-                <p className="mt-1 text-sm text-zinc-700">Grupo: {send.groupName}</p>
-                <p className="mt-1 text-xs text-zinc-500">Tentativa prevista para {formatDateTime(send.scheduledAt)} · {send.attempts} tentativa(s)</p>
-                {send.lastError && <p className="mt-1 text-xs text-red-700">{send.lastError}</p>}
+                <div className="flex flex-wrap items-center gap-2"><strong>{send.offerTitle || 'Oferta sem título'}</strong><Badge tone="red">A confirmar</Badge><Badge>{NICHE_STYLES[send.audienceSlug].label}</Badge></div>
+                <p className="mt-1 text-sm text-ink">Grupo: {send.groupName}</p>
+                <p className="mt-1 text-xs text-muted">Tentativa prevista para {formatDateTime(send.scheduledAt)} · {send.attempts} tentativa(s)</p>
+                {cooling(send) && <p role="status" className="mt-2 text-xs text-warning">Confira o grupo. A decisão será liberada em {formatDateTime(send.resolutionAvailableAt)}.</p>}
+                {send.lastError && <p className="mt-1 text-xs text-danger">{send.lastError}</p>}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button type="button" onClick={() => choose(send, 'sent')} disabled={mutation.isPending}><Check size={15} /> Apareceu no grupo</Button>
-                <Button type="button" variant="secondary" onClick={() => choose(send, 'retry')} disabled={mutation.isPending}><RotateCcw size={15} /> Não apareceu: reenviar</Button>
-                <Button type="button" variant="ghost" onClick={() => choose(send, 'skip')} disabled={mutation.isPending}>Não reenviar</Button>
+                <Button type="button" onClick={() => choose(send, 'sent')} disabled={mutation.isPending || cooling(send)}><Check size={15} /> Apareceu no grupo</Button>
+                <Button type="button" variant="secondary" onClick={() => choose(send, 'retry')} disabled={mutation.isPending || cooling(send)}><RotateCcw size={15} /> Não apareceu: reenviar</Button>
+                <Button type="button" variant="ghost" onClick={() => choose(send, 'skip')} disabled={mutation.isPending || cooling(send)}>Não reenviar</Button>
               </div>
             </div>
             {decision?.send.id === send.id && (
-              <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
-                <h4 className="font-semibold text-amber-950">{RESOLUTION_COPY[decision.resolution].title}</h4>
-                <p className="mt-1 text-sm text-amber-900">{RESOLUTION_COPY[decision.resolution].description}</p>
+              <div className="mt-4 rounded-xl border border-warning/30 bg-warning-soft p-4">
+                <h4 className="font-semibold text-warning">{RESOLUTION_COPY[decision.resolution].title}</h4>
+                <p className="mt-1 text-sm text-warning">{RESOLUTION_COPY[decision.resolution].description}</p>
                 {decision.send.resolutionAvailableAt && (
-                  <p className="mt-2 text-xs font-medium text-amber-900">Decisão liberada pelo servidor em {formatDateTime(decision.send.resolutionAvailableAt)}.</p>
+                  <p className="mt-2 text-xs font-medium text-warning">Decisão liberada pelo servidor em {formatDateTime(decision.send.resolutionAvailableAt)}.</p>
                 )}
-                <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-zinc-800">
-                  <input className="mt-0.5 accent-violet-600" type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} />
+                <label className="mt-3 flex cursor-pointer items-start gap-2 text-sm text-ink">
+                  <input className="mt-0.5 accent-accent" type="checkbox" checked={checked} onChange={(event) => setChecked(event.target.checked)} />
                   Conferi este grupo diretamente no WhatsApp e entendo o efeito desta decisão.
                 </label>
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <Button type="button" variant={decision.resolution === 'retry' ? 'danger' : 'primary'} disabled={!checked || mutation.isPending} onClick={() => mutation.mutate(decision)}>
+                  <Button type="button" variant={decision.resolution === 'retry' ? 'danger' : 'primary'} disabled={!checked || mutation.isPending || cooling(decision.send)} onClick={() => mutation.mutate(decision)}>
                     {mutation.isPending ? <Spinner /> : <Check size={15} />} {RESOLUTION_COPY[decision.resolution].confirm}
                   </Button>
                   <Button type="button" variant="ghost" disabled={mutation.isPending} onClick={() => { setDecision(null); setChecked(false) }}>Voltar</Button>
                 </div>
-                {mutation.isError && <p role="alert" className="mt-2 text-xs text-red-700">{apiErrorMessage(mutation.error)}</p>}
+                {mutation.isError && <p role="alert" className="mt-2 text-xs text-danger">{apiErrorMessage(mutation.error)}</p>}
               </div>
             )}
           </div>
@@ -738,8 +681,12 @@ function UnknownSendResolution({ planId, sends }: { planId: string; sends: Smart
   )
 }
 
-function PlanReview({ plan, onPlanChange }: { plan: SmartPlan; onPlanChange: (plan: SmartPlan) => void }) {
+function PlanReview({ plan, onPlanChange, onDirtyChange }: { plan: SmartPlan; onPlanChange: (plan: SmartPlan) => void; onDirtyChange: DirtyChange }) {
   const queryClient = useQueryClient()
+  const [messages, setMessages] = useState<Record<string, string>>({})
+  const changedMessages = Object.entries(messages).some(([id, text]) => text !== (plan.items.find((item) => item.id === id)?.customMessage ?? ''))
+  const prefix = useId()
+  const submitting = useRef(false)
   const [audience, setAudience] = useState<SmartAudienceSlug | 'ALL'>('ALL')
   const [date, setDate] = useState('ALL')
   const [state, setState] = useState<SmartPlanItemState>('SELECTED')
@@ -747,8 +694,20 @@ function PlanReview({ plan, onPlanChange }: { plan: SmartPlan; onPlanChange: (pl
     mutationFn: ({ item, patch }: { item: SmartPlanItem; patch: Partial<SmartPlanItem> }) => smartCampaignApi.updatePlan(plan.id, plan.revision, [{
       id: item.id, state: patch.state, standout: patch.standout, customMessage: patch.customMessage, audienceSlug: patch.audienceSlug, date: patch.date, scheduledAt: patch.scheduledAt,
     }]),
-    onSuccess: (updated) => { onPlanChange(updated); queryClient.invalidateQueries({ queryKey: ['smart-plans'] }) },
+    onSettled: () => { submitting.current = false },
+    onSuccess: (updated, { item, patch }) => {
+      onPlanChange(updated)
+      if (patch.customMessage !== undefined) setMessages((current) => { const next = { ...current }; delete next[item.id]; return next })
+      void queryClient.invalidateQueries({ queryKey: ['smart-plans'] })
+    },
   })
+  useEffect(() => { onDirtyChange('review', changedMessages || mutation.isPending) }, [changedMessages, mutation.isPending, onDirtyChange])
+  useEffect(() => () => onDirtyChange('review', false), [onDirtyChange])
+  const patchItem = (item: SmartPlanItem, patch: Partial<SmartPlanItem>) => {
+    if (submitting.current) return
+    submitting.current = true
+    mutation.mutate({ item, patch })
+  }
   const dates = [...new Set(plan.items.map((item) => item.date).filter(Boolean))].sort()
   const counts = useMemo(() => plan.items.reduce((acc, item) => { acc[item.state]++; return acc }, { SELECTED: 0, RESERVE: 0, REJECTED: 0 }), [plan.items])
   const visible = plan.items.filter((item) => (audience === 'ALL' || item.audienceSlug === audience) && (date === 'ALL' || item.date === date) && item.state === state)
@@ -757,7 +716,7 @@ function PlanReview({ plan, onPlanChange }: { plan: SmartPlan; onPlanChange: (pl
 
   if (plan.status === 'ANALYZING') {
     const percent = plan.progress?.total ? Math.round((plan.progress.completed / plan.progress.total) * 100) : null
-    return <Card className="py-12 text-center"><LoaderCircle className="mx-auto animate-spin text-violet-600" size={36} /><h2 className="mt-4 text-lg font-bold">Análise em andamento</h2><p className="mt-1 text-sm text-zinc-500">{plan.progress?.message || 'O servidor está avaliando os produtos e montando as agendas.'}</p>{percent !== null && <div className="mx-auto mt-4 max-w-sm"><div className="h-2 overflow-hidden rounded-full bg-zinc-100"><div className="h-full bg-violet-600 transition-all" style={{ width: `${percent}%` }} /></div><p className="mt-1 text-xs text-zinc-500">{plan.progress?.completed} de {plan.progress?.total} · {percent}%</p></div>}</Card>
+    return <Card className="py-12 text-center"><LoaderCircle className="mx-auto animate-spin text-accent" size={36} /><h2 className="mt-4 text-lg font-bold">Análise em andamento</h2><p className="mt-1 text-sm text-muted">{plan.progress?.message || 'O servidor está avaliando os produtos e montando as agendas.'}</p>{percent !== null && <div className="mx-auto mt-4 max-w-sm"><div className="h-2 overflow-hidden rounded-full bg-surface-muted"><div className="h-full bg-accent transition-all" style={{ width: `${percent}%` }} /></div><p className="mt-1 text-xs text-muted">{plan.progress?.completed} de {plan.progress?.total} · {percent}%</p></div>}</Card>
   }
 
   if (analysisFailure) return <ErrorState message={plan.error || 'A análise dos produtos falhou. Você pode tentar esta análise novamente.'} />
@@ -765,42 +724,48 @@ function PlanReview({ plan, onPlanChange }: { plan: SmartPlan; onPlanChange: (pl
   return (
     <section aria-labelledby="review-title">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-        <div><h2 id="review-title" className="text-xl font-bold">Agenda proposta</h2><p className="mt-1 text-sm text-zinc-500">Plano de {formatDate(plan.startDate)} · versão {plan.revision}</p></div>
+        <div><h2 id="review-title" className="text-xl font-bold">Agenda proposta</h2><p className="mt-1 text-sm text-muted">Plano de {formatDate(plan.startDate)} · versão {plan.revision}</p></div>
         <Badge tone={statusTone(plan.status)}>{planStatusLabel(plan.status)}</Badge>
       </div>
-      {plan.warnings && plan.warnings.length > 0 && <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">{plan.warnings.join(' · ')}</div>}
+      {plan.warnings && plan.warnings.length > 0 && <div className="mt-4 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm text-warning">{plan.warnings.join(' · ')}</div>}
       {plan.sendSummary && (
         <Card className="mt-4">
-          <div className="flex items-center gap-2"><Send size={17} className="text-violet-600" /><h3 className="font-semibold">Execução dos envios</h3></div>
+          <div className="flex items-center gap-2"><Send size={17} className="text-accent" /><h3 className="font-semibold">Execução dos envios</h3></div>
           <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-6">
             {[['PENDING', 'Pendentes'], ['SENDING', 'Enviando'], ['SENT', 'Enviados'], ['SKIPPED', 'Ignorados'], ['FAILED', 'Falhas'], ['UNKNOWN', 'A confirmar']].map(([key, label]) => (
-              <div key={key} className="rounded-lg bg-zinc-50 p-2 text-center"><strong className="block text-lg">{plan.sendSummary?.[key] ?? 0}</strong><span className="text-[11px] text-zinc-500">{label}</span></div>
+              <div key={key} className="rounded-lg bg-surface-muted p-2 text-center"><strong className="block text-lg">{plan.sendSummary?.[key] ?? 0}</strong><span className="text-xs text-muted">{label}</span></div>
             ))}
           </div>
-          {plan.sends?.some((send) => send.lastError) && <div className="mt-3 space-y-1 border-t border-zinc-100 pt-3">{plan.sends.filter((send) => send.lastError).slice(0, 5).map((send) => <p key={send.id} className="text-xs text-red-700"><strong>{send.groupName}</strong> · {formatDateTime(send.scheduledAt)} · {send.lastError}</p>)}</div>}
+          {plan.sends?.some((send) => send.lastError) && <div className="mt-3 space-y-1 border-t border-line pt-3">{plan.sends.filter((send) => send.lastError).slice(0, 5).map((send) => <p key={send.id} className="text-xs text-danger"><strong>{send.groupName}</strong> · {formatDateTime(send.scheduledAt)} · {send.lastError}</p>)}</div>}
         </Card>
       )}
       {plan.sends?.some((send) => send.status === 'UNKNOWN') && (
-        <UnknownSendResolution planId={plan.id} sends={plan.sends.filter((send) => send.status === 'UNKNOWN')} />
+        <UnknownSendResolution onDirtyChange={onDirtyChange} planId={plan.id} sends={plan.sends.filter((send) => send.status === 'UNKNOWN')} />
       )}
       <div className="mt-5 grid grid-cols-3 gap-2">
-        {(['SELECTED', 'RESERVE', 'REJECTED'] as const).map((value) => <button type="button" key={value} onClick={() => setState(value)} className={`rounded-xl border p-3 text-left transition ${state === value ? 'border-violet-400 bg-violet-50 ring-2 ring-violet-100' : 'border-zinc-200 bg-white hover:border-violet-200'}`}><div className="text-2xl font-bold">{counts[value]}</div><div className="text-xs text-zinc-500">{value === 'SELECTED' ? 'Selecionados' : value === 'RESERVE' ? 'Na reserva' : 'Rejeitados'}</div></button>)}
+        {(['SELECTED', 'RESERVE', 'REJECTED'] as const).map((value) => <button type="button" key={value} aria-pressed={state === value} onClick={() => setState(value)} className={`rounded-xl border p-3 text-left transition ${state === value ? 'border-accent/30 bg-accent-soft ring-2 ring-accent/20' : 'border-line bg-surface hover:border-accent/30'}`}><div className="text-2xl font-bold">{counts[value]}</div><div className="text-xs text-muted">{value === 'SELECTED' ? 'Selecionados' : value === 'RESERVE' ? 'Na reserva' : 'Rejeitados'}</div></button>)}
       </div>
-      <div className="mt-4 flex flex-col gap-3 rounded-xl border border-zinc-200 bg-white p-3 sm:flex-row">
-        <div className="min-w-0 flex-1"><Label>Público</Label><select className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as SmartAudienceSlug | 'ALL')}><option value="ALL">Todos os públicos</option>{plan.audienceSlugs.map((slug) => <option key={slug} value={slug}>{slug}</option>)}</select></div>
-        <div className="min-w-0 flex-1"><Label>Dia</Label><select className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm" value={date} onChange={(e) => setDate(e.target.value)}><option value="ALL">Todos os dias</option>{dates.map((value) => <option key={value} value={value}>{formatDate(value)}</option>)}</select></div>
+      <div className="mt-4 flex flex-col gap-3 rounded-xl border border-line bg-surface p-3 sm:flex-row">
+        <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-audience`}>Público</Label><select id={`${prefix}-audience`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as SmartAudienceSlug | 'ALL')}><option value="ALL">Todos os públicos</option>{plan.audienceSlugs.map((slug) => <option key={slug} value={slug}>{NICHE_STYLES[slug].label}</option>)}</select></div>
+        <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-date`}>Dia</Label><select id={`${prefix}-date`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={date} onChange={(e) => setDate(e.target.value)}><option value="ALL">Todos os dias</option>{dates.map((value) => <option key={value} value={value}>{formatDate(value)}</option>)}</select></div>
       </div>
       {mutation.isError && <div className="mt-4"><ErrorState message={apiErrorMessage(mutation.error)} /></div>}
+      {changedMessages && <p role="status" className="mt-4 rounded-lg bg-warning-soft p-3 text-sm text-warning">Há introduções especiais não salvas. Elas permanecem ao mudar os filtros. Salve ou descarte as edições antes de aprovar ou retomar.</p>}
       <div className="mt-4 space-y-3">
-        {visible.length === 0 ? <EmptyState title="Nada neste filtro">Escolha outro público, dia ou situação para revisar os produtos.</EmptyState> : visible.map((item) => <PlanItemCard key={item.id} item={item} editable={editable} saving={mutation.isPending} onPatch={(patch) => mutation.mutate({ item, patch })} />)}
+        {visible.length === 0 ? <EmptyState title="Nada neste filtro">Escolha outro público, dia ou situação para revisar os produtos.</EmptyState> : visible.map((item) => <PlanItemCard key={item.id} item={item} editable={editable} saving={mutation.isPending}
+          message={messages[item.id]}
+          onMessageChange={(text) => setMessages((current) => ({ ...current, [item.id]: text }))}
+          onCancelMessage={() => setMessages((current) => { const next = { ...current }; delete next[item.id]; return next })}
+          onSaveMessage={() => patchItem(item, { customMessage: messages[item.id] })}
+          onPatch={(patch) => patchItem(item, patch)} />)}
       </div>
     </section>
   )
 }
 
-function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked }: { plan: SmartPlan; audiences: SmartAudience[]; onPlanChange: (plan: SmartPlan) => void; onCreateFresh: () => void; aiBlocked: boolean }) {
+function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, draftsPending, onDirtyChange }: { plan: SmartPlan; audiences: SmartAudience[]; onPlanChange: (plan: SmartPlan) => void; onCreateFresh: () => void; aiBlocked: boolean; draftsPending: boolean; onDirtyChange: DirtyChange }) {
   const queryClient = useQueryClient()
-  const [confirming, setConfirming] = useState<'approve' | 'cancel' | null>(null)
+  const [confirming, setConfirming] = useState<'approve' | 'cancel' | 'resume' | null>(null)
   const submitting = useRef(false)
   const hasUnknownSend = plan.sends?.some((send) => send.status === 'UNKNOWN') ?? false
   const hasFailedSend = plan.sends?.some((send) => send.status === 'FAILED') ?? false
@@ -813,8 +778,9 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked }
     onSuccess: (updated) => { setConfirming(null); onPlanChange(updated); queryClient.invalidateQueries({ queryKey: ['smart-plans'] }) },
     onSettled: () => { submitting.current = false },
   })
+  useEffect(() => { onDirtyChange('plan-action', mutation.isPending) }, [mutation.isPending, onDirtyChange])
   const action = (name: PlanAction, input?: PlanActionRequest) => {
-    if (submitting.current || mutation.isPending || (name === 'retry' && aiBlocked)) return
+    if (submitting.current || mutation.isPending || (name === 'retry' && aiBlocked) || ((name === 'approve' || name === 'resume') && draftsPending)) return
     submitting.current = true
     mutation.mutate(input ?? { action: name, requestId: name === 'retry' ? createSmartAIRequestId() : undefined })
   }
@@ -825,30 +791,30 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked }
       ? audience.destinations.map((destination) => destination.groupName)
       : audience.destinationGroupIds))]
   return (
-    <Card className="sticky bottom-4 z-10 mt-5 border-violet-200 shadow-lg">
+    <Card className="smart-plan-actions mt-5 border-accent/30">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
-        <div><p className="font-semibold">{planStatusLabel(plan.status)}</p><p className="text-xs text-zinc-500">{plan.status === 'FAILED' && !analysisFailure ? 'O histórico desta execução foi preservado. Use uma coleta atualizada para montar um novo plano.' : 'A aprovação reserva os horários e inicia a execução na janela configurada.'}</p></div>
+        <div><p className="font-semibold">{planStatusLabel(plan.status)}</p><p className="text-xs text-muted">{plan.status === 'FAILED' && !analysisFailure ? 'O histórico desta execução foi preservado. Use uma coleta atualizada para montar um novo plano.' : 'A aprovação reserva os horários e inicia a execução na janela configurada.'}</p></div>
         <div className="flex flex-wrap gap-2">
-          {(plan.status === 'REVIEW' || plan.status === 'READY' || plan.status === 'DRAFT') && <Button onClick={() => setConfirming('approve')} disabled={mutation.isPending}><Send size={16} /> Revisar aprovação</Button>}
+          {(plan.status === 'REVIEW' || plan.status === 'READY' || plan.status === 'DRAFT') && <Button onClick={() => setConfirming('approve')} disabled={mutation.isPending || draftsPending || selectedCount === 0 || destinationNames.length === 0}><Send size={16} /> Revisar aprovação</Button>}
           {(plan.status === 'APPROVED' || plan.status === 'SCHEDULED' || plan.status === 'RUNNING') && <Button variant="secondary" onClick={() => action('pause')} disabled={mutation.isPending}><Pause size={16} /> Pausar</Button>}
-          {plan.status === 'PAUSED' && !hasFailedSend && <Button onClick={() => action('resume')} disabled={mutation.isPending || hasUnknownSend}><Play size={16} /> {hasUnknownSend ? 'Resolva os envios incertos' : 'Retomar'}</Button>}
+          {plan.status === 'PAUSED' && !hasFailedSend && <Button onClick={() => setConfirming('resume')} disabled={mutation.isPending || hasUnknownSend || draftsPending}><Play size={16} /> {hasUnknownSend ? 'Resolva os envios incertos' : 'Retomar'}</Button>}
           {analysisFailure && <Button onClick={() => action('retry')} disabled={mutation.isPending || aiBlocked}><RotateCcw size={16} /> Usar IA: repetir análise</Button>}
           {((plan.status === 'FAILED' && !analysisFailure) || hasFailedSend) && <Button variant="secondary" onClick={onCreateFresh}><FileJson size={16} /> Criar plano com coleta atualizada</Button>}
           {!['COMPLETED', 'CANCELLED', 'FAILED'].includes(plan.status) && <Button variant="danger" onClick={() => setConfirming('cancel')} disabled={mutation.isPending}><Square size={15} /> Revisar cancelamento</Button>}
         </div>
       </div>
-      {confirming && (
-        <div role="alertdialog" aria-label={confirming === 'approve' ? 'Confirmar aprovação' : 'Confirmar cancelamento'} className={`mt-4 rounded-xl border p-4 ${confirming === 'approve' ? 'border-violet-200 bg-violet-50' : 'border-red-200 bg-red-50'}`}>
-          <p className="font-semibold">{confirming === 'approve' ? 'Confirmar agenda e envios' : 'Confirmar cancelamento do plano'}</p>
-          <p className="mt-1 text-sm text-zinc-700">{selectedCount} produto(s) · {plan.audienceSlugs.length} público(s) ({plan.audienceSlugs.join(', ')}) · início em {formatDate(plan.startDate)}.</p>
-          {confirming === 'approve' && <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-950">Esta confirmação ativa os envios agendados para os grupos listados. Até você confirmar aqui, nenhuma campanha será iniciada.</p>}
-          <p className="mt-1 text-sm text-zinc-700">{destinationNames.length} grupo(s): {destinationNames.join(', ') || 'nenhum grupo vinculado'}</p>
-          <div className="mt-3 flex gap-2"><Button type="button" variant="secondary" onClick={() => setConfirming(null)} disabled={mutation.isPending}>Voltar</Button><Button type="button" variant={confirming === 'cancel' ? 'danger' : 'primary'} onClick={() => action(confirming)} disabled={mutation.isPending}>{confirming === 'approve' ? 'Confirmar e agendar' : 'Confirmar cancelamento'}</Button></div>
-        </div>
-      )}
+      {draftsPending && <p role="status" className="mt-3 text-sm text-warning">Salve as edições do público e das mensagens antes de liberar envios.</p>}
+      {confirming && <CampaignConfirmDialog
+        title={confirming === 'approve' ? 'Confirmar agenda e envios?' : confirming === 'resume' ? 'Retomar os envios deste plano?' : 'Cancelar este plano?'}
+        description={`${selectedCount} produto(s), ${plan.audienceSlugs.length} público(s). Início em ${formatDate(plan.startDate)}.\n\nDestinos: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\n${confirming === 'cancel' ? 'Os próximos envios serão cancelados. Mensagens já enviadas ou iniciadas não podem ser desfeitas.' : 'Esta confirmação ativa os envios pelo WhatsApp nos horários configurados. Até confirmar aqui, o plano não inicia. Confira os destinos e as regras salvas.'}`}
+        confirmLabel={confirming === 'approve' ? 'Confirmar e agendar' : confirming === 'resume' ? 'Retomar envios' : 'Cancelar plano'}
+        danger={confirming === 'cancel'}
+        onCancel={() => setConfirming(null)}
+        onConfirm={() => { const next = confirming; setConfirming(null); action(next) }}
+      />}
       {mutation.isError && mutation.variables?.action === 'retry'
         ? <div className="mt-3"><ErrorState message={apiErrorMessage(mutation.error)} retry={() => action('retry', mutation.variables)} /></div>
-        : mutation.isError && <p className="mt-3 text-xs text-red-700">{apiErrorMessage(mutation.error)}</p>}
+        : mutation.isError && <p className="mt-3 text-xs text-danger">{apiErrorMessage(mutation.error)}</p>}
     </Card>
   )
 }
@@ -858,12 +824,12 @@ function PlanHistory({ plans, selectedId, onSelect }: { plans: SmartPlan[]; sele
   return (
     <div className="space-y-3">
       {plans.map((plan) => (
-        <button type="button" key={plan.id} onClick={() => onSelect(plan.id)} className={`w-full rounded-2xl border bg-white p-4 text-left shadow-sm transition hover:border-violet-300 ${selectedId === plan.id ? 'border-violet-400 ring-2 ring-violet-100' : 'border-zinc-200'}`}>
+        <button type="button" key={plan.id} onClick={() => onSelect(plan.id)} className={`w-full rounded-2xl border bg-surface p-4 text-left shadow-sm transition hover:border-accent/30 ${selectedId === plan.id ? 'border-accent/30 ring-2 ring-accent/20' : 'border-line'}`}>
           <div className="flex items-start justify-between gap-3">
-            <div><div className="flex flex-wrap items-center gap-2"><strong>Plano de {formatDate(plan.startDate)}</strong><Badge tone={statusTone(plan.status)}>{planStatusLabel(plan.status)}</Badge></div><p className="mt-1 text-xs text-zinc-500">{plan.days} dia(s) · {plan.audienceSlugs.join(', ')} · atualizado {formatDateTime(plan.updatedAt)}</p></div>
-            <ChevronRight className="shrink-0 text-zinc-400" size={18} />
+            <div><div className="flex flex-wrap items-center gap-2"><strong>Plano de {formatDate(plan.startDate)}</strong><Badge tone={statusTone(plan.status)}>{planStatusLabel(plan.status)}</Badge></div><p className="mt-1 text-xs text-muted">{plan.days} dia(s) · {plan.audienceSlugs.map((slug) => NICHE_STYLES[slug].label).join(', ')} · atualizado {formatDateTime(plan.updatedAt)}</p></div>
+            <ChevronRight className="shrink-0 text-subtle" size={18} />
           </div>
-          {plan.progress?.total ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-zinc-100"><div className="h-full bg-violet-600" style={{ width: `${Math.min(100, (plan.progress.completed / plan.progress.total) * 100)}%` }} /></div> : null}
+          {plan.progress?.total ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-muted"><div className="h-full bg-accent" style={{ width: `${Math.min(100, (plan.progress.completed / plan.progress.total) * 100)}%` }} /></div> : null}
         </button>
       ))}
     </div>
@@ -872,17 +838,24 @@ function PlanHistory({ plans, selectedId, onSelect }: { plans: SmartPlan[]; sele
 
 export default function SmartCampaignsPage() {
   const [stage, setStage] = useState<Stage>('audiences')
+  const stagesRef = useRef<HTMLElement>(null)
+  useEffect(() => { stagesRef.current?.querySelector('[aria-current=step]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }, [stage])
   const [planDate, setPlanDate] = useState(today())
   const [selectedAudiences, setSelectedAudiences] = useState<Set<SmartAudienceSlug>>(new Set())
   const [selectionInitialized, setSelectionInitialized] = useState(false)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  const [nextPlanId, setNextPlanId] = useState<string | null>(null)
+  const [dirtyParts, setDirtyParts] = useState<Record<string, boolean>>({})
+  const reportDirty = useCallback<DirtyChange>((key, dirty) => setDirtyParts((current) => current[key] === dirty ? current : { ...current, [key]: dirty }), [])
+  const dirty = Object.values(dirtyParts).some(Boolean)
+  const audienceDirty = Object.entries(dirtyParts).some(([key, value]) => key.startsWith('audience:') && value)
+  const { prompt } = useUnsavedChanges(dirty, 'Há configurações, arquivos ou textos não salvos nas campanhas inteligentes. Continue editando para preservá-los.')
   const queryClient = useQueryClient()
   const aiStatusQuery = useQuery({ queryKey: ['smart-ai-status'], queryFn: smartCampaignApi.aiStatus, retry: false, staleTime: 60_000 })
   const audiencesQuery = useQuery({ queryKey: ['smart-audiences'], queryFn: smartCampaignApi.audiences })
   const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupApi.list() })
   const plansQuery = useQuery({
-    queryKey: ['smart-plans'],
-    queryFn: smartCampaignApi.plans,
+    queryKey: ['smart-plans'], queryFn: smartCampaignApi.plans,
     refetchInterval: (query) => {
       const statuses = query.state.data?.map((plan) => plan.status) ?? []
       if (statuses.includes('ANALYZING')) return planPollInterval('ANALYZING')
@@ -891,78 +864,59 @@ export default function SmartCampaignsPage() {
     },
   })
   const detailQuery = useQuery({
-    queryKey: ['smart-plan', selectedPlanId],
-    queryFn: () => smartCampaignApi.plan(selectedPlanId as string),
-    enabled: Boolean(selectedPlanId),
+    queryKey: ['smart-plan', selectedPlanId], queryFn: () => smartCampaignApi.plan(selectedPlanId as string), enabled: Boolean(selectedPlanId),
     refetchInterval: (query) => planPollInterval(query.state.data?.status),
   })
-
-  const defaultAudienceSelection = useMemo(
-    () => new Set((audiencesQuery.data ?? []).filter((audience) => audience.enabled).map((audience) => audience.slug)),
-    [audiencesQuery.data],
-  )
-  const workflowSelection = selectionInitialized ? selectedAudiences : defaultAudienceSelection
-  const selectAudiences = (next: Set<SmartAudienceSlug>) => {
-    setSelectedAudiences(next)
-    setSelectionInitialized(true)
-  }
-
+  const audiences = audiencesQuery.data ?? []
+  const defaultAudienceSelection = useMemo(() => new Set((audiencesQuery.data ?? []).filter((audience) => audience.enabled).map((audience) => audience.slug)), [audiencesQuery.data])
+  const workflowSelection = new Set([...(selectionInitialized ? selectedAudiences : defaultAudienceSelection)].filter((slug) => defaultAudienceSelection.has(slug)))
+  const selectAudiences = (next: Set<SmartAudienceSlug>) => { setSelectedAudiences(next); setSelectionInitialized(true) }
   const activePlan = detailQuery.data
-  const aiBlocked = aiStatusQuery.isLoading || aiUnavailable(aiStatusQuery.data)
-  const handlePlan = (plan: SmartPlan) => {
-    setSelectedPlanId(plan.id)
-    queryClient.setQueryData(['smart-plan', plan.id], plan)
-  }
+  const aiBlocked = aiStatusQuery.isLoading || aiUnavailable(aiStatusQuery.data) || audienceDirty || !!dirtyParts.review || !!dirtyParts['plan-action']
+  const handlePlan = (plan: SmartPlan) => { setSelectedPlanId(plan.id); queryClient.setQueryData(['smart-plan', plan.id], plan) }
   const onCreated = (plan: SmartPlan) => { handlePlan(plan); setStage('review') }
-
-  if (audiencesQuery.isLoading || groupsQuery.isLoading) return <div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>
-
-  return (
-    <div className="mx-auto max-w-7xl pb-16">
-      <header className="mb-6 rounded-3xl bg-gradient-to-br from-violet-700 via-violet-600 to-fuchsia-600 p-6 text-white shadow-lg sm:p-8">
-        <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-end">
-          <div><div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-xs font-medium"><BrainCircuit size={14} /> Planejamento com inteligência de produto</div><h1 className="text-3xl font-bold tracking-tight sm:text-4xl">Campanhas inteligentes</h1><p className="mt-2 max-w-2xl text-sm leading-relaxed text-violet-100 sm:text-base">Encontre as melhores ofertas para cada público, distribua até 50 produtos por dia e acompanhe cada agenda em um único fluxo.</p></div>
-          <div className="grid grid-cols-3 gap-2 text-center text-xs"><div className="rounded-xl bg-white/10 p-3"><strong className="block text-lg">09h</strong>início padrão</div><div className="rounded-xl bg-white/10 p-3"><strong className="block text-lg">12–16</strong>minutos</div><div className="rounded-xl bg-white/10 p-3"><strong className="block text-lg">50</strong>máximo/dia</div></div>
-        </div>
-      </header>
-
-      <AIStatusBanner status={aiStatusQuery.data} error={aiStatusQuery.error} />
-
-      <nav aria-label="Etapas da campanha" className="mb-6 overflow-x-auto rounded-2xl border border-zinc-200 bg-white p-2 shadow-sm">
-        <div className="flex min-w-max gap-1">
-          {STAGES.map(({ id, label, icon: Icon }, index) => <button type="button" key={id} onClick={() => setStage(id)} aria-current={stage === id ? 'step' : undefined} className={`flex items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium transition sm:px-4 ${stage === id ? 'bg-violet-600 text-white' : 'text-zinc-600 hover:bg-zinc-100'}`}><span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] ${stage === id ? 'bg-white/20' : 'bg-zinc-100'}`}>{index + 1}</span><Icon size={16} />{label}</button>)}
-        </div>
-      </nav>
-
-      {audiencesQuery.isError && <ErrorState message={apiErrorMessage(audiencesQuery.error)} retry={() => audiencesQuery.refetch()} />}
-      {groupsQuery.isError && <div className="mb-4"><ErrorState message={`Não foi possível carregar os grupos: ${apiErrorMessage(groupsQuery.error)}`} retry={() => groupsQuery.refetch()} /></div>}
-
-      {audiencesQuery.data && stage === 'audiences' && <AudienceSetup audiences={audiencesQuery.data} groups={groupsQuery.data ?? []} />}
-      {audiencesQuery.data && stage === 'keywords' && <KeywordPlanner audiences={audiencesQuery.data} selected={workflowSelection} setSelected={selectAudiences} planDate={planDate} setPlanDate={setPlanDate} aiBlocked={aiBlocked} />}
-      {stage === 'import' && audiencesQuery.data && <ImportPlanner audiences={audiencesQuery.data} selected={workflowSelection} planDate={planDate} onCreated={onCreated} aiStatus={aiStatusQuery.data} aiBlocked={aiBlocked} />}
-      {stage === 'review' && (
-        <div>
-          {!selectedPlanId && <EmptyState title="Escolha um plano">Abra um plano no acompanhamento ou crie uma análise a partir do JSON da extensão.</EmptyState>}
-          {detailQuery.isLoading && <Card className="flex items-center gap-3"><Spinner /> Carregando plano…</Card>}
-          {detailQuery.isError && <ErrorState message={apiErrorMessage(detailQuery.error)} retry={() => detailQuery.refetch()} />}
-          {activePlan && <><PlanReview plan={activePlan} onPlanChange={handlePlan} /><PlanActions plan={activePlan} audiences={audiencesQuery.data ?? []} onPlanChange={handlePlan} onCreateFresh={() => setStage('import')} aiBlocked={aiBlocked} /></>}
-        </div>
-      )}
-      {stage === 'monitor' && (
-        <section aria-labelledby="history-title">
-          <div className="mb-5 flex items-end justify-between gap-3"><div><h2 id="history-title" className="text-xl font-bold">Planos e envios</h2><p className="mt-1 text-sm text-zinc-500">Acompanhe análise, aprovação, pausas e execução.</p></div><Button type="button" variant="secondary" onClick={() => plansQuery.refetch()} disabled={plansQuery.isFetching}><RefreshCw className={plansQuery.isFetching ? 'animate-spin' : ''} size={15} /> Atualizar</Button></div>
-          {plansQuery.isLoading && <Card className="flex items-center gap-3"><Spinner /> Carregando histórico…</Card>}
-          {plansQuery.isError && <ErrorState message={apiErrorMessage(plansQuery.error)} retry={() => plansQuery.refetch()} />}
-          {plansQuery.data && <PlanHistory plans={plansQuery.data} selectedId={selectedPlanId} onSelect={(id) => { setSelectedPlanId(id); setStage('review') }} />}
-        </section>
-      )}
-
-      {stage !== 'monitor' && (
-        <div className="mt-6 flex justify-end">
-          <Button type="button" variant="secondary" onClick={() => { const index = STAGES.findIndex((item) => item.id === stage); setStage(STAGES[Math.min(index + 1, STAGES.length - 1)].id) }} disabled={stage === 'review'}>Próxima etapa <ChevronRight size={16} /></Button>
-        </div>
-      )}
+  const openPlan = (id: string) => {
+    if (id !== selectedPlanId && (dirtyParts['plan-action'] || dirtyParts['resolution-pending'])) return
+    if (id !== selectedPlanId && dirtyParts.review) { setNextPlanId(id); return }
+    setSelectedPlanId(id); setStage('review')
+  }
+  const currentIndex = STAGES.findIndex((item) => item.id === stage)
+  return <div className="workspace-page smart-workspace max-w-6xl pb-8">
+    {prompt}
+    <header className="page-header smart-page-header">
+      <div className="relative z-1 min-w-0"><h1 className="page-title">Campanhas inteligentes</h1><p className="page-description">Prepare ofertas para cada público, revise a agenda e acompanhe os envios.</p></div>
+      <BrandPattern variant="header" className="smart-header-pattern" />
+      <Button variant="secondary" onClick={() => setStage('monitor')}><History size={16} />Ver planos</Button>
+    </header>
+    <AIStatusBanner status={aiStatusQuery.data} error={aiStatusQuery.error} />
+    <nav ref={stagesRef} aria-label="Etapas da campanha" className="smart-stages mb-5 overflow-x-auto rounded-xl border border-line bg-surface p-2">
+      <AnimatedSelection value={stage}>{(indicator) => <div className="flex min-w-max gap-1">{STAGES.map(({ id, label, icon: Icon }, index) => <button type="button" key={id} onClick={() => setStage(id)} aria-current={stage === id ? 'step' : undefined} className={`relative flex min-h-12 items-center gap-2 rounded-xl px-3 py-2 text-sm font-semibold ${stage === id ? 'text-accent' : 'text-muted hover:bg-surface-muted'}`}>{indicator(id)}<span className="relative z-1 flex items-center gap-2"><span className="flex h-6 w-6 items-center justify-center rounded-md border border-current/20 text-xs tabular-nums">{index + 1}</span><Icon size={16} aria-hidden="true" />{label}</span></button>)}</div>}</AnimatedSelection>
+    </nav>
+    <div className="mb-5 flex flex-wrap items-center justify-between gap-2 text-xs text-muted"><span>Etapa {currentIndex + 1} de {STAGES.length} · {STAGES[currentIndex].label}</span><span role="status">{dirty ? 'Há alterações pendentes. Você pode alternar entre as etapas.' : 'Cada etapa fica disponível para consulta.'}</span></div>
+    {audienceDirty && stage !== 'audiences' && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-soft p-3 text-sm text-warning"><p>Salve as regras dos públicos antes de usar IA ou liberar envios.</p><Button variant="secondary" onClick={() => setStage('audiences')}>Revisar públicos</Button></div>}
+    {audiencesQuery.isLoading && <div role="status" className="surface-panel flex items-center gap-3 p-6 text-sm text-muted"><Spinner />Carregando públicos…</div>}
+    {audiencesQuery.isError && <ErrorState message={apiErrorMessage(audiencesQuery.error)} retry={() => { void audiencesQuery.refetch() }} />}
+    {groupsQuery.isError && <div className="mb-4"><ErrorState message={`Não foi possível carregar os grupos: ${apiErrorMessage(groupsQuery.error)}`} retry={() => { void groupsQuery.refetch() }} /></div>}
+    {audiencesQuery.data && <>
+      <div hidden={stage !== 'audiences'}><AudienceSetup audiences={audiences} groups={groupsQuery.data ?? []} onDirtyChange={reportDirty} /></div>
+      <div hidden={stage !== 'keywords'}><KeywordPlanner audiences={audiences} selected={workflowSelection} setSelected={selectAudiences} planDate={planDate} setPlanDate={setPlanDate} aiBlocked={aiBlocked} onDirtyChange={reportDirty} /></div>
+      <div hidden={stage !== 'import'}><ImportPlanner audiences={audiences} selected={workflowSelection} setSelected={selectAudiences} planDate={planDate} setPlanDate={setPlanDate} onCreated={onCreated} aiStatus={aiStatusQuery.data} aiBlocked={aiBlocked} onDirtyChange={reportDirty} /></div>
+    </>}
+    {!!dirtyParts.review && stage !== 'review' && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-warning-soft p-3 text-sm text-warning"><p>Há introduções especiais não salvas no plano aberto.</p><Button variant="secondary" onClick={() => setStage('review')}>Revisar textos</Button></div>}
+    <div hidden={stage !== 'review'}>
+      {!selectedPlanId && <div className="space-y-4"><EmptyState title="Escolha um plano para revisar">Abra um plano salvo ou importe uma coleta para preparar sua primeira análise.</EmptyState><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => setStage('monitor')}><History size={16} />Abrir planos</Button><Button onClick={() => setStage('import')}><Upload size={16} />Importar coleta</Button></div></div>}
+      {selectedPlanId && detailQuery.isLoading && <Card className="flex items-center gap-3"><Spinner />Carregando plano…</Card>}
+      {detailQuery.isError && <ErrorState message={apiErrorMessage(detailQuery.error)} retry={() => { void detailQuery.refetch() }} />}
+      {selectedPlanId && <div className="mb-4 flex justify-end"><Button variant="ghost" loading={detailQuery.isFetching} loadingText="Atualizando…" onClick={() => { void detailQuery.refetch() }}><RefreshCw size={15} />Atualizar plano</Button></div>}
+      {activePlan && <><PlanReview key={activePlan.id} plan={activePlan} onPlanChange={handlePlan} onDirtyChange={reportDirty} /><PlanActions key={`actions:${activePlan.id}`} plan={activePlan} audiences={audiences} onPlanChange={handlePlan} onCreateFresh={() => setStage('import')} aiBlocked={aiBlocked} draftsPending={audienceDirty || !!dirtyParts.review} onDirtyChange={reportDirty} /></>}
     </div>
-  )
+    <section hidden={stage !== 'monitor'} aria-labelledby="history-title">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 id="history-title" className="section-heading">Planos e envios</h2><p className="page-description">Consulte análises, aprovações, pausas e resultados.</p></div><Button variant="secondary" onClick={() => { void plansQuery.refetch() }} loading={plansQuery.isFetching} loadingText="Atualizando…"><RefreshCw size={15} />Atualizar</Button></div>
+      {plansQuery.isLoading && <Card className="flex items-center gap-3"><Spinner />Carregando histórico…</Card>}
+      {plansQuery.isError && <ErrorState message={apiErrorMessage(plansQuery.error)} retry={() => { void plansQuery.refetch() }} />}
+      {plansQuery.data && <PlanHistory plans={plansQuery.data} selectedId={selectedPlanId} onSelect={openPlan} />}
+    </section>
+    <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4"><Button variant="ghost" onClick={() => setStage(STAGES[currentIndex - 1].id)} disabled={currentIndex === 0}><ArrowLeft size={16} />Etapa anterior</Button>{currentIndex < STAGES.length - 1 && <Button variant="secondary" onClick={() => setStage(STAGES[currentIndex + 1].id)}>Próxima etapa<ChevronRight size={16} /></Button>}</div>
+    {nextPlanId && <CampaignConfirmDialog title="Abrir outro plano?" description="Há textos não salvos neste plano. Ao abrir outro, essas edições serão descartadas." confirmLabel="Descartar e abrir" onCancel={() => setNextPlanId(null)} onConfirm={() => { if (dirtyParts['plan-action']) return; reportDirty('review', false); setSelectedPlanId(nextPlanId); setNextPlanId(null); setStage('review') }} />}
+  </div>
 }
-

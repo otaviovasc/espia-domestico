@@ -1,0 +1,57 @@
+@font-face {
+  font-family: 'Espiã Bricolage';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('/fonts/brand/bricolage-grotesque-latin-variable.woff2') format('woff2');
+}
+
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex: 0 0 auto;
+  width: max-content;
+  max-width: 100%;
+  color: var(--app-ink, #18243c);
+  vertical-align: middle;
+}
+
+.brand-logo__mark {
+  display: block;
+  flex: 0 0 auto;
+  width: var(--brand-mark-size, 2.625rem);
+  height: var(--brand-mark-size, 2.625rem);
+  overflow: visible;
+}
+
+.brand-logo__wordmark {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-family: 'Espiã Bricolage', 'Manrope', sans-serif;
+  font-synthesis: none;
+  font-optical-sizing: auto;
+  white-space: nowrap;
+}
+
+.brand-logo__name {
+  font-size: var(--brand-wordmark-size, 1.875rem);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 0.95;
+}
+
+.brand-logo__descriptor {
+  margin-top: 0.16rem;
+  padding-left: 0.035em;
+  font-size: calc(var(--brand-wordmark-size, 1.875rem) * 0.4);
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.1;
+}
+
+.brand-logo--compact .brand-logo__mark {
+  width: var(--brand-mark-size, 2.25rem);
+  height: var(--brand-mark-size, 2.25rem);
+}

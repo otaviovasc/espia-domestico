@@ -189,7 +189,7 @@ export default function EmojiPicker({
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
     }
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || event.defaultPrevented) return
       event.preventDefault()
       setOpen(false)
       triggerRef.current?.focus()
@@ -197,8 +197,9 @@ export default function EmojiPicker({
 
     document.addEventListener('pointerdown', handlePointerDown)
     document.addEventListener('keydown', handleKeyDown)
-    window.requestAnimationFrame(() => searchRef.current?.focus())
+    const focusFrame = window.requestAnimationFrame(() => searchRef.current?.focus())
     return () => {
+      window.cancelAnimationFrame(focusFrame)
       document.removeEventListener('pointerdown', handlePointerDown)
       document.removeEventListener('keydown', handleKeyDown)
     }
@@ -241,7 +242,14 @@ export default function EmojiPicker({
   }
 
   return (
-    <div ref={rootRef} className="emoji-picker-root">
+    <div
+      ref={rootRef}
+      className="emoji-picker-root"
+      onBlur={(event) => {
+        // This is a nonmodal picker: Tab can leave it without trapping focus.
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false)
+      }}
+    >
       <button
         ref={triggerRef}
         type="button"
@@ -277,7 +285,7 @@ export default function EmojiPicker({
                 autoComplete="off"
               />
             </label>
-            <button type="button" onClick={() => setOpen(false)} className="emoji-picker-close" aria-label="Fechar seletor de emojis">
+            <button type="button" onClick={() => { setOpen(false); triggerRef.current?.focus() }} className="emoji-picker-close" aria-label="Fechar seletor de emojis">
               <X size={15} aria-hidden="true" />
             </button>
           </div>

@@ -34,6 +34,7 @@ export function MediaLibraryPicker({ records, loading, search, onSearch, project
   }, project.id), [project.id])
   const active = useRef(false)
   const visible = filterMediaLibrary(records, search, kind)
+  const hiddenSelected = selected.filter((record) => !visible.some((item) => item.id === record.id)).length
   let limitError = ''
   try {
     // Retry preflight must reconcile pending receipts against server state first.
@@ -86,58 +87,60 @@ export function MediaLibraryPicker({ records, loading, search, onSearch, project
     finally { active.current = false; setBusy(false); onBusy(false) }
   }
 
-  return <div className="space-y-3">
+  return <div className="space-y-3 text-ink [&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-accent">
     <div className="flex flex-wrap items-center gap-2">
-      <input className="min-w-0 flex-1 rounded-lg border border-zinc-300 p-2 text-sm" aria-label="Buscar biblioteca de mídias"
+      <input type="search" className="min-h-10 min-w-0 flex-1 rounded-lg border border-line-strong bg-surface p-2 text-sm text-ink focus:outline-2 focus:outline-accent" aria-label="Buscar biblioteca de mídias"
         placeholder="Buscar nome, tags ou produto" value={search} disabled={locked} onChange={(event) => onSearch(event.target.value)} />
-      <span className="text-xs text-zinc-500">{loading ? 'Buscando…' : `${visible.length} mídias`}</span>
+      <span className="text-xs text-muted">{loading ? 'Buscando…' : `${visible.length} mídias`}</span>
     </div>
-    <div className="flex flex-wrap gap-2" aria-label="Filtrar tipo de mídia">
+    <div role="group" className="flex flex-wrap gap-2" aria-label="Filtrar tipo de mídia">
       {kinds.map((item) => <button key={item.kind} type="button" aria-pressed={kind === item.kind} disabled={locked}
-        onClick={() => setKind(item.kind)} className={`rounded-full border px-3 py-1.5 text-xs ${kind === item.kind ? 'border-zinc-900 bg-zinc-900 text-white' : 'border-zinc-200 text-zinc-700'}`}>{item.label}</button>)}
+        onClick={() => setKind(item.kind)} className={`min-h-10 rounded-lg border px-3 py-1.5 text-sm ${kind === item.kind ? 'border-accent bg-accent text-accent-foreground' : 'border-line bg-surface text-ink'}`}>{item.label}</button>)}
     </div>
     <div className="flex flex-wrap items-center gap-2">
       <Button variant="secondary" disabled={locked || !visible.some((record) => !attached.includes(record.id))}
         onClick={() => setSelected((current) => [...current, ...visible.filter((record) => !attached.includes(record.id) && !current.some((item) => item.id === record.id))])}>Selecionar visíveis</Button>
       <Button variant="secondary" disabled={locked || !selected.length} onClick={() => setSelected([])}>Limpar seleção</Button>
       <Button disabled={locked || !selected.length || Boolean(limitError)} onClick={() => void attachSelected()}>
-        {busy ? 'Adicionando…' : `Adicionar ${selected.length || ''} ao projeto`}
+        {busy ? 'Adicionando…' : selected.length ? `Adicionar ${selected.length} ao projeto` : 'Adicionar ao projeto'}
       </Button>
     </div>
-    {selected.length > 0 ? <p className="text-xs text-zinc-600">{selected.length} selecionadas. A ordem dos números será usada no projeto; a seleção permanece ao filtrar.</p> : null}
-    {limitError ? <p className="text-sm text-red-700" role="alert">{limitError}</p> : null}
-    {recoveryPending ? <p className="text-sm text-amber-700" role="alert">Ao tentar novamente, a solicitação anterior será conferida para evitar uma cópia duplicada.</p> : null}
-    <p className="text-xs text-zinc-600" role="status" aria-live="polite">{progress}</p>
+    {selected.length > 0 ? <p className="text-xs text-muted">{selected.length} selecionadas. A ordem dos números será usada no projeto; a seleção permanece ao filtrar.</p> : null}
+    {hiddenSelected > 0 ? <div role="status" className="rounded-lg bg-warning-soft p-3 text-xs text-warning">{hiddenSelected} {hiddenSelected === 1 ? 'mídia selecionada está fora dos filtros' : 'mídias selecionadas estão fora dos filtros'} e {hiddenSelected === 1 ? 'será adicionada' : 'serão adicionadas'} ao projeto. Use “Limpar seleção” para começar novamente.</div> : null}
+    {limitError ? <p className="text-sm text-danger" role="alert">{limitError}</p> : null}
+    {recoveryPending ? <p className="text-sm text-warning" role="alert">Ao tentar novamente, a solicitação anterior será conferida para evitar uma cópia duplicada.</p> : null}
+    <p className="text-xs text-muted" role="status" aria-live="polite">{progress}</p>
     <div className="grid max-h-80 gap-2 overflow-auto sm:grid-cols-2" aria-busy={loading}>
+      {loading ? <div role="status" className="col-span-full rounded-lg bg-surface-muted p-4 text-sm text-muted">Carregando biblioteca de mídias…</div> : null}
       {visible.map((record) => {
         const order = selected.findIndex((item) => item.id === record.id)
         const added = attached.includes(record.id)
         const media = record.payload
         const Icon = media.kind === 'image' ? Image : media.kind === 'clip' ? Film : Music
-        return <div key={record.id} className={`space-y-2 rounded-xl border p-3 text-xs ${order >= 0 ? 'border-emerald-600 bg-emerald-50' : 'border-zinc-200'}`}>
+        return <div key={record.id} className={`min-w-0 space-y-2 rounded-xl border p-3 text-xs ${order >= 0 ? 'border-success bg-success-soft' : 'border-line bg-surface'}`}>
           <button type="button" disabled={locked || added} aria-pressed={order >= 0} aria-label={`${order >= 0 ? 'Desmarcar' : 'Selecionar'} ${media.name}`}
             onClick={() => toggle(record)} className="flex w-full items-center gap-3 text-left disabled:opacity-60">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-zinc-100">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-surface-muted">
               {added ? <Check size={18} aria-hidden="true" /> : order >= 0 ? <span className="font-semibold">{order + 1}</span> : <Icon size={18} aria-hidden="true" />}
             </span>
             <span className="min-w-0 flex-1"><span className="block break-words font-medium">{media.name}</span>
-              <span className="text-zinc-500">{kinds.find((item) => item.kind === media.kind)?.label} · {(media.sizeBytes / 1024 / 1024).toFixed(1)} MB</span>
+              <span className="tabular-nums text-muted">{kinds.find((item) => item.kind === media.kind)?.label} · {(media.sizeBytes / 1024 / 1024).toFixed(1)} MB</span>
             </span>
           </button>
-          <div className="flex flex-wrap gap-1 text-zinc-600">
-            {media.width && media.height ? <span className="rounded bg-zinc-100 px-2 py-1">{media.width}×{media.height}</span> : null}
-            {media.kind !== 'image' && media.durationSeconds > 0 ? <span className="rounded bg-zinc-100 px-2 py-1">{media.durationSeconds.toFixed(1)} s</span> : null}
-            {media.tags.map((tag) => <span key={tag} className="rounded bg-zinc-100 px-2 py-1">{tag}</span>)}
+          <div className="flex flex-wrap gap-1 text-muted">
+            {media.width && media.height ? <span className="rounded bg-surface-muted px-2 py-1">{media.width}×{media.height}</span> : null}
+            {media.kind !== 'image' && media.durationSeconds > 0 ? <span className="rounded bg-surface-muted px-2 py-1">{media.durationSeconds.toFixed(1)} s</span> : null}
+            {media.tags.map((tag) => <span key={tag} className="rounded bg-surface-muted px-2 py-1">{tag}</span>)}
           </div>
-          {added ? <p className="text-emerald-700">Adicionada neste lote</p> : hasPossibleMediaCopy(media, project.assets) ? <p className="text-amber-700">Possível cópia no projeto. Você pode adicionar outra.</p> : null}
-          {media.productIds.length ? <p className="text-zinc-500">Produtos: {media.productIds.join(', ')}</p> : null}
+          {added ? <p className="text-success">Adicionada neste lote</p> : hasPossibleMediaCopy(media, project.assets) ? <p className="text-warning">Possível cópia no projeto. Você pode adicionar outra.</p> : null}
+          {media.productIds.length ? <p className="text-muted">Produtos: {media.productIds.join(', ')}</p> : null}
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" disabled={locked} onClick={() => onEdit(record)}>Aplicar tags e produtos</Button>
             <Button variant="secondary" disabled={locked || order >= 0} onClick={() => onDelete(record)}>Excluir da biblioteca</Button>
           </div>
         </div>
       })}
-      {!loading && !visible.length ? <p className="p-3 text-sm text-zinc-500 sm:col-span-2">Nenhuma mídia corresponde a estes filtros.</p> : null}
+      {!loading && !visible.length ? <div className="rounded-lg border border-dashed border-line-strong p-4 text-sm text-muted sm:col-span-2"><p className="font-medium text-ink">{records.length ? 'Nenhuma mídia corresponde aos filtros' : 'Sua biblioteca está vazia'}</p><p className="mt-1">{records.length ? 'Ajuste a busca ou escolha outro tipo de mídia.' : 'Envie arquivos ao projeto e salve as mídias na biblioteca para reutilizá-las.'}</p></div> : null}
     </div>
   </div>
 }

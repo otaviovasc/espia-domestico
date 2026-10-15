@@ -37,11 +37,11 @@ function Stat({
   tone: string
 }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-zinc-50 px-3 py-2">
+    <div className="flex items-center gap-2 border-l-2 border-line pl-3 py-1">
       <Icon size={16} className={tone} />
       <div className="leading-tight">
-        <div className="text-sm font-semibold text-zinc-800">{value}</div>
-        <div className="text-[11px] text-zinc-500">{label}</div>
+        <div className="text-base font-semibold tabular-nums text-ink">{value}</div>
+        <div className="text-xs text-muted">{label}</div>
       </div>
     </div>
   )
@@ -51,9 +51,10 @@ export function CampaignProgressCard({ progress }: { progress: CampaignProgress 
   // Tick every second so the ETA/countdown stays live.
   const [tick, setTick] = useState(0)
   useEffect(() => {
+    if (progress.status !== 'RUNNING' || progress.stalled) return
     const t = setInterval(() => setTick((n) => n + 1), 1000)
     return () => clearInterval(t)
-  }, [])
+  }, [progress.status, progress.stalled])
 
   const { totalPlanned, sent, failed, skipped, remaining } = progress
   const done = Math.min(sent + failed + skipped, totalPlanned)
@@ -63,82 +64,83 @@ export function CampaignProgressCard({ progress }: { progress: CampaignProgress 
   const running = isRunning && !progress.stalled && remaining > 0
 
   return (
-    <div className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
+    <div className="surface-panel p-4 sm:p-5">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <h2 className="font-semibold">Progresso do envio</h2>
-        <span className="text-sm text-zinc-500">
-          {done} / {totalPlanned} ({pct}%)
+        <span className="text-sm text-muted">
+          <span className="font-semibold tabular-nums text-ink">{done} de {totalPlanned}</span> processados ({pct}%)
         </span>
       </div>
 
-      <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-100">
+      <div role="progressbar" aria-label="Combinações de produto e grupo processadas" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-valuetext={`${done} de ${totalPlanned} processados, ${sent} enviados, ${failed} falhas, ${skipped} ignorados`} className="h-2 w-full overflow-hidden rounded-full bg-surface-muted">
         <div
-          className="brand-gradient h-full transition-all duration-500"
+          className="h-full rounded-full bg-accent transition-[width] duration-500 motion-reduce:transition-none"
           style={{ width: `${pct}%` }}
         />
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <Stat icon={CheckCircle2} label="enviadas" value={sent} tone="text-green-600" />
-        <Stat icon={XCircle} label="falhas" value={failed} tone="text-red-500" />
-        <Stat icon={SkipForward} label="ignoradas" value={skipped} tone="text-zinc-400" />
-        <Stat icon={Send} label="restantes" value={remaining} tone="text-violet-600" />
+      <p className="mt-2 text-xs text-muted">Cada combinação de produto e grupo é contada uma vez. O progresso inclui envios, falhas e itens ignorados.</p>
+      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <Stat icon={CheckCircle2} label="Enviadas" value={sent} tone="text-success" />
+        <Stat icon={XCircle} label="Falhas" value={failed} tone="text-danger" />
+        <Stat icon={SkipForward} label="Ignoradas" value={skipped} tone="text-subtle" />
+        <Stat icon={Send} label="Restantes" value={remaining} tone="text-accent" />
       </div>
       {resends > 0 && (
-        <p className="mt-2 text-xs text-amber-700">
+        <p className="mt-2 text-xs text-warning">
           +{resends} reenvio(s) além dos pares únicos — o progresso conta cada par uma vez.
         </p>
       )}
 
       {/* Next-send ETA — the key info while running */}
       {running && (
-        <div className="mt-4 rounded-xl border border-violet-100 bg-violet-50 p-4">
-          <div className="flex items-center gap-2 text-violet-800">
+        <div className="mt-4 rounded-lg border border-line bg-accent-soft p-4">
+          <div className="flex items-center gap-2 text-accent">
             <Timer size={18} />
             <span className="font-semibold">Próxima mensagem</span>
           </div>
-          <div className="mt-1 text-2xl font-bold tabular-nums text-violet-700">
+          <div className="mt-1 text-xl font-semibold tabular-nums text-accent">
             {relative(progress.nextSendEtaMinAt, tick)}
             {progress.nextSendEtaMaxAt &&
               progress.nextSendEtaMaxAt !== progress.nextSendEtaMinAt && (
-                <span className="text-base font-medium text-violet-500">
+                <span className="text-base font-medium text-accent">
                   {' '}
                   – {relative(progress.nextSendEtaMaxAt, tick)}
                 </span>
               )}
           </div>
-          <div className="mt-2 grid gap-2 text-sm text-zinc-600 sm:grid-cols-3">
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-muted">
             <div className="flex items-center gap-1.5">
-              <Clock size={14} className="text-zinc-400" />
+              <Clock size={14} className="text-subtle" />
               Última: {progress.lastSentAt ? relative(progress.lastSentAt, tick) : '—'}
             </div>
             <div className="flex items-center gap-1.5">
-              <Send size={14} className="text-zinc-400" />
+              <Send size={14} className="text-subtle" />
               Intervalo médio ~{progress.avgIntervalSeconds}s
             </div>
             <div className="flex items-center gap-1.5">
-              <Flag size={14} className="text-zinc-400" />
+              <Flag size={14} className="text-subtle" />
               Conclusão ~{clockTime(progress.estimatedCompletionAt)}
               {progress.estimatedCompletionAt && (
-                <span className="text-zinc-400"> ({relative(progress.estimatedCompletionAt, tick)})</span>
+                <span className="text-subtle"> ({relative(progress.estimatedCompletionAt, tick)})</span>
               )}
             </div>
           </div>
-          <p className="mt-2 text-[11px] text-zinc-400">
+          <p className="mt-2 text-xs text-subtle">
             Estimativas — o envio tem variação aleatória, aquecimento e limite por hora.
           </p>
         </div>
       )}
 
       {isRunning && progress.stalled && (
-        <div className="mt-4 rounded-xl bg-amber-50 p-4 text-sm text-amber-800">
+        <div className="mt-4 rounded-xl bg-warning-soft p-4 text-sm text-warning">
           Envio interrompido (o servidor reiniciou). Use <strong>Retomar envio</strong> para
           continuar de onde parou.
         </div>
       )}
 
       {progress.status === 'COMPLETED' && (
-        <div className="mt-4 flex items-center gap-2 rounded-xl bg-green-50 p-3 text-sm text-green-800">
+        <div className="mt-4 flex items-center gap-2 rounded-xl bg-success-soft p-3 text-sm text-success">
           <CheckCircle2 size={16} /> Campanha concluída.
         </div>
       )}

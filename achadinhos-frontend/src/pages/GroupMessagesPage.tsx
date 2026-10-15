@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   MessagesSquare,
   RefreshCw,
   Search,
   Send,
   Tag,
-  X,
+  ArrowLeft,
+  ArrowDown,
   ImageIcon,
   FileJson,
 } from 'lucide-react'
@@ -23,6 +24,7 @@ import {
 } from '@/lib/api'
 import { Button, Card, Badge, Spinner, Input } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
+import { ConnectionMessagesDialog } from './ConnectionMessagesDialog'
 
 function timeLabel(iso: string): string {
   const d = new Date(iso)
@@ -36,7 +38,7 @@ function firstUrl(text: string | null): string | null {
 }
 
 /** Inbound bubble (left, white). Outbound uses the shared WhatsAppBubble look. */
-function MessageRow({ msg }: { msg: GroupMessage }) {
+function MessageRow({ msg, onMediaLoad }: { msg: GroupMessage; onMediaLoad: () => void }) {
   const out = msg.direction === 'out'
   const url = firstUrl(msg.text)
   return (
@@ -47,10 +49,11 @@ function MessageRow({ msg }: { msg: GroupMessage }) {
         }`}
       >
         {!out && msg.senderName && (
-          <div className="mb-0.5 text-xs font-semibold text-violet-600">{msg.senderName}</div>
+          <div className="mb-0.5 text-xs font-semibold text-[#6941a5]">{msg.senderName}</div>
         )}
         {msg.mediaUrl && msg.mediaType === 'image' && (
           <img
+            onLoad={onMediaLoad}
             src={msg.mediaUrl}
             alt=""
             className="mb-1 max-h-56 w-full rounded-md object-cover"
@@ -84,9 +87,9 @@ function MessageRow({ msg }: { msg: GroupMessage }) {
                 : '\u00A0'}
             </div>
           ))}
-          {!msg.text && !msg.mediaType && <span className="text-zinc-400">(sem conteúdo)</span>}
+          {!msg.text && !msg.mediaType && <span className="text-zinc-500">(sem conteúdo)</span>}
         </div>
-        <span className="absolute bottom-1 right-2 text-[10px] text-zinc-400">
+        <span className="absolute bottom-1 right-2 text-[10px] text-zinc-500">
           {timeLabel(msg.timestamp)}
         </span>
         {url && <span className="sr-only">{url}</span>}
@@ -98,11 +101,16 @@ function MessageRow({ msg }: { msg: GroupMessage }) {
 /** Catalog list used inside the sender modal. */
 function CatalogList({ onSelect }: { onSelect: (offer: Offer) => void }) {
   const [search, setSearch] = useState('')
-  const query = useQuery({
-    queryKey: ['saved-products', 'picker'],
-    queryFn: () => savedProductApi.list(200, 0),
+  const query = useInfiniteQuery({
+    queryKey: ['saved-products', 'offer-picker'],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) => savedProductApi.list(100, pageParam),
+    getNextPageParam: (lastPage, pages) => {
+      const loaded = pages.reduce((count, page) => count + page.items.length, 0)
+      return loaded < lastPage.total && lastPage.items.length > 0 ? loaded : undefined
+    },
   })
-  const items: SavedProduct[] = query.data?.items ?? []
+  const items: SavedProduct[] = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data])
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return items
@@ -111,13 +119,14 @@ function CatalogList({ onSelect }: { onSelect: (offer: Offer) => void }) {
 
   return (
     <>
-      <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-200 px-2">
-        <Search size={16} className="text-zinc-400" />
+      <div className="mb-3 flex items-center gap-2 rounded-lg border border-line px-2">
+        <Search size={16} className="text-subtle" />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Buscar produto do catálogo"
-          className="w-full py-2 text-sm outline-none"
+          aria-label="Buscar produto do catálogo"
+          className="w-full bg-transparent py-2 text-sm text-ink outline-none"
         />
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -126,10 +135,10 @@ function CatalogList({ onSelect }: { onSelect: (offer: Offer) => void }) {
             <Spinner />
           </div>
         )}
-        {query.isError && <p className="text-sm text-red-600">{apiErrorMessage(query.error)}</p>}
-        {!query.isLoading && filtered.length === 0 && (
-          <p className="py-8 text-center text-sm text-zinc-500">
-            Nenhum produto no catálogo. Salve produtos na página Produtos.
+        {query.isError && <div role="alert" className="rounded-lg bg-danger-soft p-3 text-sm text-danger"><p>{apiErrorMessage(query.error)}</p><Button variant="secondary" className="mt-2" onClick={() => query.refetch()}>Tentar novamente</Button></div>}
+        {!query.isLoading && !query.isError && filtered.length === 0 && (
+          <p className="py-8 text-center text-sm text-muted">
+            {search.trim() ? (query.hasNextPage ? 'Nenhum produto carregado corresponde à busca. Carregue mais produtos ou tente outro nome.' : 'Nenhum produto corresponde à busca. Tente outro nome.') : 'Seu catálogo está vazio. Salve produtos na página Produtos para escolher uma oferta.'}
           </p>
         )}
         <div className="space-y-2">
@@ -137,7 +146,7 @@ function CatalogList({ onSelect }: { onSelect: (offer: Offer) => void }) {
             <button
               key={p.id}
               onClick={() => onSelect(p.offer)}
-              className="flex w-full items-center gap-3 rounded-lg border border-zinc-200 p-2 text-left hover:border-violet-400 hover:bg-violet-50"
+              className="flex w-full items-center gap-3 rounded-lg border border-line p-2 text-left hover:border-accent hover:bg-accent-soft"
             >
               {p.offer.imageUrl && (
                 <img
@@ -149,20 +158,21 @@ function CatalogList({ onSelect }: { onSelect: (offer: Offer) => void }) {
               )}
               <div className="min-w-0 flex-1">
                 <div className="truncate text-sm font-medium">{p.offer.title}</div>
-                <div className="text-xs text-zinc-500">
+                <div className="text-xs text-muted">
                   R$ {p.offer.discountedPrice.toFixed(2).replace('.', ',')}
                 </div>
               </div>
             </button>
           ))}
         </div>
+        {query.hasNextPage && <Button variant="secondary" className="mt-3 w-full" onClick={() => query.fetchNextPage()} disabled={query.isFetchingNextPage}>{query.isFetchingNextPage ? 'Carregando…' : 'Carregar mais produtos'}</Button>}
       </div>
     </>
   )
 }
 
 /** Paste a product JSON, parse it (no AI), and preview before sending. */
-function PasteJson({ onSelect }: { onSelect: (offer: Offer) => void }) {
+function PasteJson({ onSelect, includeImage }: { onSelect: (offer: Offer) => void; includeImage: boolean }) {
   const [raw, setRaw] = useState('')
   const [offers, setOffers] = useState<Offer[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -188,13 +198,15 @@ function PasteJson({ onSelect }: { onSelect: (offer: Offer) => void }) {
     <div className="flex min-h-0 flex-1 flex-col">
       {offers.length === 0 ? (
         <>
+          <label htmlFor="offer-json" className="mb-2 text-sm font-medium text-ink">JSON dos produtos</label>
           <textarea
+            id="offer-json"
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
             placeholder='Cole aqui o JSON do produto (um objeto ou um array). Ex.: [{"title":"...","por":99.9,"link":"https://..."}]'
-            className="min-h-[200px] flex-1 resize-none rounded-lg border border-zinc-300 p-3 font-mono text-xs outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+            className="min-h-[200px] flex-1 resize-none bg-surface text-ink rounded-lg border border-line-strong p-3 font-mono text-xs outline-none focus:border-accent focus:ring-2 focus:ring-accent/30"
           />
-          {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
+          {error && <p role="alert" className="mt-2 text-sm text-danger">{error}</p>}
           <Button
             className="mt-3 self-start"
             onClick={() => parseMutation.mutate()}
@@ -206,7 +218,7 @@ function PasteJson({ onSelect }: { onSelect: (offer: Offer) => void }) {
       ) : (
         <>
           <div className="mb-2 flex items-center justify-between">
-            <span className="text-sm text-zinc-500">
+            <span className="text-sm text-muted">
               {offers.length} produto{offers.length === 1 ? '' : 's'} — escolha para enviar
             </span>
             <Button
@@ -221,7 +233,7 @@ function PasteJson({ onSelect }: { onSelect: (offer: Offer) => void }) {
           </div>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
             {offers.map((offer, i) => (
-              <OfferPreviewCard key={i} offer={offer} onSend={() => onSelect(offer)} />
+              <OfferPreviewCard key={i} offer={offer} includeImage={includeImage} actionLabel="Selecionar oferta" onSend={() => onSelect(offer)} />
             ))}
           </div>
         </>
@@ -231,30 +243,32 @@ function PasteJson({ onSelect }: { onSelect: (offer: Offer) => void }) {
 }
 
 /** A single parsed offer: WhatsApp preview + a send button. */
-function OfferPreviewCard({ offer, onSend }: { offer: Offer; onSend: () => void }) {
+function OfferPreviewCard({ offer, onSend, includeImage, pending = false, actionLabel = 'Enviar oferta para o grupo' }: { offer: Offer; onSend: () => void; includeImage: boolean; pending?: boolean; actionLabel?: string }) {
   const previewQuery = useQuery({
-    queryKey: ['offer-preview', offer.affiliateUrl, offer.title, offer.discountedPrice],
+    queryKey: ['offer-preview', offer],
     queryFn: async () => {
       const [p] = await campaignApi.preview([offer])
       return p?.message ?? ''
     },
   })
   return (
-    <div className="rounded-lg border border-zinc-200 p-3">
+    <div className="rounded-lg border border-line p-3">
       {previewQuery.isLoading ? (
         <div className="flex justify-center py-6">
           <Spinner />
         </div>
+      ) : previewQuery.isError ? (
+        <div role="alert" className="text-sm text-danger"><p>Não foi possível preparar a oferta. {apiErrorMessage(previewQuery.error)}</p><Button variant="secondary" className="mt-2" onClick={() => previewQuery.refetch()}>Tentar novamente</Button></div>
       ) : (
         <WhatsAppBubble
           message={previewQuery.data ?? ''}
           imageUrl={offer.imageUrl}
-          showImage={Boolean(offer.imageUrl)}
+          showImage={includeImage && Boolean(offer.imageUrl)}
         />
       )}
       <div className="mt-3 flex justify-end">
-        <Button onClick={onSend}>
-          <Send size={16} /> Enviar este
+        <Button onClick={onSend} disabled={pending || previewQuery.isLoading || previewQuery.isError}>
+          <Send size={16} /> {pending ? 'Enviando…' : actionLabel}
         </Button>
       </div>
     </div>
@@ -262,43 +276,42 @@ function OfferPreviewCard({ offer, onSend }: { offer: Offer; onSend: () => void 
 }
 
 /** Modal to send an offer: pick from catalog OR paste a JSON and preview it. */
-function OfferSender({
-  onSelect,
-  onClose,
-}: {
+function OfferSender({ onSelect, onClose, pending, error, includeImage, onImageChange, groupName }: {
   onSelect: (offer: Offer) => void
   onClose: () => void
+  pending: boolean
+  error: string | null
+  includeImage: boolean
+  onImageChange: (value: boolean) => void
+  groupName: string
 }) {
   const [tab, setTab] = useState<'catalog' | 'json'>('catalog')
-  const tabClass = (active: boolean) =>
-    `flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition ${
-      active ? 'bg-violet-600 text-white' : 'text-zinc-600 hover:bg-zinc-100'
-    }`
-
+  const [offer, setOffer] = useState<Offer | null>(null)
+  const previewHeadingRef = useRef<HTMLHeadingElement>(null)
+  useEffect(() => { previewHeadingRef.current?.focus({ preventScroll: true }) }, [offer])
+  const tabClass = (active: boolean) => `flex min-h-10 items-center gap-1.5 rounded-lg px-3 py-2 text-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${active ? 'bg-accent text-accent-foreground' : 'text-muted hover:bg-surface-muted'}`
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <Card className="flex max-h-[85vh] w-full max-w-lg flex-col">
-        <div className="mb-3 flex items-center justify-between">
-          <h3 className="font-semibold">Enviar oferta</h3>
-          <button onClick={onClose} className="text-zinc-400 hover:text-zinc-700">
-            <X size={20} />
-          </button>
+    <ConnectionMessagesDialog title="Enviar oferta" titleId="offer-sender-title" onClose={onClose}>
+      <p className="mb-3 text-sm text-muted">Destino: <strong className="text-ink">{groupName}</strong>. Confira a oferta antes de enviar.</p>
+      {offer ? (
+        <div className="min-h-0 overflow-y-auto">
+          <h3 ref={previewHeadingRef} tabIndex={-1} className="mb-2 font-semibold focus-visible:outline-2 focus-visible:outline-accent">Conferir oferta</h3>
+          <Button variant="ghost" disabled={pending} onClick={() => setOffer(null)}><ArrowLeft size={16} /> Escolher outro produto</Button>
+          <label className="my-3 flex items-center gap-2 text-sm text-muted"><input type="checkbox" checked={includeImage} disabled={pending} onChange={(event) => onImageChange(event.target.checked)} />Incluir imagem do produto</label>
+          <OfferPreviewCard offer={offer} includeImage={includeImage} onSend={() => onSelect(offer)} pending={pending} />
         </div>
-        <div className="mb-3 flex gap-1">
-          <button onClick={() => setTab('catalog')} className={tabClass(tab === 'catalog')}>
-            <Tag size={15} /> Catálogo
-          </button>
-          <button onClick={() => setTab('json')} className={tabClass(tab === 'json')}>
-            <FileJson size={15} /> Colar JSON
-          </button>
-        </div>
-        {tab === 'catalog' ? (
-          <CatalogList onSelect={onSelect} />
-        ) : (
-          <PasteJson onSelect={onSelect} />
-        )}
-      </Card>
-    </div>
+      ) : (
+        <>
+          <div className="mb-3 flex gap-1" aria-label="Origem da oferta">
+            <button type="button" aria-pressed={tab === 'catalog'} onClick={() => setTab('catalog')} className={tabClass(tab === 'catalog')}><Tag size={15} /> Catálogo</button>
+            <button type="button" aria-pressed={tab === 'json'} onClick={() => setTab('json')} className={tabClass(tab === 'json')}><FileJson size={15} /> Colar JSON</button>
+          </div>
+          {tab === 'catalog' ? <CatalogList onSelect={setOffer} /> : <PasteJson onSelect={setOffer} includeImage={includeImage} />}
+        </>
+      )}
+      {error && <p role="alert" className="mt-3 rounded-lg bg-danger-soft p-3 text-sm text-danger">A oferta não foi enviada. {error} Confira e tente novamente.</p>}
+      {pending && <p role="status" className="mt-2 text-sm text-muted">Enviando oferta para {groupName}…</p>}
+    </ConnectionMessagesDialog>
   )
 }
 
@@ -306,17 +319,19 @@ export default function GroupMessagesPage() {
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Group | null>(null)
-  const [text, setText] = useState('')
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [pickerOpen, setPickerOpen] = useState(false)
   const [sendImage, setSendImage] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const [newMessages, setNewMessages] = useState(0)
+  const threadRef = useRef<HTMLDivElement>(null)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const nearBottomRef = useRef(true)
+  const seenRef = useRef<{ groupId: string | undefined; ids: Set<number> }>({ groupId: undefined, ids: new Set() })
+  const text = selected ? drafts[selected.id] ?? '' : ''
+  const setText = (value: string) => { if (selected) setDrafts((previous) => ({ ...previous, [selected.id]: value })) }
 
-  const groupsQuery = useQuery({
-    queryKey: ['groups', search],
-    queryFn: () => groupApi.list(search || undefined),
-  })
-
+  const groupsQuery = useQuery({ queryKey: ['groups', search], queryFn: () => groupApi.list(search || undefined) })
   const messagesQuery = useQuery({
     queryKey: ['group-messages', selected?.id],
     queryFn: () => groupMessageApi.list(selected!.id, { limit: 200 }),
@@ -324,195 +339,95 @@ export default function GroupMessagesPage() {
     refetchInterval: selected ? 5000 : false,
   })
 
-  // Scroll to the newest message when the thread changes.
+  useEffect(() => { headingRef.current?.focus({ preventScroll: true }) }, [selected?.id])
+
+  // Polling must preserve the reader's position. Only a new thread or a reader
+  // already near the latest message follows new arrivals automatically.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messagesQuery.data, selected?.id])
+    if (!messagesQuery.data || !selected) return
+    const previous = seenRef.current
+    const changedThread = previous.groupId !== selected.id
+    const added = changedThread ? 0 : messagesQuery.data.filter((message) => !previous.ids.has(message.id)).length
+    seenRef.current = { groupId: selected.id, ids: new Set(messagesQuery.data.map((message) => message.id)) }
+    if (changedThread || nearBottomRef.current) {
+      const thread = threadRef.current
+      if (thread) thread.scrollTop = thread.scrollHeight
+      nearBottomRef.current = true
+      setNewMessages(0)
+    } else if (added > 0) setNewMessages((count) => count + added)
+  }, [messagesQuery.data, selected])
 
   const sendTextMutation = useMutation({
-    mutationFn: (body: string) => groupMessageApi.sendText(selected!.id, body),
-    onSuccess: () => {
-      setText('')
+    mutationFn: ({ groupId, body }: { groupId: string; body: string }) => groupMessageApi.sendText(groupId, body),
+    onSuccess: (_data, { groupId }) => {
+      setDrafts((previous) => ({ ...previous, [groupId]: '' }))
       setError(null)
-      qc.invalidateQueries({ queryKey: ['group-messages', selected?.id] })
+      nearBottomRef.current = true
+      qc.invalidateQueries({ queryKey: ['group-messages', groupId] })
     },
     onError: (e) => setError(apiErrorMessage(e)),
   })
-
   const sendOfferMutation = useMutation({
-    mutationFn: (offer: Offer) =>
-      groupMessageApi.sendOffer(selected!.id, offer, { sendImage }),
-    onSuccess: () => {
+    mutationFn: ({ groupId, offer, includeImage }: { groupId: string; offer: Offer; includeImage: boolean }) => groupMessageApi.sendOffer(groupId, offer, { sendImage: includeImage }),
+    onSuccess: (_data, { groupId }) => {
       setPickerOpen(false)
       setError(null)
-      qc.invalidateQueries({ queryKey: ['group-messages', selected?.id] })
+      nearBottomRef.current = true
+      qc.invalidateQueries({ queryKey: ['group-messages', groupId] })
     },
-    onError: (e) => {
-      setPickerOpen(false)
-      setError(apiErrorMessage(e))
-    },
+    onError: (e) => setError(apiErrorMessage(e)),
   })
-
   const groups = groupsQuery.data ?? []
   const messages = messagesQuery.data ?? []
   const sending = sendTextMutation.isPending || sendOfferMutation.isPending
+  const sendText = () => { if (selected && text.trim() && !sending) sendTextMutation.mutate({ groupId: selected.id, body: text.trim() }) }
+  const jumpToLatest = () => {
+    const thread = threadRef.current
+    if (thread) thread.scrollTop = thread.scrollHeight
+    nearBottomRef.current = true
+    setNewMessages(0)
+  }
 
   return (
-    <div className="mx-auto flex h-full max-w-6xl flex-col">
-      <div className="mb-4 flex items-center gap-3">
-        <MessagesSquare className="text-violet-600" />
-        <div>
-          <h1 className="text-2xl font-bold">Mensagens dos grupos</h1>
-          <p className="text-sm text-zinc-500">
-            Veja o que chega nos grupos e envie ofertas escolhidas a dedo.
-          </p>
-        </div>
+    <div className="workspace-page mx-auto flex min-h-0 w-full max-w-6xl flex-col text-ink">
+      <div className="page-header">
+        <div><h1 className="page-title">Mensagens dos grupos</h1><p className="page-description">Acompanhe as conversas e confira cada oferta antes de enviar.</p></div>
       </div>
-
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[320px_1fr]">
-        {/* Group list */}
-        <Card className="flex min-h-0 flex-col lg:max-h-[calc(100vh-12rem)]">
-          <div className="mb-3 flex items-center gap-2 rounded-lg border border-zinc-200 px-2">
-            <Search size={16} className="text-zinc-400" />
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Buscar grupo"
-              className="w-full py-2 text-sm outline-none"
-            />
-          </div>
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <Card className={`${selected ? 'hidden lg:flex' : 'flex'} min-h-0 flex-col lg:max-h-[calc(100dvh-12rem)]`}>
+          <h2 className="mb-3 font-semibold">Seus grupos</h2>
+          <div className="mb-3 flex items-center gap-2 rounded-lg border border-line bg-surface px-2 focus-within:ring-2 focus-within:ring-accent/30"><Search size={16} className="shrink-0 text-subtle" /><input aria-label="Buscar grupo" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar grupo" className="min-w-0 w-full bg-transparent py-2 text-sm outline-none" /></div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto">
-            {groupsQuery.isLoading && (
-              <div className="flex justify-center py-8">
-                <Spinner />
-              </div>
-            )}
-            {groupsQuery.isError && (
-              <p className="text-sm text-red-600">{apiErrorMessage(groupsQuery.error)}</p>
-            )}
-            {!groupsQuery.isLoading && groups.length === 0 && (
-              <p className="py-8 text-center text-sm text-zinc-500">
-                Nenhum grupo. Conecte um número com grupos.
-              </p>
-            )}
-            {groups.map((g) => (
-              <button
-                key={g.id}
-                onClick={() => {
-                  setSelected(g)
-                  setError(null)
-                }}
-                className={`w-full rounded-lg px-3 py-2 text-left text-sm transition ${
-                  selected?.id === g.id
-                    ? 'bg-violet-600 text-white'
-                    : 'text-zinc-700 hover:bg-zinc-100'
-                }`}
-              >
-                <div className="truncate font-medium">{g.name}</div>
-                <div
-                  className={`text-xs ${selected?.id === g.id ? 'text-violet-100' : 'text-zinc-400'}`}
-                >
-                  {g.size} participante{g.size === 1 ? '' : 's'}
-                  {g.announceOnly ? ' · só admin posta' : ''}
-                </div>
-              </button>
-            ))}
+            {groupsQuery.isLoading && <div role="status" className="flex items-center justify-center gap-2 py-8 text-sm text-muted"><Spinner /> Carregando grupos…</div>}
+            {groupsQuery.isError && <div role="alert" className="rounded-lg bg-danger-soft p-3 text-sm text-danger"><p>Não foi possível carregar os grupos. {apiErrorMessage(groupsQuery.error)}</p><Button variant="secondary" className="mt-2" onClick={() => groupsQuery.refetch()}>Tentar novamente</Button></div>}
+            {!groupsQuery.isLoading && !groupsQuery.isError && groups.length === 0 && <div className="py-8 text-center text-sm text-muted"><MessagesSquare size={28} className="mx-auto mb-3" /><p>{search.trim() ? 'Nenhum grupo corresponde à busca.' : 'Nenhum grupo disponível. Conecte um número que participe de grupos e atualize a lista.'}</p><Button variant="ghost" className="mt-3" onClick={() => groupsQuery.refetch()}><RefreshCw size={16} />Atualizar grupos</Button></div>}
+            {groups.map((g) => <button key={g.id} disabled={sending} aria-current={selected?.id === g.id ? 'true' : undefined} onClick={() => { setSelected(g); setError(null); nearBottomRef.current = true; setNewMessages(0) }} className={`w-full rounded-lg px-3 py-3 text-left text-sm focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 ${selected?.id === g.id ? 'bg-accent-soft text-accent' : 'text-ink hover:bg-surface-muted'}`}><div className="truncate font-medium">{g.name}</div><div className="mt-1 text-xs text-muted">{g.size} participante{g.size === 1 ? '' : 's'}{g.announceOnly ? ' · só administradores' : ''}</div></button>)}
           </div>
         </Card>
-
-        {/* Thread */}
-        <Card className="flex min-h-0 flex-col lg:max-h-[calc(100vh-12rem)]">
-          {!selected ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
-              Selecione um grupo para ver as mensagens.
+        <Card className={`${selected ? 'flex' : 'hidden lg:flex'} min-h-0 min-w-0 flex-col lg:h-[calc(100dvh-12rem)]`}>
+          {!selected ? <div className="flex min-h-80 flex-1 flex-col items-center justify-center gap-3 text-center text-sm text-muted"><MessagesSquare size={32} /><p>Selecione um grupo para acompanhar as mensagens.</p></div> : <>
+            <div className="mb-3 flex shrink-0 items-center justify-between gap-2 border-b border-line pb-3">
+              <div className="flex min-w-0 items-center gap-2"><Button variant="ghost" className="h-11 w-11 shrink-0 !p-0 lg:hidden" aria-label="Voltar para os grupos" disabled={sending} onClick={() => setSelected(null)}><ArrowLeft size={20} /></Button><div className="min-w-0"><h2 ref={headingRef} tabIndex={-1} className="truncate font-semibold focus-visible:outline-2 focus-visible:outline-accent">{selected.name}</h2>{selected.announceOnly && <Badge tone="amber">Só administradores podem postar</Badge>}</div></div>
+              <Button variant="ghost" aria-label="Atualizar mensagens" className="shrink-0" onClick={() => messagesQuery.refetch()} disabled={messagesQuery.isFetching}><RefreshCw size={16} /><span className="hidden sm:inline">Atualizar</span></Button>
             </div>
-          ) : (
-            <>
-              <div className="mb-3 flex items-center justify-between border-b border-zinc-100 pb-3">
-                <div className="min-w-0">
-                  <div className="truncate font-semibold">{selected.name}</div>
-                  {selected.announceOnly && (
-                    <Badge tone="amber">Só administradores podem postar</Badge>
-                  )}
-                </div>
-                <Button
-                  variant="ghost"
-                  onClick={() => messagesQuery.refetch()}
-                  disabled={messagesQuery.isFetching}
-                >
-                  <RefreshCw size={16} /> Atualizar
-                </Button>
-              </div>
-
-              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg bg-[#efeae2] p-3">
-                {messagesQuery.isLoading && (
-                  <div className="flex justify-center py-8">
-                    <Spinner />
-                  </div>
-                )}
-                {!messagesQuery.isLoading && messages.length === 0 && (
-                  <p className="py-8 text-center text-sm text-zinc-500">
-                    Nenhuma mensagem registrada ainda. As mensagens que chegam ao grupo aparecem
-                    aqui depois que o webhook estiver sincronizado (página Conexão).
-                  </p>
-                )}
-                {messages.map((m) => (
-                  <MessageRow key={m.id} msg={m} />
-                ))}
-                <div ref={bottomRef} />
-              </div>
-
-              {error && <p className="mt-2 text-sm text-red-600">{error}</p>}
-
-              {/* Composer */}
-              <div className="mt-3 flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => setPickerOpen(true)}
-                  disabled={sending}
-                  title="Enviar oferta"
-                >
-                  <Tag size={16} /> Oferta
-                </Button>
-                <Input
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && text.trim()) {
-                      e.preventDefault()
-                      sendTextMutation.mutate(text.trim())
-                    }
-                  }}
-                  placeholder="Escreva uma mensagem…"
-                  disabled={sending}
-                />
-                <Button
-                  onClick={() => text.trim() && sendTextMutation.mutate(text.trim())}
-                  disabled={sending || !text.trim()}
-                >
-                  <Send size={16} />
-                  {sendTextMutation.isPending ? 'Enviando…' : 'Enviar'}
-                </Button>
-              </div>
-              <label className="mt-2 flex items-center gap-2 text-xs text-zinc-500">
-                <input
-                  type="checkbox"
-                  checked={sendImage}
-                  onChange={(e) => setSendImage(e.target.checked)}
-                />
-                Enviar imagem do produto junto da oferta
-              </label>
-            </>
-          )}
+            {messagesQuery.isError && <div role="alert" className="mb-2 rounded-lg bg-danger-soft p-3 text-sm text-danger"><p>Não foi possível atualizar as mensagens. {apiErrorMessage(messagesQuery.error)}</p><Button variant="secondary" className="mt-2" onClick={() => messagesQuery.refetch()}>Tentar novamente</Button></div>}
+            <div ref={threadRef} aria-label={`Mensagens de ${selected.name}`} tabIndex={0} onScroll={() => { const thread = threadRef.current; if (!thread) return; nearBottomRef.current = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80; if (nearBottomRef.current) setNewMessages(0) }} className="min-h-[260px] max-h-[44dvh] min-w-0 flex-1 space-y-2 overflow-y-auto rounded-lg bg-[#efeae2] p-3 [overflow-anchor:none] focus-visible:outline-2 focus-visible:outline-accent lg:max-h-none">
+              {messagesQuery.isLoading && <div role="status" className="flex items-center justify-center gap-2 py-8 text-sm text-[#526a5d]"><Spinner /> Carregando mensagens…</div>}
+              {!messagesQuery.isLoading && !messagesQuery.isError && messages.length === 0 && <p className="py-8 text-center text-sm text-[#526a5d]">Ainda não há mensagens registradas. Novas mensagens aparecem aqui quando a sincronização está ativa na página Conexão.</p>}
+              {messages.map((m) => <MessageRow key={m.id} msg={m} onMediaLoad={() => { if (nearBottomRef.current && threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight }} />)}
+            </div>
+            {newMessages > 0 && <div role="status" className="mt-2 flex justify-center"><Button variant="secondary" onClick={jumpToLatest}><ArrowDown size={16} />{newMessages} nova{newMessages === 1 ? '' : 's'} mensage{newMessages === 1 ? 'm' : 'ns'}</Button></div>}
+            {error && !pickerOpen && <p role="alert" className="mt-2 text-sm text-danger">Não foi possível enviar. {error}</p>}
+            <form onSubmit={(event) => { event.preventDefault(); sendText() }} className="mt-3 flex shrink-0 flex-wrap items-center gap-2">
+              <label htmlFor="group-message" className="sr-only">Mensagem para {selected.name}</label><Input id="group-message" className="order-first basis-full sm:order-none sm:basis-0 sm:flex-1 sm:min-w-0" value={text} onChange={(e) => setText(e.target.value)} placeholder="Escreva uma mensagem…" disabled={sending} />
+              <Button type="button" variant="secondary" aria-label="Enviar oferta" onClick={() => { setError(null); setPickerOpen(true) }} disabled={sending}><Tag size={16} />Oferta</Button>
+              <Button type="submit" aria-label="Enviar mensagem" className="ml-auto sm:ml-0" disabled={sending || !text.trim()}><Send size={16} />{sendTextMutation.isPending ? 'Enviando…' : 'Enviar'}</Button>
+            </form>
+            <label className="mt-3 flex items-center gap-2 text-xs text-muted"><input type="checkbox" checked={sendImage} onChange={(e) => setSendImage(e.target.checked)} disabled={sending} />Incluir imagem do produto nas ofertas</label>
+          </>}
         </Card>
       </div>
-
-      {pickerOpen && (
-        <OfferSender
-          onClose={() => setPickerOpen(false)}
-          onSelect={(offer) => sendOfferMutation.mutate(offer)}
-        />
-      )}
+      {pickerOpen && selected && <OfferSender onClose={() => setPickerOpen(false)} onSelect={(offer) => { if (!sending) sendOfferMutation.mutate({ groupId: selected.id, offer, includeImage: sendImage }) }} pending={sendOfferMutation.isPending} error={error} includeImage={sendImage} onImageChange={setSendImage} groupName={selected.name} />}
     </div>
   )
 }

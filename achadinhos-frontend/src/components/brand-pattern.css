@@ -1,0 +1,26 @@
+.brand-pattern {
+  display: block;
+  flex: 0 0 auto;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+  color: var(--app-muted, #4d5d77);
+  pointer-events: none;
+  user-select: none;
+}
+
+.brand-pattern--poster { aspect-ratio: 13 / 9; }
+.brand-pattern--header { aspect-ratio: 5 / 1; }
+.brand-pattern--empty { aspect-ratio: 10 / 7; }
+.brand-pattern__quiet { opacity: 0.45; }
+.brand-pattern__card { transition: translate 140ms ease-out; }
+
+/* Optional, deliberate response to a containing card; never ambient motion. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .brand-pattern-interactive:hover .brand-pattern__card { translate: 0 -2px; }
+  .brand-pattern-interactive:active .brand-pattern__card { translate: 0 1px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-pattern__card { transition: none; }
+}

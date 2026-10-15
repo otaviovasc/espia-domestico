@@ -42,8 +42,8 @@ export interface SmartAudience {
   endTime: string
   minIntervalMinutes: number
   maxIntervalMinutes: number
-  minCommissionPercent?: number
-  minEstimatedCommission?: number
+  minCommissionPercent?: number | null
+  minEstimatedCommission?: number | null
   maxStandoutMessages: number
   createdAt?: string
   updatedAt?: string

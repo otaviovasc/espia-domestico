@@ -49,7 +49,7 @@ function renderLineWithLinks(line: string, keyBase: string): ReactNode[] {
   while ((m = urlRegex.exec(line)) !== null) {
     if (m.index > last) parts.push(...renderInline(line.slice(last, m.index)))
     parts.push(
-      <span key={`${keyBase}-u${i++}`} className="text-[#53bdeb] underline">
+      <span key={`${keyBase}-u${i++}`} className="text-[#0275a5] underline">
         {m[0]}
       </span>,
     )
@@ -59,7 +59,7 @@ function renderLineWithLinks(line: string, keyBase: string): ReactNode[] {
   return parts
 }
 
-export function extractFirstUrl(text: string): string | null {
+function extractFirstUrl(text: string): string | null {
   const m = text.match(/https?:\/\/[^\s]+/)
   return m ? m[0] : null
 }
@@ -105,12 +105,12 @@ export function WhatsAppBubble({
 
   return (
     <div className="flex justify-end">
-      <div className="relative max-w-[85%] rounded-lg rounded-tr-none bg-[#d9fdd3] p-1.5 shadow-sm">
+      <div className="relative min-w-0 max-w-[92%] sm:max-w-[85%] rounded-lg rounded-tr-none bg-[#d9fdd3] p-1.5 shadow-sm">
         {showImage && imageUrl && (
           <img
             src={imageUrl}
             alt=""
-            className="mb-1 max-h-60 w-full rounded-md object-cover"
+            className="mb-1 max-h-60 w-full rounded-md object-contain"
             loading="lazy"
           />
         )}
@@ -126,7 +126,7 @@ export function WhatsAppBubble({
               <img
                 src={linkPreviewImageUrl}
                 alt=""
-                className="max-h-40 w-full object-cover"
+                className="max-h-40 w-full object-contain"
                 loading="lazy"
               />
             )}
@@ -136,20 +136,20 @@ export function WhatsAppBubble({
                   {linkPreviewTitle}
                 </div>
               )}
-              <div className="mt-0.5 text-[11px] uppercase text-zinc-500">{hostOf(url)}</div>
+              <div className="mt-0.5 text-[11px] text-zinc-600">{hostOf(url)}</div>
             </div>
           </a>
         )}
 
-        <div className="whitespace-pre-wrap px-1.5 pb-4 text-sm leading-snug text-zinc-900">
+        <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere] px-1.5 pb-4 text-sm leading-snug text-zinc-900">
           {lines.map((line, idx) => (
             <div key={idx}>{line ? renderLineWithLinks(line, `l${idx}`) : '\u00A0'}</div>
           ))}
         </div>
 
-        <span className="absolute bottom-1 right-2 flex items-center gap-1 text-[10px] text-zinc-500">
+        <span className="absolute bottom-1 right-2 flex items-center gap-1 text-[10px] text-zinc-600">
           {now}
-          <svg viewBox="0 0 16 11" width="14" height="11" className="text-[#53bdeb]">
+          <svg viewBox="0 0 16 11" width="14" height="11" className="text-[#0275a5]" aria-hidden="true">
             <path
               fill="currentColor"
               d="M11.07.65a.5.5 0 0 0-.7.03L5.4 6.1 3.32 3.9a.5.5 0 1 0-.73.68l2.45 2.6a.5.5 0 0 0 .72 0l5.34-5.83a.5.5 0 0 0-.03-.7Z"

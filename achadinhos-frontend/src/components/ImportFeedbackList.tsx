@@ -7,9 +7,9 @@ export function ImportFeedbackList({ title, entries }: { title: string; entries:
   const pageCount = Math.max(1, Math.ceil(entries.length / 40))
   const currentPage = Math.min(page, pageCount)
   return (
-    <details className="mt-3 text-sm text-amber-800">
-      <summary>{title} ({entries.length})</summary>
-      <ul className="mt-2 max-h-48 list-disc overflow-y-auto pl-5">
+    <details className="mt-3 rounded-lg border border-line bg-warning-soft p-3 text-sm text-warning">
+      <summary className="cursor-pointer font-medium focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent">{title} ({entries.length})</summary>
+      <ul className="mt-2 max-h-64 list-disc space-y-2 overflow-y-auto break-words pl-5">
         {entries.slice((currentPage - 1) * 40, currentPage * 40).map((entry) => <li key={entry.key}>{entry.message}</li>)}
       </ul>
       {pageCount > 1 && <div className="mt-2 flex items-center justify-between gap-3">

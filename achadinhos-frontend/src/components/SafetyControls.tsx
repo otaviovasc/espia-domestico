@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 import { Clock, Zap, Shield, Gauge, Timer } from 'lucide-react'
 import type { Safety } from '@/lib/api'
 import { Label } from '@/components/ui'
@@ -59,24 +59,26 @@ interface DurationFieldProps {
 }
 
 function DurationField({ label, seconds, onChange, min = 1 }: DurationFieldProps) {
+  const inputId = useId()
   const [unit, setUnit] = useState<Unit>(() => bestUnit(seconds))
   return (
     <div>
-      <Label>{label}</Label>
+      <Label htmlFor={inputId}>{label}</Label>
       <div className="flex gap-2">
         <input
+          id={inputId}
           type="number"
-          min={min}
-          step={unit === 'minutes' ? 0.5 : 1}
+          min={unit === 'minutes' ? 0 : min}
+          step={unit === 'minutes' ? 'any' : 1}
           value={fromSeconds(seconds, unit)}
           onChange={(e) => onChange(Math.max(min, toSeconds(Number(e.target.value) || 0, unit)))}
-          className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+          className="w-full min-w-0 rounded-lg border border-line-strong bg-surface text-ink px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
         />
         <select
           value={unit}
           onChange={(e) => setUnit(e.target.value as Unit)}
-          className="rounded-lg border border-zinc-300 bg-white px-2 py-2 text-sm outline-none focus:border-violet-500"
-          aria-label="Unidade"
+          className="rounded-lg border border-line-strong bg-surface text-ink px-2 py-2 text-sm outline-none focus:border-accent"
+          aria-label={`Unidade: ${label}`}
         >
           <option value="seconds">segundos</option>
           <option value="minutes">minutos</option>
@@ -93,6 +95,7 @@ export function SafetyControls({
   safety: Safety
   onChange: (next: Safety) => void
 }) {
+  const controlsId = useId()
   const activePreset = useMemo(
     () =>
       PRESETS.find(
@@ -133,6 +136,7 @@ export function SafetyControls({
               <button
                 key={p.key}
                 type="button"
+                aria-pressed={active}
                 onClick={() =>
                   onChange({
                     ...safety,
@@ -141,10 +145,10 @@ export function SafetyControls({
                     maxPerHour: p.maxPerHour,
                   })
                 }
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm transition ${
+                className={`inline-flex items-center gap-1.5 min-h-11 rounded-lg border px-3 py-2 text-sm transition ${
                   active
-                    ? 'border-violet-500 bg-violet-50 text-violet-700'
-                    : 'border-zinc-200 text-zinc-600 hover:bg-zinc-50'
+                    ? 'border-accent bg-accent-soft text-accent'
+                    : 'border-line text-muted hover:bg-surface-muted'
                 }`}
               >
                 <Icon size={14} /> {p.label}
@@ -168,48 +172,54 @@ export function SafetyControls({
         />
       </div>
       {invalidRange && (
-        <p className="text-sm text-red-600">
+        <p role="alert" className="text-sm text-danger">
           O intervalo máximo deve ser maior ou igual ao mínimo.
         </p>
       )}
 
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
-          <Label>Máximo por hora (0 = ilimitado)</Label>
+          <Label htmlFor={`${controlsId}-hourly`}>Máximo por hora (0 = ilimitado)</Label>
           <input
             type="number"
+            id={`${controlsId}-hourly`}
             min={0}
+            step={1}
             value={safety.maxPerHour}
-            onChange={(e) => onChange({ ...safety, maxPerHour: Math.max(0, Number(e.target.value) || 0) })}
-            className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+            onChange={(e) => onChange({ ...safety, maxPerHour: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+            className="w-full min-w-0 rounded-lg border border-line-strong bg-surface text-ink px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
           />
         </div>
         <div>
-          <Label>Aquecimento: pausa a cada N mensagens (0 = desligado)</Label>
+          <Label htmlFor={`${controlsId}-warmup`}>Pausa maior a cada N mensagens (0 = desligada)</Label>
           <input
             type="number"
+            id={`${controlsId}-warmup`}
             min={0}
+            step={1}
             value={safety.warmupBatchSize}
             onChange={(e) =>
-              onChange({ ...safety, warmupBatchSize: Math.max(0, Number(e.target.value) || 0) })
+              onChange({ ...safety, warmupBatchSize: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
             }
-            className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+            className="w-full min-w-0 rounded-lg border border-line-strong bg-surface text-ink px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
           />
         </div>
       </div>
 
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm">
         <input
           type="checkbox"
+          className="h-4 w-4 accent-accent"
           checked={safety.shuffleGroups}
           onChange={(e) => onChange({ ...safety, shuffleGroups: e.target.checked })}
         />
         Embaralhar ordem dos grupos
       </label>
 
-      <label className="flex items-center gap-2 text-sm">
+      <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm">
         <input
           type="checkbox"
+          className="h-4 w-4 accent-accent"
           checked={safety.shuffleOffers ?? true}
           onChange={(e) => onChange({ ...safety, shuffleOffers: e.target.checked })}
         />
@@ -217,8 +227,8 @@ export function SafetyControls({
       </label>
 
       {/* Live summary */}
-      <div className="flex items-start gap-2 rounded-lg bg-zinc-50 p-3 text-sm text-zinc-600">
-        <Clock size={16} className="mt-0.5 shrink-0 text-violet-500" />
+      <div className="flex items-start gap-2 rounded-lg bg-surface-muted p-3 text-sm text-muted">
+        <Clock size={16} className="mt-0.5 shrink-0 text-accent" />
         <span>{summary}</span>
       </div>
     </div>

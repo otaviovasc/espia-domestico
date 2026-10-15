@@ -57,6 +57,7 @@ function CarouselMedia({
     if (foreground.current) { foreground.current.volume = changes.volume ?? 1; foreground.current.playbackRate = changes.speed }
   }, [changes.volume, changes.speed])
   const [url, setUrl] = useState('')
+  const [retry, setRetry] = useState(0)
   const [mediaError, setMediaError] = useState(false)
   useEffect(() => {
     const controller = new AbortController()
@@ -77,7 +78,7 @@ function CarouselMedia({
       controller.abort()
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [projectId, asset.id])
+  }, [projectId, asset.id, retry])
   useEffect(() => {
     const video = foreground.current
     if (!video || !url) return
@@ -105,9 +106,10 @@ function CarouselMedia({
   )
   if (mediaError)
     return (
-      <p role="alert" className="p-5 text-sm text-red-200">
-        Não foi possível carregar esta mídia.
-      </p>
+      <div role="alert" className="p-5 text-center text-sm text-red-200">
+        <p>Não foi possível carregar esta mídia.</p>
+        <button type="button" className="ad-preview-tool-button mt-3 bg-white/10 px-3" onClick={() => { setMediaError(false); setUrl(''); setRetry((value) => value + 1) }}>Tentar carregar novamente</button>
+      </div>
     )
   if (!url)
     return (
@@ -148,6 +150,7 @@ function CarouselMedia({
         <img
           src={url}
           alt={asset.originalName}
+          onError={() => setMediaError(true)}
           className="absolute max-w-none"
           style={geometry}
         />
@@ -155,6 +158,7 @@ function CarouselMedia({
         <video
           ref={foreground}
           src={url}
+          onError={() => setMediaError(true)}
           muted={muted}
           playsInline
           loop={asset.durationSeconds < durationSeconds}
@@ -233,7 +237,7 @@ export function CarouselPreview({
     <section ref={ref} className={`ad-stage-panel ${expanded ? 'ad-stage-expanded' : ''}`} role={expanded ? 'dialog' : undefined} aria-modal={expanded || undefined} aria-label="Prévia do carrossel" style={{ '--ad-preview-ratio': config.output.width / config.output.height } as React.CSSProperties}>
       <div className="ad-preview-toolbar">
         <h2 className="text-sm font-semibold text-white">Prévia <span className="ml-2 text-xs font-normal text-white/50">{config.output.width === config.output.height ? '1:1' : '4:5'}</span></h2>
-          <button type="button" onClick={() => setSafeZone(!safeZone)} className="ad-preview-tool-button ml-auto" aria-label="Mostrar área segura" aria-pressed={safeZone} title="Área segura (guia, não aparece na exportação)"><Scan size={16} /></button>
+          <button type="button" onClick={() => setSafeZone(!safeZone)} className="ad-preview-tool-button ml-auto" aria-label={safeZone ? "Ocultar área segura" : "Mostrar área segura"} aria-pressed={safeZone} title="Área segura (guia, não aparece na exportação)"><Scan size={16} /></button>
         <button type="button" onClick={() => void toggle()} className="ad-preview-tool-button" aria-label={expanded ? 'Reduzir prévia' : 'Ampliar prévia'} title={expanded ? 'Reduzir prévia' : 'Ampliar prévia'}>
           {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
         </button>
@@ -277,7 +281,7 @@ export function CarouselPreview({
         </div>
         {captions.isError && slide?.text ? (
           <p role="alert" className="mt-2 text-xs text-red-200">
-            Não foi possível carregar a prévia do texto.
+            Não foi possível carregar a prévia do texto. <button type="button" className="underline" onClick={() => void captions.refetch()}>Tentar novamente</button>
           </p>
         ) : null}
       </div>
@@ -365,9 +369,9 @@ export function CarouselEditor({
   }
   return (
     <>
-      <section className="rounded-2xl border border-zinc-200 bg-white p-5">
-        <h2 className="font-semibold text-zinc-900">Slides do carrossel</h2>
-        <p className="mt-1 text-xs leading-5 text-zinc-500">
+      <section className="rounded-2xl border border-line bg-surface p-5">
+        <h2 className="font-semibold text-ink">Slides do carrossel</h2>
+        <p className="mt-1 text-xs leading-5 text-muted">
           Combine de 2 a 20 imagens e vídeos. Todos os slides usam a mesma
           proporção.
         </p>
@@ -381,7 +385,7 @@ export function CarouselEditor({
             return (
               <li
                 draggable={!uploading}
-                onDragStart={() => { dragIndex.current = index }}
+                onDragStart={(event) => { if ((event.target as HTMLElement).closest('input, textarea, select, button')) { event.preventDefault(); return }; dragIndex.current = index }}
                 onDragOver={(event) => event.preventDefault()}
                 onDrop={(event) => {
                   event.preventDefault()
@@ -392,49 +396,50 @@ export function CarouselEditor({
                 }}
                 onDragEnd={() => { dragIndex.current = null }}
                 key={`${index}:${slide.assetId}`}
-                className="rounded-xl border border-zinc-200 p-3"
+                className="rounded-xl border border-line p-3"
               >
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
                     onClick={() => onPreview(index)}
-                    className="min-w-0 flex-1 truncate text-left text-sm font-semibold text-violet-700"
+                    className="min-w-0 flex-1 truncate text-left text-sm font-semibold text-accent"
                   >
                     {index + 1}. {asset?.originalName ?? 'Mídia indisponível'}
                   </button>
                   <button
                     type="button"
                     aria-label={`Mover slide ${index + 1} para cima`}
-                    disabled={index === 0}
+                    disabled={uploading || index === 0}
                     onClick={() => move(index, -1)}
-                    className="rounded p-1.5 disabled:opacity-25"
+                    className="studio-icon-button rounded p-1.5 disabled:opacity-25"
                   >
                     <ArrowUp size={16} />
                   </button>
                   <button
                     type="button"
                     aria-label={`Mover slide ${index + 1} para baixo`}
-                    disabled={index === carousel.slides.length - 1}
+                    disabled={uploading || index === carousel.slides.length - 1}
                     onClick={() => move(index, 1)}
-                    className="rounded p-1.5 disabled:opacity-25"
+                    className="studio-icon-button rounded p-1.5 disabled:opacity-25"
                   >
                     <ArrowDown size={16} />
                   </button>
-                  <button type="button" aria-label={`Duplicar slide ${index + 1}`} disabled={uploading || carousel.slides.length >= 20} className="rounded p-1.5 disabled:opacity-25" onClick={() => { const slides = [...carousel.slides]; slides.splice(index + 1, 0, structuredClone(slide)); slidesChanged(slides); onPreview(index + 1) }}><Copy size={16} /></button>
+                  <button type="button" aria-label={`Duplicar slide ${index + 1}`} disabled={uploading || carousel.slides.length >= 20} className="studio-icon-button rounded p-1.5 disabled:opacity-25" onClick={() => { const slides = [...carousel.slides]; slides.splice(index + 1, 0, structuredClone(slide)); slidesChanged(slides); onPreview(index + 1) }}><Copy size={16} /></button>
                   <button
                     type="button"
                     aria-label={`Remover slide ${index + 1}`}
+                    disabled={uploading}
                     onClick={() =>
                       slidesChanged(
                         carousel.slides.filter((_, i) => i !== index),
                       )
                     }
-                    className="rounded p-1.5 text-red-600"
+                    className="studio-icon-button rounded p-1.5 text-danger"
                   >
                     <Trash2 size={16} />
                   </button>
                 </div>
-                <label className="mt-3 block text-xs text-zinc-600">
+                <label className="mt-3 block text-xs text-muted">
                   Texto do slide {index + 1} (opcional)
                   <textarea
                     value={slide.text}
@@ -444,11 +449,11 @@ export function CarouselEditor({
                     onChange={(event) =>
                       edit(index, { text: event.target.value })
                     }
-                    className="mt-1 w-full rounded-lg border border-zinc-300 p-2 text-sm"
+                    className="mt-1 w-full rounded-lg border border-line-strong p-2 text-sm"
                   />
                 </label>
                 {asset?.kind === 'clip' ? (
-                  <label className="mt-2 block text-xs text-zinc-600">
+                  <label className="mt-2 block text-xs text-muted">
                     Duração do vídeo {index + 1} (segundos)
                     <input
                       type="number"
@@ -461,17 +466,17 @@ export function CarouselEditor({
                           durationSeconds: Number(event.target.value),
                         })
                       }
-                      className="ml-2 w-20 rounded-lg border border-zinc-300 p-1.5"
+                      className="ml-2 w-20 rounded-lg border border-line-strong p-1.5"
                     />
-                    <span className="mt-1 block text-[11px]">
+                    <span className="mt-1 block text-xs">
                       Vídeos curtos se repetem até completar a duração.
                     </span>
                   </label>
                 ) : null}
                 <details className="mt-3 text-xs">
-                  <summary className="cursor-pointer font-medium text-violet-700">Recorte, áudio e enquadramento</summary>
+                  <summary className="cursor-pointer font-medium text-accent">Recorte, áudio e enquadramento</summary>
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {asset?.kind === 'clip' ? <>{(['trimStart', 'trimEnd'] as const).map((key) => <label key={key}>{key === 'trimStart' ? 'Início do recorte (s)' : 'Fim do recorte (s)'}<input className="mt-1 w-full rounded border border-zinc-300 p-2" type="number" min={0} max={asset.durationSeconds} step={0.1} value={slide.edit?.[key] ?? (key === 'trimEnd' ? asset.durationSeconds : 0)} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, [key]: Number(e.target.value) } })} /></label>)}<label>Volume<input type="range" min={0} max={1} step={0.05} value={slide.edit?.volume ?? 1} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, volume: Number(e.target.value) } })} /></label><Button variant="secondary" onClick={() => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, volume: slide.edit?.volume === 0 ? 1 : 0 } })}>{slide.edit?.volume === 0 ? 'Ativar áudio' : 'Silenciar'}</Button></> : <label>Movimento da imagem (exporta MP4)<select className="mt-1 w-full rounded border border-zinc-300 p-2" value={slide.edit?.motion ?? 'none'} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, motion: e.target.value as NonNullable<AdCarouselSlide['edit']>['motion'] } })}><option value="none">Imagem estática JPG</option><option value="zoom-in">Zoom gradual</option><option value="zoom-out">Afastar gradual</option><option value="pan-left">Panorâmica esquerda</option><option value="pan-right">Panorâmica direita</option></select></label>}
+                    {asset?.kind === 'clip' ? <>{(['trimStart', 'trimEnd'] as const).map((key) => <label key={key}>{key === 'trimStart' ? 'Início do recorte (s)' : 'Fim do recorte (s)'}<input className="mt-1 w-full rounded border border-line-strong p-2" type="number" min={0} max={asset.durationSeconds} step={0.1} value={slide.edit?.[key] ?? (key === 'trimEnd' ? asset.durationSeconds : 0)} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, [key]: Number(e.target.value) } })} /></label>)}<label>Volume<input type="range" min={0} max={1} step={0.05} value={slide.edit?.volume ?? 1} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, volume: Number(e.target.value) } })} /></label><Button variant="secondary" onClick={() => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, volume: slide.edit?.volume === 0 ? 1 : 0 } })}>{slide.edit?.volume === 0 ? 'Ativar áudio' : 'Silenciar'}</Button></> : <label>Movimento da imagem (exporta MP4)<select className="mt-1 w-full rounded border border-line-strong p-2" value={slide.edit?.motion ?? 'none'} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, motion: e.target.value as NonNullable<AdCarouselSlide['edit']>['motion'] } })}><option value="none">Imagem estática JPG</option><option value="zoom-in">Zoom gradual</option><option value="zoom-out">Afastar gradual</option><option value="pan-left">Panorâmica esquerda</option><option value="pan-right">Panorâmica direita</option></select></label>}
                     <label className="col-span-full"><input type="checkbox" checked={slide.edit?.framingOverride ?? false} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, framingOverride: e.target.checked } })} /> Enquadramento próprio</label>
                     {slide.edit?.framingOverride ? (['focusX', 'focusY', 'zoom'] as const).map((key) => <label key={key}>{key === 'focusX' ? 'Foco horizontal' : key === 'focusY' ? 'Foco vertical' : 'Zoom'}<input type="range" min={key === 'zoom' ? 1 : 0} max={key === 'zoom' ? 3 : 100} step={key === 'zoom' ? 0.05 : 1} value={slide.edit![key]} onChange={(e) => edit(index, { edit: { ...DEFAULT_CLIP_EDIT, ...slide.edit, [key]: Number(e.target.value) } })} /></label>) : null}
                     <label>Cor do texto<input type="color" className="ml-2" value={slide.textStyle?.fontColor ?? config.textStyle.fontColor} onChange={(e) => edit(index, { textStyle: { ...config.textStyle, ...slide.textStyle, fontColor: e.target.value } })} /></label>
@@ -485,14 +490,14 @@ export function CarouselEditor({
           })}
         </ol>
         <details className="mt-4 text-sm">
-          <summary className="cursor-pointer font-medium text-zinc-700">
+          <summary className="cursor-pointer font-medium text-ink">
             Mídias do projeto ({assets.length})
           </summary>
           <div className="mt-2 space-y-2">
             {assets.map((asset) => (
               <div
                 key={asset.id}
-                className="flex items-center gap-2 rounded-lg bg-zinc-50 p-2"
+                className="flex items-center gap-2 rounded-lg bg-surface-muted p-2"
               >
                 <span className="min-w-0 flex-1 truncate text-xs">
                   {asset.originalName}
@@ -514,7 +519,7 @@ export function CarouselEditor({
                       },
                     ])
                   }
-                  className="p-1.5 text-violet-700 disabled:opacity-30"
+                  className="studio-icon-button p-1.5 text-accent disabled:opacity-30"
                 >
                   <Plus size={16} />
                 </button>
@@ -523,7 +528,7 @@ export function CarouselEditor({
                   aria-label={`Excluir mídia ${asset.originalName}`}
                   disabled={removingAssetId === asset.id}
                   onClick={() => onRemove(asset)}
-                  className="p-1.5 text-red-600 disabled:opacity-30"
+                  className="studio-icon-button p-1.5 text-danger disabled:opacity-30"
                 >
                   <Trash2 size={16} />
                 </button>
@@ -532,8 +537,9 @@ export function CarouselEditor({
           </div>
         </details>
       </section>
-      <section className="space-y-4 rounded-2xl border border-zinc-200 bg-white p-5">
-        <h2 className="font-semibold">Formato e texto</h2>
+      <details className="studio-section rounded-xl border border-line bg-surface">
+        <summary className="studio-section-summary"><span className="font-semibold text-ink">Formato e texto</span><span className="studio-section-description text-muted">{config.output.width} × {config.output.height} px · {config.textStyle.fontSize}px</span></summary>
+        <div className="space-y-4 border-t border-line p-4">
         <div className="flex flex-wrap gap-2">
           {[1350, 1080].map((height) => (
             <Button
@@ -566,7 +572,7 @@ export function CarouselEditor({
                 },
               })
             }
-            className="mt-1 w-full rounded-lg border border-zinc-300 p-2 text-sm"
+            className="mt-1 w-full rounded-lg border border-line-strong p-2 text-sm"
           >
             <option value="cover">Preencher com recorte</option>
             <option value="contain-blur">Mostrar inteiro com desfoque</option>
@@ -609,7 +615,7 @@ export function CarouselEditor({
                       },
                     })
                   }
-                  className="mt-1 w-full accent-violet-600"
+                  className="mt-1 w-full accent-accent"
                 />
               </label>
             ))}
@@ -632,7 +638,7 @@ export function CarouselEditor({
                   },
                 })
               }
-              className="mt-1 w-full accent-violet-600"
+              className="mt-1 w-full accent-accent"
             />
           </label>
           <label className="text-xs">
@@ -651,7 +657,7 @@ export function CarouselEditor({
                   },
                 })
               }
-              className="mt-1 w-full accent-violet-600"
+              className="mt-1 w-full accent-accent"
             />
           </label>
           <label className="flex items-center justify-between text-xs">
@@ -687,8 +693,8 @@ export function CarouselEditor({
             />
           </label>
         </div>
-      </section>
-      <section className="rounded-2xl border border-zinc-200 bg-white p-5">
+      </div></details>
+      <section className="rounded-2xl border border-line bg-surface p-5">
         <label className="block font-semibold">
           Legenda para Instagram
           <textarea
@@ -703,11 +709,11 @@ export function CarouselEditor({
                 carousel: { ...carousel, caption: event.target.value },
               })
             }}
-            className="mt-3 w-full rounded-xl border border-zinc-300 p-3 text-sm font-normal"
+            className="mt-3 w-full rounded-xl border border-line-strong p-3 text-sm font-normal"
           />
         </label>
         <div className="mt-2 flex items-center justify-between gap-2">
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-muted">
             {carousel.caption.length}/2200
           </span>
           <Button
@@ -732,7 +738,7 @@ export function CarouselEditor({
           </Button>
         </div>
         {captionCopyError ? (
-          <p role="alert" className="mt-2 text-xs text-red-600">
+          <p role="alert" className="mt-2 text-xs text-danger">
             Não foi possível copiar. Selecione a legenda e copie manualmente.
           </p>
         ) : null}

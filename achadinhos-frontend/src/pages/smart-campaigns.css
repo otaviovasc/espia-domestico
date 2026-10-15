@@ -1,0 +1,14 @@
+.smart-page-header { position: relative; overflow: hidden; }
+.smart-header-pattern { position: absolute; right: 12rem; top: 0; width: 10rem; height: 3.75rem; opacity: .65; pointer-events: none; }
+.smart-niche-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 2.75rem; height: 2.75rem; border: 2px solid var(--color-line-strong); border-radius: .75rem; background: var(--color-surface); box-shadow: 2px 2px 0 var(--app-hard-shadow); }
+.smart-price-tag { display: inline-flex; border: 2px solid var(--color-line-strong); border-radius: .5rem; padding: .125rem .5rem; background: var(--color-brand-yellow, #ffe16a); color: #18253e; font-size: 1.125rem; font-variant-numeric: tabular-nums; }
+.smart-workspace :is(input, textarea, select) { min-width: 0; }
+.smart-workspace textarea { resize: vertical; }
+.smart-workspace button { min-height: 2.5rem; }
+.smart-workspace select { min-height: 2.75rem; color: var(--color-ink); background-color: var(--color-surface); border: 2px solid var(--color-line-strong); }
+.smart-workspace :is(p, h3, h4, strong) { overflow-wrap: anywhere; }
+.smart-workspace .surface-panel { min-width: 0; }
+.smart-file-control:focus-within, .smart-audience-choice:focus-within { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+.smart-plan-actions { box-shadow: 3px 3px 0 var(--app-hard-shadow); }
+.smart-audience { padding: 0; }
+@media (max-width: 639px) { .smart-header-pattern { display: none; } }

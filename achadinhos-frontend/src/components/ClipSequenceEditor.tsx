@@ -33,7 +33,7 @@ import {
 
 const SPEEDS: AdClipSpeed[] = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const MAX_TRIM_SECONDS = 3600
-const TIMELINE_COLORS = ['bg-violet-500', 'bg-sky-500', 'bg-emerald-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500']
+const TIMELINE_COLORS = ['bg-accent', 'bg-sky-500', 'bg-success', 'bg-warning', 'bg-rose-500', 'bg-indigo-500']
 
 const TRANSITIONS: Array<{
   id: AdTransitionPreset
@@ -318,41 +318,41 @@ function ClipSequenceEditor({
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-zinc-50 px-3 py-2.5">
-        <div className="flex items-center gap-2 text-xs text-zinc-600">
-          <Clock3 size={14} className="text-violet-600" />
-          <span><strong className="text-zinc-800">{config.selectedClipIds.length}</strong> selecionados</span>
-          <span aria-hidden="true" className="text-zinc-300">•</span>
-          <span><strong className="text-zinc-800">{seconds(selectedDuration)}</strong> de vídeo</span>
-          <span aria-hidden="true" className="text-zinc-300">→</span>
-          <span><strong className="text-zinc-800">{seconds(config.output.durationSeconds)}</strong> no anúncio</span>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-surface-muted px-3 py-2.5">
+        <div className="flex items-center gap-2 text-xs text-muted">
+          <Clock3 size={14} className="text-accent" />
+          <span><strong className="text-ink">{config.selectedClipIds.length}</strong> selecionados</span>
+          <span aria-hidden="true" className="text-subtle">•</span>
+          <span><strong className="text-ink">{seconds(selectedDuration)}</strong> de vídeo</span>
+          <span aria-hidden="true" className="text-subtle">→</span>
+          <span><strong className="text-ink">{seconds(config.output.durationSeconds)}</strong> no anúncio</span>
         </div>
-        <div className="flex items-center gap-3 text-[11px] font-semibold">
+        <div className="flex items-center gap-3 text-xs font-semibold">
           {config.selectedClipIds.length > 1 ? (
-            <button type="button" onClick={() => replaceOrder([...config.selectedClipIds].reverse())} className="text-zinc-600 hover:text-violet-700">
+            <button type="button" onClick={() => replaceOrder([...config.selectedClipIds].reverse())} className="text-muted hover:text-accent">
               Inverter ordem
             </button>
           ) : null}
           <button
             type="button"
             onClick={() => replaceOrder(allSelectableSelected ? [] : selectableIds)}
-            className="text-violet-700 hover:text-violet-900"
+            className="text-accent hover:text-accent"
           >
             {allSelectableSelected ? 'Limpar seleção' : 'Selecionar todos'}
           </button>
         </div>
       </div>
-      {validationError ? <p role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-[11px] font-medium text-red-700">{validationError} Ajuste o corte antes de salvar ou gerar.</p> : null}
+      {validationError ? <p role="alert" className="mb-3 rounded-lg bg-danger-soft px-3 py-2 text-xs font-medium text-danger">{validationError} Ajuste o corte antes de salvar ou gerar.</p> : null}
       {config.selectedClipIds.length > 0 ? (
-        <div className="mb-3 rounded-xl border border-zinc-200 bg-white p-3">
-          <div className="mb-2 flex items-center justify-between gap-3 text-[11px]">
-            <span className="font-semibold text-zinc-700">Cenas {timeline.estimated ? 'estimadas' : 'planejadas'}</span>
-            <span className="text-zinc-600">{seconds(timeline.total)} finais</span>
+        <div className="mb-3 rounded-xl border border-line bg-surface p-3">
+          <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+            <span className="font-semibold text-ink">Cenas {timeline.estimated ? 'estimadas' : 'planejadas'}</span>
+            <span className="text-muted">{seconds(timeline.total)} finais</span>
           </div>
           <div
             role="img"
             aria-label={`Linha do tempo de ${seconds(timeline.total)} com ${timeline.segments.map((segment) => segment.label).join(', ')}`}
-            className="flex h-3 w-full overflow-hidden rounded-full bg-zinc-100 ring-1 ring-inset ring-zinc-200"
+            className="flex h-3 w-full overflow-hidden rounded-full bg-surface-muted ring-1 ring-inset ring-line"
           >
             {timeline.segments.map((segment) => (
               <span
@@ -363,22 +363,22 @@ function ClipSequenceEditor({
               />
             ))}
           </div>
-          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-600">
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
             {timeline.segments.map((segment) => <span key={segment.key}>{segment.label}</span>)}
           </div>
-          {timeline.estimated ? <p className="mt-2 text-[11px] text-amber-700">No modo batida, o render ajusta os cortes à música. Esta linha mostra intervalos de 2,5 s apenas para orientar a edição.</p> : null}
+          {timeline.estimated ? <p className="mt-2 text-xs text-amber-700">No modo batida, o render ajusta os cortes à música. Esta linha mostra intervalos de 2,5 s apenas para orientar a edição.</p> : null}
         </div>
       ) : null}
 
       {ordered.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-zinc-300 px-4 py-8 text-center">
-          <Film size={24} className="mx-auto text-zinc-300" />
-          <p className="mt-2 text-sm font-medium text-zinc-600">Nenhum clipe enviado</p>
-          <p className="mt-1 text-xs text-zinc-400">Adicione vídeos para montar a sequência.</p>
+        <div className="rounded-xl border border-dashed border-line-strong px-4 py-8 text-center">
+          <Film size={24} className="mx-auto text-subtle" />
+          <p className="mt-2 text-sm font-medium text-muted">Nenhum clipe enviado</p>
+          <p className="mt-1 text-xs text-subtle">Adicione vídeos para montar a sequência.</p>
         </div>
       ) : (
         <div ref={listRef} className="space-y-2">
-          <p id="clip-reorder-help" className="px-1 text-[11px] text-zinc-500">
+          <p id="clip-reorder-help" className="px-1 text-xs text-muted">
             Arraste pela alça ou use as setas para mudar a ordem.
           </p>
           <p className="sr-only" aria-live="polite">{reorderMessage}</p>
@@ -423,10 +423,10 @@ function ClipSequenceEditor({
                 onAnimationEnd={() => settledId === asset.id && setSettledId(null)}
                 className={`clip-sequence-card overflow-hidden rounded-xl border ${
                   draggingId === asset.id
-                    ? 'clip-sequence-card-dragging border-violet-400 bg-violet-50'
+                    ? 'clip-sequence-card-dragging border-accent bg-accent-soft'
                     : selected
-                      ? 'border-violet-200 bg-white'
-                      : 'border-zinc-200 bg-white opacity-75'
+                      ? 'border-line bg-surface'
+                      : 'border-line bg-surface opacity-75'
                 } ${isDropTarget ? `clip-sequence-drop-${dropTarget.position}` : ''} ${settledId === asset.id ? 'clip-sequence-card-settled' : ''}`}
               >
                 <div className="flex items-center gap-2.5 p-2.5">
@@ -436,7 +436,7 @@ function ClipSequenceEditor({
                     disabled={!selected && tooShort}
                     aria-pressed={selected}
                     aria-label={selected ? `Retirar ${displayLabel} da sequência` : `Adicionar ${displayLabel} à sequência`}
-                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border disabled:cursor-not-allowed disabled:border-zinc-200 disabled:bg-zinc-100 ${selected ? 'border-violet-600 bg-violet-600 text-white' : 'border-zinc-300 text-transparent hover:border-violet-400'}`}
+                    className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border disabled:cursor-not-allowed disabled:border-line disabled:bg-surface-muted ${selected ? 'border-accent bg-accent text-accent-foreground' : 'border-line-strong text-transparent hover:border-accent'}`}
                   >
                     <Check size={15} />
                   </button>
@@ -451,71 +451,71 @@ function ClipSequenceEditor({
                       aria-pressed={draggingId === asset.id}
                       aria-describedby="clip-reorder-help"
                       aria-label={`Reordenar ${displayLabel}. Posição ${position + 1} de ${config.selectedClipIds.length}.`}
-                      className="clip-sequence-drag-handle block shrink-0 cursor-grab rounded-md p-1 text-zinc-400 active:cursor-grabbing"
+                      className="clip-sequence-drag-handle block shrink-0 cursor-grab rounded-md p-1 text-subtle active:cursor-grabbing"
                       title="Arraste para reordenar"
                     ><GripVertical size={16} aria-hidden="true" /></button>
                   ) : null}
-                  <div className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg bg-zinc-900 text-white">
+                  <div className="flex h-10 w-9 shrink-0 items-center justify-center rounded-lg bg-surface-muted text-ink">
                     {selected ? <span className="text-xs font-bold">{position + 1}</span> : <Film size={16} />}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
-                      <span className="truncate text-sm font-medium text-zinc-800" title={displayLabel}>{displayLabel}</span>
-                      {customized ? <span className="shrink-0 rounded-full bg-violet-50 px-1.5 py-0.5 text-[11px] font-semibold text-violet-700">Editado</span> : null}
+                      <span className="truncate text-sm font-medium text-ink" title={displayLabel}>{displayLabel}</span>
+                      {customized ? <span className="shrink-0 rounded-full bg-accent-soft px-1.5 py-0.5 text-xs font-semibold text-accent">Editado</span> : null}
                     </div>
-                    <div className="mt-0.5 truncate text-[11px] text-zinc-500">
+                    <div className="mt-0.5 truncate text-xs text-muted">
                       {asset.kind === 'image' ? 'Imagem · usa a duração da cena' : tooShort ? 'Curto demais para usar' : `${seconds(effectiveDuration)} a ${edit.speed}×`}
                       {asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ''}
                     </div>
                   </div>
                   {selected ? (
                     <div className="flex shrink-0 items-center gap-0.5">
-                      <button type="button" onClick={() => move(asset.id, -1)} disabled={position === 0} className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-violet-700 disabled:opacity-25" aria-label={`Mover ${displayLabel} para cima`}><ArrowUp size={14} /></button>
-                      <button type="button" onClick={() => move(asset.id, 1)} disabled={position === config.selectedClipIds.length - 1} className="rounded-md p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-violet-700 disabled:opacity-25" aria-label={`Mover ${displayLabel} para baixo`}><ArrowDown size={14} /></button>
+                      <button type="button" onClick={() => move(asset.id, -1)} disabled={position === 0} className="studio-icon-button rounded-md p-1.5 text-subtle hover:bg-surface-muted hover:text-accent disabled:opacity-25" aria-label={`Mover ${displayLabel} para cima`}><ArrowUp size={14} /></button>
+                      <button type="button" onClick={() => move(asset.id, 1)} disabled={position === config.selectedClipIds.length - 1} className="studio-icon-button rounded-md p-1.5 text-subtle hover:bg-surface-muted hover:text-accent disabled:opacity-25" aria-label={`Mover ${displayLabel} para baixo`}><ArrowDown size={14} /></button>
                       <button
                         type="button"
                         onClick={() => setExpandedId(expanded ? null : asset.id)}
                         aria-expanded={expanded}
-                        className={`rounded-lg p-1.5 ${expanded ? 'bg-violet-50 text-violet-700' : 'text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700'}`}
+                        className={`studio-icon-button rounded-lg p-1.5 ${expanded ? 'bg-accent-soft text-accent' : 'text-subtle hover:bg-surface-muted hover:text-ink'}`}
                         aria-label={`Editar ${displayLabel}`}
                       ><ChevronsUpDown size={15} /></button>
                     </div>
                   ) : null}
                   {onRemove ? (
-                    <button type="button" disabled={removingAssetId === asset.id} onClick={() => onRemove(asset)} className="shrink-0 rounded-lg p-1.5 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30" aria-label={`Excluir ${displayLabel}`}><Trash2 size={15} /></button>
+                    <button type="button" disabled={removingAssetId === asset.id} onClick={() => onRemove(asset)} className="shrink-0 studio-icon-button rounded-lg p-1.5 text-subtle hover:bg-danger-soft hover:text-danger disabled:opacity-30" aria-label={`Excluir ${displayLabel}`}><Trash2 size={15} /></button>
                   ) : null}
                 </div>
 
                 {expanded ? (
-                  <div className="border-t border-zinc-100 bg-zinc-50/70 p-3">
+                  <div className="border-t border-line bg-surface-muted p-3">
                     <div className="mb-3 flex items-center justify-between gap-2">
-                      <span className="flex items-center gap-1.5 text-xs font-semibold text-zinc-700"><Scissors size={14} className="text-violet-600" /> {asset.kind === 'image' ? 'Ajustes da imagem' : 'Corte e velocidade'}</span>
-                      <button type="button" onClick={() => resetEdit(asset.id)} disabled={!customized} className="flex items-center gap-1 text-[11px] font-semibold text-violet-700 disabled:text-zinc-300"><RotateCcw size={12} /> Restaurar</button>
+                      <span className="flex items-center gap-1.5 text-xs font-semibold text-ink"><Scissors size={14} className="text-accent" /> {asset.kind === 'image' ? 'Ajustes da imagem' : 'Corte e velocidade'}</span>
+                      <button type="button" onClick={() => resetEdit(asset.id)} disabled={!customized} className="flex items-center gap-1 text-xs font-semibold text-accent disabled:text-subtle"><RotateCcw size={12} /> Restaurar</button>
                     </div>
                     <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 ${asset.kind === 'image' ? 'hidden' : ''}`}>
-                      <label className="text-[11px] font-medium text-zinc-600">
+                      <label className="text-xs font-medium text-muted">
                         Início
-                        <span className="relative mt-1 block"><input type="number" min={0} max={Math.max(0, Math.min(MAX_TRIM_SECONDS, edit.trimEnd ?? asset.durationSeconds) - MIN_TRIMMED_DURATION)} step={0.05} value={edit.trimStart} aria-describedby={`clip-${asset.id}-trim-start-help`} onChange={(event) => onChange(withClipEdit(config, asset, { trimStart: Number(event.target.value) }))} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-7 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
-                        <span id={`clip-${asset.id}-trim-start-help`} className="mt-1 block text-[11px] font-normal text-zinc-600">De 0 a {Math.max(0, Math.min(MAX_TRIM_SECONDS, edit.trimEnd ?? asset.durationSeconds) - MIN_TRIMMED_DURATION).toFixed(2)}s</span>
+                        <span className="relative mt-1 block"><input type="number" min={0} max={Math.max(0, Math.min(MAX_TRIM_SECONDS, edit.trimEnd ?? asset.durationSeconds) - MIN_TRIMMED_DURATION)} step={0.05} value={edit.trimStart} aria-describedby={`clip-${asset.id}-trim-start-help`} onChange={(event) => onChange(withClipEdit(config, asset, { trimStart: Number(event.target.value) }))} className="w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 pr-7 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-1.5 text-xs text-subtle">s</span></span>
+                        <span id={`clip-${asset.id}-trim-start-help`} className="mt-1 block text-xs font-normal text-muted">De 0 a {Math.max(0, Math.min(MAX_TRIM_SECONDS, edit.trimEnd ?? asset.durationSeconds) - MIN_TRIMMED_DURATION).toFixed(2)}s</span>
                       </label>
-                      <label className="text-[11px] font-medium text-zinc-600">
+                      <label className="text-xs font-medium text-muted">
                         Fim
-                        <span className="relative mt-1 block"><input type="number" min={edit.trimStart + MIN_TRIMMED_DURATION} max={Math.min(MAX_TRIM_SECONDS, asset.durationSeconds)} step={0.05} placeholder={asset.durationSeconds.toFixed(1)} value={edit.trimEnd ?? ''} aria-describedby={`clip-${asset.id}-trim-end-help`} onChange={(event) => onChange(withClipEdit(config, asset, { trimEnd: event.target.value === '' ? null : Number(event.target.value) }))} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-7 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
-                        <span id={`clip-${asset.id}-trim-end-help`} className="mt-1 block text-[11px] font-normal text-zinc-600">Vazio usa o fim · máximo {Math.min(MAX_TRIM_SECONDS, asset.durationSeconds).toFixed(2)}s</span>
+                        <span className="relative mt-1 block"><input type="number" min={edit.trimStart + MIN_TRIMMED_DURATION} max={Math.min(MAX_TRIM_SECONDS, asset.durationSeconds)} step={0.05} placeholder={asset.durationSeconds.toFixed(1)} value={edit.trimEnd ?? ''} aria-describedby={`clip-${asset.id}-trim-end-help`} onChange={(event) => onChange(withClipEdit(config, asset, { trimEnd: event.target.value === '' ? null : Number(event.target.value) }))} className="w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 pr-7 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-1.5 text-xs text-subtle">s</span></span>
+                        <span id={`clip-${asset.id}-trim-end-help`} className="mt-1 block text-xs font-normal text-muted">Vazio usa o fim · máximo {Math.min(MAX_TRIM_SECONDS, asset.durationSeconds).toFixed(2)}s</span>
                       </label>
-                      <label className="col-span-2 text-[11px] font-medium text-zinc-600 sm:col-span-1">
+                      <label className="col-span-2 text-xs font-medium text-muted sm:col-span-1">
                         <span className="flex items-center gap-1"><Gauge size={12} /> Velocidade</span>
-                        <select value={edit.speed} onChange={(event) => onChange(withClipEdit(config, asset, { speed: Number(event.target.value) as AdClipSpeed }))} className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-violet-500">
+                        <select value={edit.speed} onChange={(event) => onChange(withClipEdit(config, asset, { speed: Number(event.target.value) as AdClipSpeed }))} className="mt-1 w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 text-xs outline-none focus:border-accent">
                           {SPEEDS.map((speed) => <option key={speed} value={speed}>{speed}×{speed === 1 ? ' · original' : ''}</option>)}
                         </select>
                       </label>
                     </div>
-                    {asset.kind === 'image' ? <label className="mt-2 block text-xs">Movimento da imagem<select className="ml-2 rounded border border-zinc-300 p-2" value={edit.motion ?? 'none'} onChange={(event) => onChange(withClipEdit(config, asset, { motion: event.target.value as AdClipEdit['motion'] }))}><option value="none">Estática</option><option value="zoom-in">Zoom gradual</option><option value="zoom-out">Afastar gradual</option><option value="pan-left">Panorâmica esquerda</option><option value="pan-right">Panorâmica direita</option></select></label> : null}
-                    {asset.kind !== 'image' && effectiveDuration * edit.speed < MIN_TRIMMED_DURATION ? <p role="alert" className="mt-2 text-[11px] font-medium text-red-600">O trecho de origem precisa ter pelo menos 0,25 segundo.</p> : null}
+                    {asset.kind === 'image' ? <label className="mt-2 block text-xs">Movimento da imagem<select className="ml-2 rounded border border-line-strong p-2" value={edit.motion ?? 'none'} onChange={(event) => onChange(withClipEdit(config, asset, { motion: event.target.value as AdClipEdit['motion'] }))}><option value="none">Estática</option><option value="zoom-in">Zoom gradual</option><option value="zoom-out">Afastar gradual</option><option value="pan-left">Panorâmica esquerda</option><option value="pan-right">Panorâmica direita</option></select></label> : null}
+                    {asset.kind !== 'image' && effectiveDuration * edit.speed < MIN_TRIMMED_DURATION ? <p role="alert" className="mt-2 text-xs font-medium text-danger">O trecho de origem precisa ter pelo menos 0,25 segundo.</p> : null}
 
-                    <div className="mt-4 border-t border-zinc-200 pt-3">
-                      <div className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold text-zinc-700">
-                        <span className="flex items-center gap-1.5"><Focus size={14} className="text-violet-600" /> Enquadramento deste clipe</span>
+                    <div className="mt-4 border-t border-line pt-3">
+                      <div className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold text-ink">
+                        <span className="flex items-center gap-1.5"><Focus size={14} className="text-accent" /> Enquadramento deste clipe</span>
                         <button
                           type="button"
                           aria-pressed={edit.framingOverride}
@@ -525,13 +525,13 @@ function ClipSequenceEditor({
                               ? { focusX: config.framing.focusX, focusY: config.framing.focusY, zoom: 1 }
                               : { focusX: 50, focusY: 50, zoom: 1 }),
                           }))}
-                          className={`rounded-full px-2 py-1 text-[10px] font-semibold ${edit.framingOverride ? 'bg-violet-100 text-violet-700' : 'bg-zinc-200 text-zinc-600'}`}
+                          className={`rounded-full px-2 py-1 text-xs font-semibold ${edit.framingOverride ? 'bg-accent-soft text-accent' : 'bg-surface-muted text-muted'}`}
                         >{edit.framingOverride ? 'Usar ajuste geral' : 'Personalizar neste clipe'}</button>
                       </div>
                       <div className={`grid gap-3 sm:grid-cols-2 ${edit.framingOverride ? '' : 'opacity-45'}`}>
-                        <label className="text-[11px] font-medium text-zinc-600">Horizontal <span className="float-right text-zinc-400">{displayedFocusX}%</span><input disabled={!edit.framingOverride} type="range" min={0} max={100} value={displayedFocusX} onChange={(event) => onChange(withClipEdit(config, asset, { framingOverride: true, focusX: Number(event.target.value) }))} className="mt-1.5 w-full accent-violet-600 disabled:cursor-not-allowed" /></label>
-                        <label className="text-[11px] font-medium text-zinc-600">Vertical <span className="float-right text-zinc-400">{displayedFocusY}%</span><input disabled={!edit.framingOverride} type="range" min={0} max={100} value={displayedFocusY} onChange={(event) => onChange(withClipEdit(config, asset, { framingOverride: true, focusY: Number(event.target.value) }))} className="mt-1.5 w-full accent-violet-600 disabled:cursor-not-allowed" /></label>
-                        <label className="text-[11px] font-medium text-zinc-600 sm:col-span-2">Zoom <span className="float-right text-zinc-400">{displayedZoom.toFixed(2)}×</span><input disabled={!edit.framingOverride} type="range" min={1} max={3} step={0.05} value={displayedZoom} onChange={(event) => onChange(withClipEdit(config, asset, { framingOverride: true, zoom: Number(event.target.value) }))} className="mt-1.5 w-full accent-violet-600 disabled:cursor-not-allowed" /></label>
+                        <label className="text-xs font-medium text-muted">Horizontal <span className="float-right text-subtle">{displayedFocusX}%</span><input disabled={!edit.framingOverride} type="range" min={0} max={100} value={displayedFocusX} onChange={(event) => onChange(withClipEdit(config, asset, { framingOverride: true, focusX: Number(event.target.value) }))} className="mt-1.5 w-full accent-accent disabled:cursor-not-allowed" /></label>
+                        <label className="text-xs font-medium text-muted">Vertical <span className="float-right text-subtle">{displayedFocusY}%</span><input disabled={!edit.framingOverride} type="range" min={0} max={100} value={displayedFocusY} onChange={(event) => onChange(withClipEdit(config, asset, { framingOverride: true, focusY: Number(event.target.value) }))} className="mt-1.5 w-full accent-accent disabled:cursor-not-allowed" /></label>
+                        <label className="text-xs font-medium text-muted sm:col-span-2">Zoom <span className="float-right text-subtle">{displayedZoom.toFixed(2)}×</span><input disabled={!edit.framingOverride} type="range" min={1} max={3} step={0.05} value={displayedZoom} onChange={(event) => onChange(withClipEdit(config, asset, { framingOverride: true, zoom: Number(event.target.value) }))} className="mt-1.5 w-full accent-accent disabled:cursor-not-allowed" /></label>
                       </div>
                     </div>
                   </div>
@@ -542,41 +542,41 @@ function ClipSequenceEditor({
         </div>
       )}
 
-      <div className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3">
+      <div className="mt-4 rounded-xl border border-line bg-surface-muted p-3">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="flex items-center gap-1.5 text-xs font-semibold text-zinc-800"><Sparkles size={14} className="text-violet-600" /> Transição entre clipes</h3>
-            <p className="mt-0.5 text-[11px] text-zinc-500">O efeito aparece a cada troca de cena.</p>
+            <h3 className="flex items-center gap-1.5 text-xs font-semibold text-ink"><Sparkles size={14} className="text-accent" /> Transição entre clipes</h3>
+            <p className="mt-0.5 text-xs text-muted">O efeito aparece a cada troca de cena.</p>
           </div>
-          {transition.preset !== 'cut' ? <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">{effectiveTransitionSeconds.toFixed(2)}s no vídeo</span> : null}
+          {transition.preset !== 'cut' ? <span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-semibold text-accent">{effectiveTransitionSeconds.toFixed(2)}s no vídeo</span> : null}
         </div>
         <div className="mt-3 grid grid-cols-2 gap-1.5 sm:grid-cols-3">
           {TRANSITIONS.map((item) => {
             const selected = transition.preset === item.id
             return (
-              <button key={item.id} type="button" aria-pressed={selected} onClick={() => onChange({ ...config, transition: { ...transition, preset: item.id } })} className={`rounded-lg border px-2 py-2 text-left ${selected ? 'border-violet-500 bg-white ring-1 ring-violet-100' : 'border-zinc-200 bg-white hover:border-violet-300'}`}>
-                <span className="block text-[11px] font-semibold text-zinc-800">{item.label}</span>
-                <span className="mt-0.5 block text-[11px] text-zinc-600">{item.description}</span>
+              <button key={item.id} type="button" aria-pressed={selected} onClick={() => onChange({ ...config, transition: { ...transition, preset: item.id } })} className={`rounded-lg border px-2 py-2 text-left ${selected ? 'border-accent bg-surface ring-1 ring-accent/20' : 'border-line bg-surface hover:border-accent'}`}>
+                <span className="block text-xs font-semibold text-ink">{item.label}</span>
+                <span className="mt-0.5 block text-xs text-muted">{item.description}</span>
               </button>
             )
           })}
         </div>
         <div className="mt-3 grid gap-3 sm:grid-cols-2">
           {transition.preset !== 'cut' ? (
-            <label className="text-[11px] font-medium text-zinc-600">Duração <span className="float-right text-zinc-400">{transition.durationSeconds.toFixed(2)}s</span><input type="range" min={0.1} max={1.5} step={0.05} value={transition.durationSeconds} onChange={(event) => onChange({ ...config, transition: { ...transition, durationSeconds: Number(event.target.value) } })} className="mt-1.5 w-full accent-violet-600" /></label>
+            <label className="text-xs font-medium text-muted">Duração <span className="float-right text-subtle">{transition.durationSeconds.toFixed(2)}s</span><input type="range" min={0.1} max={1.5} step={0.05} value={transition.durationSeconds} onChange={(event) => onChange({ ...config, transition: { ...transition, durationSeconds: Number(event.target.value) } })} className="mt-1.5 w-full accent-accent" /></label>
           ) : <div className="hidden sm:block" />}
-          <label className="text-[11px] font-medium text-zinc-600">
+          <label className="text-xs font-medium text-muted">
             <span className="flex items-center gap-1"><Volume2 size={12} /> Efeito sonoro</span>
-            <select value={transition.sfx} onChange={(event) => onChange({ ...config, transition: { ...transition, sfx: event.target.value as AdTransitionSfx } })} className="mt-1.5 w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-violet-500">
+            <select value={transition.sfx} onChange={(event) => onChange({ ...config, transition: { ...transition, sfx: event.target.value as AdTransitionSfx } })} className="mt-1.5 w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 text-xs outline-none focus:border-accent">
               {SFX_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
             </select>
           </label>
           {transition.sfx !== 'none' ? (
-            <label className="text-[11px] font-medium text-zinc-600 sm:col-start-2">Volume do efeito <span className="float-right text-zinc-400">{Math.round(transition.sfxVolume * 100)}%</span><input type="range" min={0} max={0.5} step={0.01} value={transition.sfxVolume} onChange={(event) => onChange({ ...config, transition: { ...transition, sfxVolume: Number(event.target.value) } })} className="mt-1.5 w-full accent-violet-600" /></label>
+            <label className="text-xs font-medium text-muted sm:col-start-2">Volume do efeito <span className="float-right text-subtle">{Math.round(transition.sfxVolume * 100)}%</span><input type="range" min={0} max={0.5} step={0.01} value={transition.sfxVolume} onChange={(event) => onChange({ ...config, transition: { ...transition, sfxVolume: Number(event.target.value) } })} className="mt-1.5 w-full accent-accent" /></label>
           ) : null}
         </div>
         {transition.preset !== 'cut' && effectiveTransitionSeconds < transition.durationSeconds - 0.001 ? (
-          <p className="mt-2 text-[11px] text-amber-700">A cena mais curta limita a transição a {effectiveTransitionSeconds.toFixed(2)} s no vídeo final.</p>
+          <p className="mt-2 text-xs text-amber-700">A cena mais curta limita a transição a {effectiveTransitionSeconds.toFixed(2)} s no vídeo final.</p>
         ) : null}
       </div>
     </div>

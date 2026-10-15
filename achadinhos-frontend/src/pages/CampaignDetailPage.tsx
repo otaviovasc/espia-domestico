@@ -1,3 +1,4 @@
+import { isAxiosError } from 'axios'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
@@ -27,30 +28,17 @@ import {
   type Offer,
   type Safety,
 } from '@/lib/api'
-import { Button, Card, Badge, Spinner, Input, Label } from '@/components/ui'
+import { Button, Card, Spinner, Input, Label } from '@/components/ui'
 import { WhatsAppBubble } from '@/components/WhatsAppBubble'
 import { SafetyControls } from '@/components/SafetyControls'
+import { CampaignStatus, CampaignStatusDescription } from '@/components/CampaignStatus'
+import { CampaignConfirmDialog } from '@/components/CampaignConfirmDialog'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
+import { CampaignOfferRow } from '@/components/CampaignOfferRow'
 import { CampaignProgressCard } from '@/components/CampaignProgressCard'
 import { ProductDeliveryStatus } from '@/components/ProductDeliveryStatus'
 
 const ACTIVE: Campaign['status'][] = ['RUNNING', 'SCHEDULED']
-
-function statusBadge(status: Campaign['status']) {
-  const map: Record<
-    Campaign['status'],
-    { tone: 'zinc' | 'green' | 'red' | 'amber' | 'violet' | 'blue'; label: string }
-  > = {
-    DRAFT: { tone: 'zinc', label: 'Rascunho' },
-    SCHEDULED: { tone: 'blue', label: 'Agendada' },
-    RUNNING: { tone: 'amber', label: 'Enviando' },
-    PAUSED: { tone: 'amber', label: 'Pausada' },
-    COMPLETED: { tone: 'green', label: 'Concluída' },
-    FAILED: { tone: 'red', label: 'Falhou' },
-    CANCELLED: { tone: 'zinc', label: 'Cancelada' },
-  }
-  const { tone, label } = map[status]
-  return <Badge tone={tone}>{label}</Badge>
-}
 
 function toLocalInput(iso: string | null): string {
   if (!iso) return ''
@@ -59,43 +47,46 @@ function toLocalInput(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-function formatBRL(v?: number) {
-  return v === undefined ? '—' : new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(v)
+type CampaignForm = Pick<Campaign, 'name' | 'offers' | 'groups' | 'messageTemplate' | 'sendImages' | 'allowResend'> & { safety: Safety; scheduledAt: string }
+
+function campaignForm(campaign: Campaign): CampaignForm {
+  return { name: campaign.name, offers: campaign.offers, groups: campaign.groups, safety: { ...campaign.safety, shuffleOffers: campaign.safety.shuffleOffers ?? true }, messageTemplate: campaign.messageTemplate, sendImages: campaign.sendImages, allowResend: campaign.allowResend ?? false, scheduledAt: toLocalInput(campaign.scheduledAt) }
 }
 
-const CATEGORY_TONES = { A: 'green', B: 'blue', C: 'amber', D: 'red' } as const
+// Compare nested offer metadata by value, without depending on JSONB object key order.
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item)
+}
 
-function OfferCategoryBadge({ offer }: { offer: Offer }) {
-  if (!offer.category) return null
-  return (
-    <span
-      className="shrink-0"
-      title={typeof offer.relevanceScore === 'number' ? `Relevância ${offer.relevanceScore}/100` : undefined}
-    >
-      <Badge tone={CATEGORY_TONES[offer.category]}>Categoria {offer.category}</Badge>
-    </span>
-  )
+function formSignature(form: CampaignForm, defaultTemplate: string) {
+  return canonical({ ...form, name: form.name.trim(), messageTemplate: form.messageTemplate ?? defaultTemplate })
 }
 
 export default function CampaignDetailPage() {
   const { id } = useParams()
   const campaignId = Number(id)
+  const validId = Number.isSafeInteger(campaignId) && campaignId > 0
   const qc = useQueryClient()
 
   const campaignQuery = useQuery({
     queryKey: ['campaign', campaignId],
     queryFn: () => campaignApi.get(campaignId),
+    enabled: validId,
+    retry: (count, error) => !(isAxiosError(error) && error.response?.status === 404) && count < 2,
     refetchInterval: (q) => (ACTIVE.includes(q.state.data?.status as Campaign['status']) ? 2500 : false),
   })
   const logsQuery = useQuery({
     queryKey: ['campaign-logs', campaignId],
     queryFn: () => campaignApi.logs(campaignId),
+    enabled: validId && !!campaignQuery.data,
     refetchInterval: () =>
       ACTIVE.includes(campaignQuery.data?.status as Campaign['status']) ? 2500 : false,
   })
   const progressQuery = useQuery({
     queryKey: ['campaign-progress', campaignId],
     queryFn: () => campaignApi.progress(campaignId),
+    enabled: validId && !!campaignQuery.data,
     refetchInterval: () =>
       ACTIVE.includes(campaignQuery.data?.status as Campaign['status']) ? 3000 : false,
   })
@@ -116,6 +107,8 @@ export default function CampaignDetailPage() {
   const [sendImages, setSendImages] = useState(true)
   const [allowResend, setAllowResend] = useState(false)
   const [scheduledAt, setScheduledAt] = useState('')
+  const [savedForm, setSavedForm] = useState<CampaignForm | null>(null)
+  const [confirmation, setConfirmation] = useState<'run' | 'resume' | 'cancel' | { removeOffer: Offer } | null>(null)
   const [seededId, setSeededId] = useState<number | null>(null)
   const [previews, setPreviews] = useState<{ title: string; message: string }[]>([])
   const [groupSearch, setGroupSearch] = useState('')
@@ -126,6 +119,7 @@ export default function CampaignDetailPage() {
   // Seed local editable state once per loaded campaign id (render-time guard,
   // avoids setState-in-effect). Safe: setters are called only when the id changes.
   if (c && seededId !== c.id) {
+    setSavedForm(campaignForm(c))
     setName(c.name)
     setOffers(c.offers)
     setGroups(c.groups)
@@ -144,7 +138,10 @@ export default function CampaignDetailPage() {
     enabled: showGroupPicker,
   })
 
-  const effectiveTemplate = template ?? metaQuery.data?.defaultTemplate ?? ''
+  const defaultTemplate = metaQuery.data?.defaultTemplate ?? ''
+  const effectiveTemplate = template ?? defaultTemplate
+  const dirty = !!c?.editable && seededId === c.id && !!safety && !!savedForm && formSignature({ name, offers, groups, safety, messageTemplate: template, sendImages, allowResend, scheduledAt }, defaultTemplate) !== formSignature(savedForm, defaultTemplate)
+  const { prompt } = useUnsavedChanges(dirty, 'As alterações desta campanha ainda não foram salvas.')
 
   // Live preview (debounced).
   const previewMutation = useMutation({
@@ -171,7 +168,9 @@ export default function CampaignDetailPage() {
         scheduledAt: scheduledAt ? new Date(scheduledAt).toISOString() : null,
       }),
     onSuccess: (updated) => {
+      setSavedForm(campaignForm(updated))
       qc.setQueryData(['campaign', campaignId], updated)
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
       setError(null)
     },
     onError: (e) => setError(apiErrorMessage(e)),
@@ -186,6 +185,8 @@ export default function CampaignDetailPage() {
     mutationFn: (affiliateUrl: string) => campaignApi.removeOffer(campaignId, affiliateUrl),
     onSuccess: (updated) => {
       qc.setQueryData(['campaign', campaignId], updated)
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
+      setOffers(updated.offers)
       qc.invalidateQueries({ queryKey: ['campaign-progress', campaignId] })
       qc.invalidateQueries({ queryKey: ['offer-group-delivery'] })
       setError(null)
@@ -232,17 +233,24 @@ export default function CampaignDetailPage() {
     return counts
   }, [deliveryQuery.data, offers])
 
+  if (!validId || (campaignQuery.isError && !c)) {
+    const missing = !validId || (isAxiosError(campaignQuery.error) && campaignQuery.error.response?.status === 404)
+    return <div className="workspace-page max-w-5xl"><Link to="/campaigns" className="inline-flex min-h-11 items-center gap-2 text-sm text-accent"><ArrowLeft size={16} />Campanhas</Link><div role="alert" className="surface-panel mt-4 p-6"><h1 className="page-title">{missing ? 'Campanha não encontrada' : 'Não foi possível carregar a campanha'}</h1><p className="mt-2 text-sm text-muted">{missing ? 'O endereço pode estar incorreto ou esta campanha não está disponível.' : apiErrorMessage(campaignQuery.error)}</p>{!missing && <Button variant="secondary" className="mt-4" disabled={campaignQuery.isFetching} onClick={() => void campaignQuery.refetch()}><RotateCw size={16} />Tentar novamente</Button>}</div></div>
+  }
+
   if (campaignQuery.isLoading || !c || !safety) {
     return (
-      <div className="flex justify-center pt-10">
-        <Spinner />
+      <div role="status" className="flex items-center justify-center gap-3 pt-10 text-sm text-muted">
+        <Spinner /> Carregando campanha…
       </div>
     )
   }
 
   const editable = c.editable
   const effectiveEligible = deliverySummary.eligible + (allowResend ? deliverySummary.sent : 0)
-  const canRun = !runM.isPending
+  const canRun = !dirty
+    && !saveMutation.isPending
+    && !runM.isPending
     && !deliveryQuery.isPending
     && !deliveryQuery.isError
     && effectiveEligible > 0
@@ -267,68 +275,67 @@ export default function CampaignDetailPage() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
-      <Link to="/campaigns" className="inline-flex items-center gap-1 text-sm text-zinc-500 hover:text-zinc-800">
+    <div className="workspace-page max-w-5xl space-y-5">
+      <Link to="/campaigns" className="inline-flex min-h-11 items-center gap-1 text-sm text-muted hover:text-ink">
         <ArrowLeft size={16} /> Campanhas
       </Link>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="page-header">
         <div>
-          <h1 className="text-2xl font-bold">{c.name}</h1>
-          <div className="mt-1 flex items-center gap-2 text-sm text-zinc-500">
-            {statusBadge(c.status)}
+          <h1 className="page-title break-words">{c.name}</h1>
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted">
+            <CampaignStatus status={c.status} stalled={c.status === 'RUNNING' && c.stalled} />
             {offers.length} produto(s) · {groups.length} grupo(s)
           </div>
+          <p className="mt-2 max-w-xl text-sm text-muted"><CampaignStatusDescription status={c.status} /></p>
+          {c.scheduledAt && <p className="mt-1 text-sm text-muted tabular-nums">Agendada para {new Date(c.scheduledAt).toLocaleString('pt-BR')}</p>}
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="page-actions flex flex-wrap gap-2">
           {editable && (
-            <Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
+            <Button id="campaign-save" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
               <Save size={16} /> {saveMutation.isPending ? 'Salvando…' : 'Salvar'}
             </Button>
           )}
           {(c.status === 'DRAFT' || c.status === 'FAILED') && (
-            <Button variant="secondary" onClick={() => runM.mutate()} disabled={!canRun}>
-              <Play size={16} /> Enviar agora
+            <Button variant="secondary" onClick={() => { if (dirty) { document.getElementById('campaign-save')?.focus(); return }; if (canRun) setConfirmation('run') }} disabled={!canRun} aria-describedby={dirty ? 'campaign-unsaved' : undefined}>
+              <Play size={16} /> {runM.isPending ? 'Iniciando…' : 'Enviar agora'}
             </Button>
           )}
           {(c.status === 'SCHEDULED' || c.status === 'RUNNING') && (
             <Button variant="secondary" onClick={() => pauseM.mutate()} disabled={pauseM.isPending}>
-              <Pause size={16} /> Pausar
+              <Pause size={16} /> {pauseM.isPending ? 'Pausando…' : 'Pausar'}
             </Button>
           )}
           {c.status === 'RUNNING' && (
             <Button
               variant="secondary"
-              onClick={() => resumeM.mutate()}
-              disabled={resumeM.isPending}
+              onClick={() => { if (!dirty && !saveMutation.isPending) setConfirmation('resume') }}
+              disabled={dirty || saveMutation.isPending || resumeM.isPending}
               title={
                 allowResend
                   ? 'Reinicia o envio de onde parou (pares já enviados SERÃO enviados de novo — reenvio ativado)'
                   : 'Reinicia o envio de onde parou (não reenvia o que já foi enviado)'
               }
             >
-              <RotateCw size={16} /> {c.stalled ? 'Retomar envio' : 'Reiniciar envio'}
+              <RotateCw size={16} /> {resumeM.isPending ? 'Retomando…' : c.stalled ? 'Retomar envio' : 'Reiniciar envio'}
             </Button>
           )}
           {c.status === 'PAUSED' && (
-            <Button variant="secondary" onClick={() => resumeM.mutate()} disabled={resumeM.isPending}>
-              <RotateCw size={16} /> Retomar
+            <Button variant="secondary" onClick={() => { if (!dirty && !saveMutation.isPending) setConfirmation('resume') }} disabled={dirty || saveMutation.isPending || resumeM.isPending}>
+              <RotateCw size={16} /> {resumeM.isPending ? 'Retomando…' : 'Retomar'}
             </Button>
           )}
-          {c.status !== 'COMPLETED' && c.status !== 'CANCELLED' && (
-            <Button variant="danger" onClick={() => cancelM.mutate()} disabled={cancelM.isPending}>
-              <Ban size={16} /> Cancelar
-            </Button>
-          )}
+
         </div>
       </div>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {saveMutation.isSuccess && !error && (
-        <p className="text-sm text-green-600">Alterações salvas.</p>
+      {dirty && <div id="campaign-unsaved" role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-soft p-3 text-sm text-warning"><p>Há alterações não salvas. Salve a campanha antes de enviar.</p><button type="button" className="min-h-11 font-semibold underline underline-offset-4" onClick={() => document.getElementById('campaign-save')?.focus()}>Ir para Salvar</button></div>}
+      {error && <p role="alert" className="rounded-lg bg-danger-soft p-3 text-sm text-danger">{error}</p>}
+      {saveMutation.isSuccess && !error && !dirty && (
+        <p role="status" className="text-sm text-success">Alterações salvas.</p>
       )}
       {c.status === 'RUNNING' && c.stalled && (
-        <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+        <div className="rounded-lg bg-warning-soft p-3 text-sm text-warning">
           Este envio foi interrompido (o servidor reiniciou durante a campanha). Clique em
           <strong> Retomar envio</strong> para continuar de onde parou
           {allowResend ? (
@@ -344,19 +351,19 @@ export default function CampaignDetailPage() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="font-semibold">Envio por produto e grupo</h2>
-              <p className="text-sm text-zinc-500">O mesmo produto pode ir a vários grupos da conexão atual; cada combinação é controlada separadamente.</p>
+              <p className="text-sm text-muted">O mesmo produto pode ir a vários grupos da conexão atual; cada combinação é controlada separadamente.</p>
             </div>
-            {deliveryQuery.isPending ? <Spinner /> : (
+            {deliveryQuery.isPending ? <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner />Verificando envios…</div> : !deliveryQuery.isError && (
               <div className="flex flex-wrap gap-3 text-sm">
-                <span className="font-medium text-green-700">{effectiveEligible} a enviar</span>
-                <span className="font-medium text-amber-700">{deliverySummary.sent} já enviada(s){allowResend && deliverySummary.sent > 0 ? ' (reenviam)' : ''}</span>
-                <span className="font-medium text-blue-700">{deliverySummary.sending} em campanha</span>
-                <span className="font-medium text-red-700">{deliverySummary.ambiguous} sem confirmação</span>
+                <span className="font-medium text-success">{effectiveEligible} a enviar</span>
+                <span className="font-medium text-success">{deliverySummary.sent} já enviada(s){allowResend && deliverySummary.sent > 0 ? ' (reenviam)' : ''}</span>
+                <span className="font-medium text-info">{deliverySummary.sending} em campanha</span>
+                <span className="font-medium text-danger">{deliverySummary.ambiguous} sem confirmação</span>
               </div>
             )}
           </div>
           {editable && (
-            <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-zinc-200 p-3 text-sm">
+            <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-lg border border-line p-3 text-sm">
               <input
                 type="checkbox"
                 className="mt-0.5"
@@ -365,25 +372,25 @@ export default function CampaignDetailPage() {
               />
               <span>
                 <span className="font-medium">Reenviar pares já enviados nesta conexão</span>
-                <span className="block text-xs text-zinc-500">
+                <span className="block text-xs text-muted">
                   Clique em Salvar para gravar. Pares em campanha ou sem confirmação continuam bloqueados.
                 </span>
               </span>
             </label>
           )}
           {!editable && allowResend && (
-            <p className="mt-3 text-sm text-amber-800">
+            <p className="mt-3 text-sm text-warning">
               Reenvio ativado: pares já enviados serão enviados de novo ao iniciar.
             </p>
           )}
           {deliveryQuery.isError && (
-            <p role="alert" className="mt-3 text-sm text-red-700">
+            <p role="alert" className="mt-3 text-sm text-danger">
               Não foi possível verificar o histórico. O início da campanha fica bloqueado até a
               verificação funcionar. <button type="button" className="underline" onClick={() => void deliveryQuery.refetch()}>Tentar novamente</button>
             </p>
           )}
           {!deliveryQuery.isPending && !deliveryQuery.isError && effectiveEligible === 0 && c.status === 'DRAFT' && (
-            <p role="status" className="mt-3 text-sm text-amber-800">
+            <p role="status" className="mt-3 text-sm text-warning">
               {deliverySummary.ambiguous > 0
                 ? `Há ${deliverySummary.ambiguous} envio(s) sem confirmação. Confira o WhatsApp e resolva cada item abaixo antes de iniciar.`
                 : 'Todos os pares desta campanha já foram enviados ou estão em outra campanha. Adicione outro produto ou grupo antes de iniciar.'}
@@ -392,6 +399,9 @@ export default function CampaignDetailPage() {
         </Card>
       )}
 
+      {campaignQuery.isError && <p role="alert" className="rounded-lg bg-warning-soft p-3 text-sm text-warning">Não foi possível atualizar a situação da campanha. <button className="underline" onClick={() => void campaignQuery.refetch()}>Tentar novamente</button></p>}
+      {!editable && progressQuery.isLoading && <div role="status" className="surface-panel flex items-center gap-3 p-4 text-sm text-muted"><Spinner />Carregando progresso…</div>}
+      {!editable && progressQuery.isError && <p role="alert" className="rounded-lg bg-danger-soft p-3 text-sm text-danger">Não foi possível atualizar o progresso. <button className="underline" onClick={() => void progressQuery.refetch()}>Tentar novamente</button></p>}
       {!editable && progressQuery.data && (
         <CampaignProgressCard progress={progressQuery.data} />
       )}
@@ -399,31 +409,33 @@ export default function CampaignDetailPage() {
       {editable ? (
         <>
           <Card>
-            <Label>Nome</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
-          </Card>
-
-          {/* Schedule */}
-          <Card>
-            <Label>Agendamento (vazio = rascunho, sem envio automático)</Label>
+            <h2 className="mb-4 font-semibold">Configuração da campanha</h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+            <div><Label htmlFor="campaign-name">Nome da campanha</Label>
+            <Input id="campaign-name" value={name} onChange={(e) => setName(e.target.value)} /></div>
+            <div><Label htmlFor="campaign-schedule">Agendamento</Label>
             <Input
+              id="campaign-schedule"
               type="datetime-local"
               value={scheduledAt}
               onChange={(e) => setScheduledAt(e.target.value)}
             />
+            <p className="mt-2 text-xs text-muted">Horário local. Deixe vazio para manter como rascunho, sem envio automático.</p></div>
+            </div>
           </Card>
 
           {/* Template + preview */}
           <Card>
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-semibold">Mensagem</h2>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
+                  aria-pressed={sendImages}
                   onClick={() => setSendImages((v) => !v)}
-                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                  className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition ${
                     sendImages
-                      ? 'border-violet-500 bg-violet-50 text-violet-700'
-                      : 'border-zinc-200 text-zinc-500 hover:bg-zinc-50'
+                      ? 'border-accent bg-accent-soft text-accent'
+                      : 'border-line text-muted hover:bg-surface-muted'
                   }`}
                 >
                   {sendImages ? <ImageIcon size={14} /> : <ImageOff size={14} />}
@@ -437,12 +449,13 @@ export default function CampaignDetailPage() {
                 </Button>
               </div>
             </div>
+            {metaQuery.isError && <p role="alert" className="mb-3 text-sm text-danger">Não foi possível carregar os campos da mensagem. <button className="underline" onClick={() => void metaQuery.refetch()}>Tentar novamente</button></p>}
             <div className="mb-2 flex flex-wrap gap-1.5">
               {metaQuery.data?.placeholders.map((p) => (
                 <button
                   key={p.key}
                   onClick={() => insertPlaceholder(p.key)}
-                  className="rounded-md bg-zinc-100 px-2 py-1 text-xs text-zinc-600 hover:bg-violet-100 hover:text-violet-700"
+                  className="min-h-9 rounded-md bg-surface-muted px-2 py-1 text-xs text-muted hover:bg-accent-soft hover:text-accent"
                 >
                   {p.label}
                 </button>
@@ -450,12 +463,13 @@ export default function CampaignDetailPage() {
             </div>
             <div className="grid gap-4 lg:grid-cols-2">
               <textarea
+                aria-label="Modelo da mensagem"
                 ref={templateRef}
                 value={effectiveTemplate}
                 onChange={(e) => setTemplate(e.target.value)}
-                className="h-64 w-full rounded-lg border border-zinc-300 p-3 font-mono text-xs outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
+                className="h-64 w-full rounded-lg border border-line-strong bg-surface p-3 text-sm leading-relaxed text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
               />
-              <div className="h-64 space-y-2 overflow-y-auto rounded-lg bg-[#e5ddd5] p-3">
+              <div aria-label="Prévia da mensagem no WhatsApp" className="h-64 space-y-2 overflow-y-auto rounded-lg bg-[#e5ddd5] p-3">
                 {previews.slice(0, 4).map((p, i) => {
                   const offer = offers.find((o) => o.title === p.title)
                   return (
@@ -469,14 +483,16 @@ export default function CampaignDetailPage() {
                     />
                   )
                 })}
-                {previews.length === 0 && <p className="text-xs text-zinc-500">Prévia…</p>}
+                {previewMutation.isPending && <p role="status" className="text-xs text-[#526256]">Atualizando prévia…</p>}
+                {previewMutation.isError && <p role="alert" className="rounded bg-danger-soft p-2 text-sm text-danger">Não foi possível gerar a prévia. <button className="underline" onClick={() => previewMutation.mutate()}>Tentar novamente</button></p>}
+                {previews.length === 0 && !previewMutation.isPending && !previewMutation.isError && <p className="text-xs text-[#526256]">A prévia aparece quando há produtos e uma mensagem.</p>}
               </div>
             </div>
           </Card>
 
           {/* Offers */}
           <Card>
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-semibold">Produtos ({offers.length})</h2>
               <Button
                 variant="ghost"
@@ -499,45 +515,25 @@ export default function CampaignDetailPage() {
             <div className="my-3 flex items-center justify-between gap-3 text-sm"><Button variant="secondary" disabled={safeOfferPage === 1} onClick={() => setOfferPage(safeOfferPage - 1)}>Anterior</Button><span>Página {safeOfferPage} de {offerPageCount}</span><Button variant="secondary" disabled={safeOfferPage === offerPageCount} onClick={() => setOfferPage(safeOfferPage + 1)}>Próxima</Button></div>
             <div className="max-h-80 space-y-1 overflow-y-auto">
               {pagedOffers.map(({ offer: o, index: i }) => (
-                <div key={i} className="grid gap-2 rounded-lg px-2 py-2 hover:bg-zinc-50 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)_auto] md:items-start">
-                  {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
-                  <span className="min-w-0 truncate text-sm">{o.title}</span>
-                  <OfferCategoryBadge offer={o} />
-                  <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
-                  <ProductDeliveryStatus groups={deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} compact={groups.length > 4} />
-                  {o.commissioned === false && <Badge tone="amber">sem comissão</Badge>}
-                  <button
-                    onClick={() => setOffers((prev) => prev.filter((_, idx) => idx !== i))}
-                    className="text-zinc-400 hover:text-red-600"
-                    title="Remover"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                  <a
-                    href={o.affiliateUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-zinc-400 hover:text-violet-600"
-                    title="Abrir link do produto"
-                  >
-                    <ExternalLink size={16} />
-                  </a>
-                </div>
+                <CampaignOfferRow key={offerIdentity(o)} offer={o} delivery={<ProductDeliveryStatus groups={deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} emptyLabel={deliveryQuery.isPending ? 'Verificando histórico…' : deliveryQuery.isError ? 'Histórico indisponível' : 'Sem histórico nos grupos selecionados'} compact={groups.length > 4} />} actions={<>
+                  <button type="button" onClick={() => setOffers((prev) => prev.filter((_, idx) => idx !== i))} className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs text-danger hover:bg-danger-soft" aria-label={`Remover ${o.title} da campanha`}><Trash2 size={16} />Remover</button>
+                  <a href={o.affiliateUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs text-accent hover:bg-accent-soft" aria-label={`Abrir ${o.title} em nova aba`}><ExternalLink size={16} />Ver produto</a>
+                </>} />
               ))}
               {offers.length === 0 && (
-                <p className="py-3 text-center text-sm text-red-500">
+                <p className="py-3 text-center text-sm text-danger">
                   Sem produtos — adicione ao menos um antes de salvar.
                 </p>
               )}
             </div>
-            <p className="mt-2 text-xs text-zinc-400">
+            <p className="mt-2 text-xs text-subtle">
               Para adicionar novos produtos em massa, crie uma nova campanha via importação de JSON.
             </p>
           </Card>
 
           {/* Groups */}
           <Card>
-            <div className="mb-2 flex items-center justify-between">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
               <h2 className="font-semibold">Grupos ({groups.length})</h2>
               <Button variant="ghost" onClick={() => setShowGroupPicker((v) => !v)}>
                 {showGroupPicker ? 'Fechar' : 'Editar grupos'}
@@ -547,47 +543,49 @@ export default function CampaignDetailPage() {
               {groups.map((g) => (
                 <span
                   key={g.id}
-                  className="inline-flex items-center gap-1 rounded-full bg-violet-50 px-3 py-1 text-xs text-violet-700"
+                  className="inline-flex max-w-full items-center gap-1 rounded-md bg-accent-soft px-3 py-1 text-sm text-accent"
                 >
-                  {g.name}
-                  <button onClick={() => toggleGroupSel(g)} className="hover:text-red-600">
+                  <span className="min-w-0 break-words">{g.name}</span>
+                  <button aria-label={`Remover grupo ${g.name}`} onClick={() => toggleGroupSel(g)} className="flex h-8 w-8 items-center justify-center rounded hover:text-danger">
                     ×
                   </button>
                 </span>
               ))}
-              {groups.length === 0 && <span className="text-sm text-red-500">Nenhum grupo.</span>}
+              {groups.length === 0 && <span className="text-sm text-danger">Nenhum grupo.</span>}
             </div>
 
             {showGroupPicker && (
               <>
                 {groupsQuery.isLoading && <Spinner />}
                 {groupsQuery.isError && (
-                  <p className="text-sm text-red-600">{apiErrorMessage(groupsQuery.error)}</p>
+                  <p role="alert" className="text-sm text-danger">{apiErrorMessage(groupsQuery.error)} <button className="underline" onClick={() => void groupsQuery.refetch()}>Tentar novamente</button></p>
                 )}
                 {groupsQuery.data && (
                   <>
                     <div className="relative mb-2">
-                      <Search size={16} className="absolute left-3 top-2.5 text-zinc-400" />
+                      <Search size={16} className="absolute left-3 top-2.5 text-subtle" />
                       <Input
                         className="pl-9"
+                        aria-label="Buscar grupo"
                         placeholder="Buscar grupo…"
                         value={groupSearch}
                         onChange={(e) => setGroupSearch(e.target.value)}
                       />
                     </div>
                     <div className="max-h-56 space-y-1 overflow-y-auto">
+                      {filteredGroups.length === 0 && <p className="py-3 text-sm text-muted">Nenhum grupo encontrado. Altere a busca ou confira sua conexão.</p>}
                       {filteredGroups.map((g) => (
                         <label
                           key={g.id}
-                          className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 hover:bg-zinc-50"
+                          className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 hover:bg-surface-muted"
                         >
                           <input
                             type="checkbox"
                             checked={groups.some((x) => x.id === g.id)}
                             onChange={() => toggleGroupSel({ id: g.id, name: g.name })}
                           />
-                          <span className="flex-1 text-sm">{g.name}</span>
-                          <span className="text-xs text-zinc-400">{g.size} membros</span>
+                          <span className="min-w-0 flex-1 break-words text-sm">{g.name}</span>
+                          <span className="text-xs text-subtle">{g.size} membros</span>
                         </label>
                       ))}
                     </div>
@@ -605,54 +603,25 @@ export default function CampaignDetailPage() {
         </>
       ) : null}
 
+        {!editable && <Card><h2 className="mb-3 font-semibold">Grupos de destino</h2><ul className="grid gap-2 text-sm sm:grid-cols-2">{groups.map((g) => <li key={g.id} className="min-w-0 break-words rounded-md bg-surface-muted px-3 py-2 text-ink">{g.name}</li>)}</ul>{groups.length === 0 && <p className="text-sm text-muted">Nenhum grupo nesta campanha.</p>}<p className="mt-3 text-xs text-muted">{sendImages ? 'Mensagem com imagem do produto.' : 'Mensagem de texto com link do produto.'}</p></Card>}
+
         {!editable && (
           <Card>
             <h2 className="mb-3 font-semibold">Produtos ({offers.length})</h2>
 
             <div className="my-3 flex items-center justify-between gap-3 text-sm"><Button variant="secondary" disabled={safeOfferPage === 1} onClick={() => setOfferPage(safeOfferPage - 1)}>Anterior</Button><span>Página {safeOfferPage} de {offerPageCount}</span><Button variant="secondary" disabled={safeOfferPage === offerPageCount} onClick={() => setOfferPage(safeOfferPage + 1)}>Próxima</Button></div>
             <div className="max-h-80 space-y-1 overflow-y-auto">
-              {pagedOffers.map(({ offer: o, index: i }) => {
+              {pagedOffers.map(({ offer: o }) => {
                 const offerGroups = deliveryQuery.data?.[offerIdentity(o)]?.groups ?? []
                 const hasUnsent =
                   offerGroups.length === 0 || offerGroups.some((g) => g.status !== 'sent')
                 const canRemove =
                   hasUnsent && c.status !== 'COMPLETED' && c.status !== 'CANCELLED'
                 return (
-                  <div key={i} className="grid gap-2 rounded-lg px-2 py-2 hover:bg-zinc-50 md:grid-cols-[auto_minmax(0,1fr)_auto_auto_minmax(12rem,auto)_auto] md:items-start">
-                    {o.imageUrl && <img src={o.imageUrl} alt="" className="h-8 w-8 rounded object-cover" />}
-                    <span className="min-w-0 truncate text-sm">{o.title}</span>
-                    <OfferCategoryBadge offer={o} />
-                    <span className="text-sm font-medium">{formatBRL(o.discountedPrice)}</span>
-                    <ProductDeliveryStatus groups={offerGroups} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} compact={groups.length > 4} />
-                    <div className="flex items-center gap-1">
-                      <a
-                        href={o.affiliateUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded p-1 text-zinc-400 hover:bg-zinc-100 hover:text-violet-600"
-                        title="Abrir link do produto"
-                      >
-                        <ExternalLink size={16} />
-                      </a>
-                      {canRemove && (
-                        <button
-                          onClick={() => {
-                            if (
-                              confirm(
-                                `Remover "${o.title}" desta campanha? Os envios ainda não realizados deste produto não serão enviados.`,
-                              )
-                            )
-                              removeOfferM.mutate(o.affiliateUrl)
-                          }}
-                          disabled={removeOfferM.isPending}
-                          className="rounded p-1 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
-                          title="Remover produto (ainda não enviado)"
-                        >
-                          <Trash2 size={16} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
+                  <CampaignOfferRow key={offerIdentity(o)} offer={o} delivery={<ProductDeliveryStatus groups={offerGroups} savedProductId={o.savedProductId} offer={{ source: o.source, productId: o.productId, affiliateUrl: o.affiliateUrl }} groupNames={campaignGroupNames} emptyLabel={deliveryQuery.isPending ? 'Verificando histórico…' : deliveryQuery.isError ? 'Histórico indisponível' : 'Sem histórico nos grupos selecionados'} compact={groups.length > 4} />} actions={<>
+                    <a href={o.affiliateUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs text-accent hover:bg-accent-soft" aria-label={`Abrir ${o.title} em nova aba`}><ExternalLink size={16} />Ver produto</a>
+                    {canRemove && <button type="button" onClick={() => setConfirmation({ removeOffer: o })} disabled={removeOfferM.isPending} className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-xs text-danger hover:bg-danger-soft disabled:opacity-40" aria-label={`Remover ${o.title} da campanha`}><Trash2 size={16} />{removeOfferM.isPending ? 'Removendo…' : 'Remover pendentes'}</button>}
+                  </>} />
                 )
               })}
             </div>
@@ -662,30 +631,41 @@ export default function CampaignDetailPage() {
       {/* Logs (always) */}
       <Card>
         <h2 className="mb-3 font-semibold">Registro de envios</h2>
-        {logsQuery.isLoading && <Spinner />}
-        {logsQuery.data && logsQuery.data.length === 0 && (
-          <p className="text-sm text-zinc-400">Nenhum envio ainda.</p>
-        )}
-        <div className="max-h-96 space-y-1 overflow-y-auto">
-          {logsQuery.data?.map((log) => (
-            <div key={log.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 text-sm hover:bg-zinc-50">
-              {log.success ? (
-                <CheckCircle2 size={16} className="text-green-500" />
-              ) : (
-                <XCircle size={16} className="text-red-500" />
-              )}
-              <span className="flex-1 truncate">
-                <span className="font-medium">{log.offerTitle}</span>
-                <span className="text-zinc-400"> → {log.groupName}</span>
-              </span>
-              {!log.success && <span className="truncate text-xs text-red-500">{log.error}</span>}
-              <span className="text-xs text-zinc-400">
-                {new Date(log.sentAt).toLocaleTimeString('pt-BR')}
-              </span>
-            </div>
-          ))}
+        {logsQuery.isLoading && <div role="status" className="flex items-center gap-2 text-sm text-muted"><Spinner />Carregando registro…</div>}
+        {logsQuery.isError && <p role="alert" className="mb-3 rounded-lg bg-danger-soft p-3 text-sm text-danger">Não foi possível carregar o registro. <button className="underline" onClick={() => void logsQuery.refetch()}>Tentar novamente</button></p>}
+        {logsQuery.data?.length === 0 && <p className="text-sm text-muted">Nenhum envio registrado. As entregas e as falhas aparecerão aqui.</p>}
+        <div className="max-h-[32rem] overflow-y-auto divide-y divide-line">
+          {logsQuery.data?.map((log) => <div key={log.id} className="flex min-w-0 items-start gap-3 py-3 text-sm">
+            {log.success ? <CheckCircle2 size={18} className="mt-0.5 shrink-0 text-success" aria-hidden="true" /> : <XCircle size={18} className="mt-0.5 shrink-0 text-danger" aria-hidden="true" />}
+            <div className="min-w-0 flex-1"><div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"><span className={`text-xs font-semibold ${log.success ? 'text-success' : 'text-danger'}`}>{log.success ? 'Enviado' : 'Falha no envio'}</span><time dateTime={log.sentAt} className="text-xs text-subtle tabular-nums">{new Date(log.sentAt).toLocaleString('pt-BR')}</time></div><p className="mt-1 break-words font-medium text-ink">{log.offerTitle}</p><p className="mt-1 break-words text-muted">Grupo: {log.groupName}</p>{!log.success && <p className="mt-2 break-words rounded-lg bg-danger-soft p-2 text-sm text-danger">{log.error || 'O envio não foi confirmado. Confira o WhatsApp antes de tentar novamente.'}</p>}</div>
+          </div>)}
         </div>
       </Card>
+      {c.status !== 'COMPLETED' && c.status !== 'CANCELLED' && <section className="flex flex-wrap items-center justify-between gap-4 border-t border-line pt-5"><div><h2 className="text-sm font-semibold text-ink">Cancelar campanha</h2><p className="mt-1 text-sm text-muted">Interrompe os envios pendentes. As mensagens já enviadas permanecem nos grupos.</p></div><Button variant="danger" disabled={cancelM.isPending} onClick={() => setConfirmation('cancel')}><Ban size={16} />{cancelM.isPending ? 'Cancelando…' : 'Cancelar campanha'}</Button></section>}
+      {confirmation && <CampaignConfirmDialog
+        title={confirmation === 'run' ? 'Enviar campanha agora?' : confirmation === 'resume' ? (c.status === 'RUNNING' && !c.stalled ? 'Reiniciar envio?' : 'Retomar envio?') : confirmation === 'cancel' ? 'Cancelar campanha?' : 'Remover produto da campanha?'}
+        description={confirmation === 'run'
+          ? `Campanha: ${c.name}\n${c.offers.length} ${c.offers.length === 1 ? 'produto' : 'produtos'} para ${c.groups.length} ${c.groups.length === 1 ? 'grupo' : 'grupos'}. ${effectiveEligible} ${effectiveEligible === 1 ? 'combinação disponível' : 'combinações disponíveis'} para envio.\nAs mensagens serão enviadas agora para os grupos desta campanha.${c.allowResend ? '\nReenvio ativado: combinações já enviadas poderão receber a mensagem novamente.' : ''}`
+          : confirmation === 'resume'
+            ? `Campanha: ${c.name}\n${c.offers.length} ${c.offers.length === 1 ? 'produto' : 'produtos'} para ${c.groups.length} ${c.groups.length === 1 ? 'grupo' : 'grupos'}. O envio continuará com a configuração salva.${c.allowResend ? '\nReenvio ativado: as combinações já enviadas poderão receber a mensagem novamente.' : '\nAs combinações já enviadas não serão repetidas.'}`
+          : confirmation === 'cancel'
+            ? `Campanha: ${c.name}\nOs envios pendentes serão interrompidos. As mensagens já enviadas não serão apagadas dos grupos.${dirty ? '\nAs alterações não salvas não serão aplicadas.' : ''}`
+            : `Remover “${confirmation.removeOffer.title}” de “${c.name}”? Os envios pendentes deste produto não serão realizados. As mensagens já enviadas permanecem nos grupos.`}
+        confirmLabel={confirmation === 'run' ? 'Enviar para os grupos agora' : confirmation === 'resume' ? 'Confirmar retomada' : confirmation === 'cancel' ? 'Cancelar campanha' : 'Remover produto'}
+        cancelLabel={confirmation === 'run' || confirmation === 'resume' ? 'Voltar à revisão' : confirmation === 'cancel' ? 'Manter campanha' : 'Manter produto'}
+        danger={confirmation !== 'run' && confirmation !== 'resume'}
+        onCancel={() => setConfirmation(null)}
+        onConfirm={() => {
+          if (confirmation === 'run') {
+            if (canRun && (c.status === 'DRAFT' || c.status === 'FAILED')) runM.mutate()
+          } else if (confirmation === 'resume') {
+            if (!dirty && !saveMutation.isPending && !resumeM.isPending && (c.status === 'PAUSED' || c.status === 'RUNNING')) resumeM.mutate()
+          } else if (confirmation === 'cancel') cancelM.mutate()
+          else removeOfferM.mutate(confirmation.removeOffer.affiliateUrl)
+          setConfirmation(null)
+        }}
+      />}
+      {prompt}
     </div>
   )
 }
@@ -705,6 +685,7 @@ function useMutationAction(
     mutationFn: fn,
     onSuccess: (updated) => {
       qc.setQueryData(['campaign', campaignId], updated)
+      qc.invalidateQueries({ queryKey: ['campaigns'] })
       qc.invalidateQueries({ queryKey: ['campaign-logs', campaignId] })
       qc.invalidateQueries({ queryKey: ['campaign-progress', campaignId] })
       setError(null)

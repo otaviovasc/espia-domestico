@@ -1,0 +1,101 @@
+.workspace-shell :is(a, button, select):focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 3px;
+}
+
+.workspace-skip-link {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 200;
+  transform: translateY(-200%);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--app-accent);
+  color: var(--app-accent-foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.workspace-skip-link:focus { transform: translateY(0); }
+
+.workspace-drawer {
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: min(20rem, calc(100vw - 2.5rem));
+  max-width: none;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.workspace-drawer::backdrop { background: rgb(5 20 12 / 55%); }
+
+.unsaved-changes-dialog {
+  position: fixed;
+  inset: 0;
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 2rem);
+  margin: auto;
+  padding: 0;
+  overflow-y: auto;
+  border-radius: 1rem;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 20%);
+}
+
+.unsaved-changes-dialog::backdrop { background: rgb(5 12 20 / 60%); }
+
+.workspace-sidebar { border-right: 2px solid var(--app-line-strong); }
+.workspace-header { border-bottom: 2px solid var(--app-line-strong); }
+.workspace-menu-button { border: 2px solid var(--app-line-strong); box-shadow: 2px 2px 0 var(--app-hard-shadow); }
+.workspace-menu-button:active { box-shadow: none; transform: translate(2px, 2px); }
+.workspace-nav-link { border: 2px solid transparent; }
+.workspace-nav-link[aria-current='page'] {
+  border-color: var(--app-accent);
+  box-shadow: 2px 2px 0 var(--app-accent);
+}
+.login-panel { box-shadow: 6px 6px 0 var(--app-hard-shadow); }
+.unsaved-changes-dialog { border: 2px solid var(--app-line-strong); box-shadow: 6px 6px 0 var(--app-hard-shadow); }
+
+@media (max-width: 359px) {
+  .workspace-header { gap: 0.375rem; padding-inline: 0.5rem; }
+  .workspace-header > a > span:last-child { display: none; }
+}
+.workspace-short-brand { font-family: 'Espiã Bricolage', 'Manrope', sans-serif; font-size: 1.125rem; font-weight: 800; letter-spacing: -0.035em; }
+
+/* Brand art occupies its own column; authentication controls stay on a calm surface. */
+.login-layout {
+  display: grid;
+  width: 100%;
+  max-width: 24rem;
+  flex: 1;
+  align-content: center;
+  gap: 1.75rem;
+  margin-inline: auto;
+  padding-block: 2.5rem;
+}
+.login-art { min-width: 0; }
+.login-art .login-poster { display: none; }
+.login-art .login-mobile-pattern { display: block; width: 100%; }
+.workspace-header .workspace-header-pattern { display: none; }
+
+@media (min-width: 1024px) {
+  .login-layout {
+    max-width: 64rem;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.95fr);
+    align-items: center;
+    gap: 4rem;
+    padding-block: 4rem;
+  }
+  .login-art { margin-bottom: 3rem; }
+  .login-art .login-poster { display: block; width: 100%; }
+  .login-art .login-mobile-pattern { display: none; }
+  .login-layout > .login-panel { width: 100%; max-width: 24rem; justify-self: end; transform: translateY(1.5rem); }
+}
+
+@media (min-width: 1280px) {
+  .workspace-header .workspace-header-pattern { display: block; width: 11rem; max-height: 2.5rem; flex: 0 0 auto; }
+}

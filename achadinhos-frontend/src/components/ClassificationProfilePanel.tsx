@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Copy, Pencil, Plus, Settings2, Trash2, X } from 'lucide-react'
 import {
@@ -115,6 +115,7 @@ interface ClassificationProfilePanelProps {
   isError: boolean
   disabled?: boolean
   onRetry: () => void
+  onDirtyChange?: (dirty: boolean) => void
 }
 
 export function ClassificationProfilePanel({
@@ -125,9 +126,11 @@ export function ClassificationProfilePanel({
   isError,
   disabled = false,
   onRetry,
+  onDirtyChange,
 }: ClassificationProfilePanelProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<ClassificationProfileInput | null>(null)
+  const [initialForm, setInitialForm] = useState<ClassificationProfileInput | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [formErrors, setFormErrors] = useState<string[]>([])
   const [requestError, setRequestError] = useState<string | null>(null)
@@ -141,6 +144,7 @@ export function ClassificationProfilePanel({
 
   const closeForm = () => {
     setForm(null)
+    setInitialForm(null)
     setEditingId(null)
     setFormErrors([])
     setRequestError(null)
@@ -172,7 +176,9 @@ export function ClassificationProfilePanel({
 
   const beginCreate = () => {
     const base = selectedProfile ? asInput(selectedProfile) : defaultValues
-    setForm({ ...copyInput(base), name: '' })
+    const next = { ...copyInput(base), name: '' }
+    setForm(next)
+    setInitialForm(next)
     setEditingId(null)
     setFormErrors([])
     setRequestError(null)
@@ -180,7 +186,9 @@ export function ClassificationProfilePanel({
   }
 
   const beginEdit = (profile: ClassificationProfile) => {
-    setForm(asInput(profile))
+    const next = asInput(profile)
+    setForm(next)
+    setInitialForm(next)
     setEditingId(profile.id)
     setFormErrors([])
     setRequestError(null)
@@ -188,7 +196,9 @@ export function ClassificationProfilePanel({
   }
 
   const beginDuplicate = (profile: ClassificationProfile) => {
-    setForm({ ...asInput(profile), name: `Cópia de ${profile.name}` })
+    const next = { ...asInput(profile), name: `Cópia de ${profile.name}` }
+    setForm(next)
+    setInitialForm(next)
     setEditingId(null)
     setFormErrors([])
     setRequestError(null)
@@ -203,34 +213,39 @@ export function ClassificationProfilePanel({
     setForm((current) => current ? { ...current, thresholds: { ...current.thresholds, [key]: value } } : current)
   }
 
+  const dirty = !!form && (saveProfile.isPending || JSON.stringify(form) !== JSON.stringify(initialForm))
+  useEffect(() => { onDirtyChange?.(dirty) }, [dirty, onDirtyChange])
+  useEffect(() => () => { onDirtyChange?.(false) }, [onDirtyChange])
+
   return (
-    <section className="rounded-xl border border-violet-200 bg-violet-50/50 p-4" aria-labelledby="classification-profile-heading">
+    <section className="rounded-xl border border-line bg-surface-muted p-4" aria-labelledby="classification-profile-heading">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 gap-3">
-          <span className="mt-0.5 rounded-lg bg-violet-100 p-2 text-violet-700"><Settings2 size={18} /></span>
+          <Settings2 size={18} className="mt-1 shrink-0 text-accent" aria-hidden="true" />
           <div>
-            <h3 id="classification-profile-heading" className="font-semibold text-zinc-900">Perfil de classificação</h3>
-            <p className="mt-0.5 max-w-2xl text-sm text-zinc-600">Escolha o nicho que define afinidade, pesos comerciais e os limites das categorias A–D.</p>
+            <h3 id="classification-profile-heading" className="font-semibold text-ink">Perfil de classificação</h3>
+            <p className="mt-0.5 max-w-2xl text-sm text-muted">Escolha o nicho que define afinidade, pesos comerciais e os limites das categorias A–D.</p>
           </div>
         </div>
-        <Button type="button" variant="secondary" onClick={beginCreate} disabled={disabled || isLoading || profiles.length === 0}>
+        <Button type="button" variant="secondary" onClick={beginCreate} disabled={disabled || isLoading || isError}>
           <Plus size={15} /> Novo perfil
         </Button>
       </div>
 
       {isLoading ? <div className="mt-4"><Spinner /></div> : isError ? (
-        <p role="alert" className="mt-4 text-sm text-red-700">Não foi possível carregar os perfis. <button type="button" className="underline" onClick={onRetry}>Tentar novamente</button></p>
+        <p role="alert" className="mt-4 text-sm text-danger">Não foi possível carregar os perfis. <button type="button" className="underline" onClick={onRetry}>Tentar novamente</button></p>
       ) : (
         <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
           <div>
-            <label htmlFor="classification-profile" className="mb-1 block text-sm font-medium text-zinc-700">Usar na próxima classificação</label>
+            <label htmlFor="classification-profile" className="mb-1 block text-sm font-medium text-ink">Usar na próxima classificação</label>
             <select
               id="classification-profile"
               value={selectedProfile?.id ?? selectedId}
               disabled={disabled || profiles.length === 0}
               onChange={(event) => { onSelect(event.target.value); setFeedback(null) }}
-              className="h-10 w-full rounded-lg border border-zinc-300 bg-white px-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200 disabled:bg-zinc-100"
+              className="h-10 w-full rounded-lg border border-line-strong bg-surface px-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/25 disabled:bg-surface-muted"
             >
+              {profiles.length === 0 && <option value="">Nenhum perfil disponível</option>}
               {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}{profile.builtIn ? ' (padrão)' : ''}</option>)}
             </select>
           </div>
@@ -239,8 +254,8 @@ export function ClassificationProfilePanel({
               {!selectedProfile.builtIn && <Button type="button" variant="secondary" disabled={disabled} onClick={() => beginEdit(selectedProfile)}><Pencil size={14} /> Editar</Button>}
               <Button type="button" variant="secondary" disabled={disabled} onClick={() => beginDuplicate(selectedProfile)}><Copy size={14} /> Duplicar</Button>
               {!selectedProfile.builtIn && (deleteConfirmId === selectedProfile.id ? (
-                <span className="inline-flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
-                  Remover perfil?
+                <span className="inline-flex items-center gap-2 rounded-lg bg-danger-soft px-3 py-2 text-xs text-danger">
+                  Remover perfil? As avaliações salvas permanecem.
                   <button type="button" className="font-semibold underline" disabled={removeProfile.isPending} onClick={() => removeProfile.mutate(selectedProfile.id)}>Confirmar</button>
                   <button type="button" className="underline" disabled={removeProfile.isPending} onClick={() => setDeleteConfirmId(null)}>Cancelar</button>
                 </span>
@@ -250,20 +265,26 @@ export function ClassificationProfilePanel({
         </div>
       )}
 
+      {!isLoading && !isError && profiles.length === 0 && <p className="mt-3 text-sm text-muted">Crie um perfil para definir o público das suas ofertas. <button type="button" className="text-accent underline" onClick={onRetry}>Atualizar perfis</button></p>}
+
       {selectedProfile && !form && (
-        <div className="mt-3 rounded-lg border border-violet-100 bg-white/80 p-3 text-sm">
+        <details className="mt-3 rounded-lg border border-line bg-surface p-3 text-sm">
+          <summary className="cursor-pointer font-medium text-ink">Critérios de {selectedProfile.name}</summary>
+          <div className="mt-2">
           <div className="flex flex-wrap items-center gap-2"><strong>{selectedProfile.name}</strong>{selectedProfile.builtIn && <Badge tone="violet">Perfil padrão</Badge>}</div>
-          <p className="mt-1 text-zinc-600">{selectedProfile.nicheDescription}</p>
-          <p className="mt-2 text-xs text-zinc-500">Pesos: afinidade {selectedProfile.weights.relevance}% · desconto {selectedProfile.weights.discount}% · comissão {selectedProfile.weights.commission}%</p>
-        </div>
+          <p className="mt-1 text-muted">{selectedProfile.nicheDescription}</p>
+          <p className="mt-2 text-xs text-muted">Pesos: afinidade {selectedProfile.weights.relevance}% · desconto {selectedProfile.weights.discount}% · comissão {selectedProfile.weights.commission}%</p>
+          <p className="mt-2 text-xs text-muted">{selectedProfile.relevanceInstructions}</p>
+          </div>
+        </details>
       )}
 
-      {feedback && <p role="status" className="mt-3 text-sm text-green-700">{feedback}</p>}
-      {requestError && !form && <p role="alert" className="mt-3 text-sm text-red-700">{requestError}</p>}
+      {feedback && <p role="status" className="mt-3 text-sm text-success">{feedback}</p>}
+      {requestError && !form && <p role="alert" className="mt-3 text-sm text-danger">{requestError}</p>}
 
       {form && (
         <form
-          className="mt-4 rounded-xl border border-violet-200 bg-white p-4"
+          className="mt-4 rounded-xl border border-line bg-surface p-4"
           onSubmit={(event) => {
             event.preventDefault()
             const normalized = {
@@ -278,67 +299,68 @@ export function ClassificationProfilePanel({
             if (errors.length === 0) saveProfile.mutate({ id: editingId, value: normalized })
           }}
         >
+          <fieldset disabled={saveProfile.isPending || disabled}>
           <div className="mb-4 flex items-start justify-between gap-3">
-            <div><h4 className="font-semibold">{editingId ? 'Editar perfil' : 'Criar perfil'}</h4><p className="text-xs text-zinc-500">Perfis personalizados ficam disponíveis para os próximos arquivos.</p></div>
-            <button type="button" aria-label="Fechar formulário de perfil" className="rounded p-1 text-zinc-500 hover:bg-zinc-100" onClick={closeForm}><X size={17} /></button>
+            <div><h4 className="font-semibold">{editingId ? 'Editar perfil' : 'Criar perfil'}</h4><p className="text-xs text-muted">Perfis personalizados ficam disponíveis para os próximos arquivos.</p></div>
+            <button type="button" aria-label="Fechar formulário de perfil" className="rounded p-1 text-muted hover:bg-surface-muted" onClick={closeForm}><X size={17} /></button>
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="md:col-span-2">
-              <label htmlFor="profile-name" className="mb-1 block text-sm font-medium text-zinc-700">Nome do perfil</label>
-              <Input id="profile-name" required maxLength={120} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ex.: Beleza e cuidados pessoais" />
+              <label htmlFor="profile-name" className="mb-1 block text-sm font-medium text-ink">Nome do perfil</label>
+              <Input id="profile-name" autoFocus required maxLength={120} value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ex.: Beleza e cuidados pessoais" />
             </div>
             <div className="md:col-span-2">
-              <label htmlFor="profile-niche" className="mb-1 block text-sm font-medium text-zinc-700">Nicho e público</label>
-              <textarea id="profile-niche" required maxLength={1_000} value={form.nicheDescription} onChange={(event) => setForm({ ...form, nicheDescription: event.target.value })} placeholder="Quais produtos pertencem ao nicho e para quem as ofertas serão enviadas?" className="min-h-24 w-full rounded-lg border border-zinc-300 p-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" />
-              <p className="mt-1 text-xs text-zinc-500">Seja específico sobre usos, tipos de produto e público. Isso orienta a avaliação do modelo.</p>
+              <label htmlFor="profile-niche" className="mb-1 block text-sm font-medium text-ink">Nicho e público</label>
+              <textarea id="profile-niche" required maxLength={1_000} value={form.nicheDescription} onChange={(event) => setForm({ ...form, nicheDescription: event.target.value })} placeholder="Quais produtos pertencem ao nicho e para quem as ofertas serão enviadas?" className="min-h-24 w-full rounded-lg border border-line-strong bg-surface text-ink p-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/25" />
+              <p className="mt-1 text-xs text-muted">Seja específico sobre usos, tipos de produto e público. Isso orienta a avaliação do modelo.</p>
             </div>
             <div className="md:col-span-2">
-              <label htmlFor="profile-instructions" className="mb-1 block text-sm font-medium text-zinc-700">Critérios de afinidade</label>
-              <textarea id="profile-instructions" required maxLength={2_000} value={form.relevanceInstructions} onChange={(event) => setForm({ ...form, relevanceInstructions: event.target.value })} placeholder="Explique o que é muito relevante, parcialmente relevante e fora do nicho." className="min-h-28 w-full rounded-lg border border-zinc-300 p-3 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200" />
+              <label htmlFor="profile-instructions" className="mb-1 block text-sm font-medium text-ink">Critérios de afinidade</label>
+              <textarea id="profile-instructions" required maxLength={2_000} value={form.relevanceInstructions} onChange={(event) => setForm({ ...form, relevanceInstructions: event.target.value })} placeholder="Explique o que é muito relevante, parcialmente relevante e fora do nicho." className="min-h-28 w-full rounded-lg border border-line-strong bg-surface text-ink p-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/25" />
             </div>
           </div>
 
           <fieldset className="mt-5">
-            <legend className="font-medium text-zinc-900">Pesos da nota final</legend>
-            <p className="mt-1 text-xs text-zinc-500">Distribua exatamente 100 pontos entre afinidade, desconto e comissão.</p>
+            <legend className="font-medium text-ink">Pesos da nota final</legend>
+            <p className="mt-1 text-xs text-muted">Distribua exatamente 100 pontos entre afinidade, desconto e comissão.</p>
             <div className="mt-3 grid gap-3 md:grid-cols-3">
               {WEIGHT_FIELDS.map((field) => (
                 <div key={field.key}>
-                  <label htmlFor={`weight-${field.key}`} className="mb-1 block text-sm font-medium text-zinc-700">{field.label} (%)</label>
+                  <label htmlFor={`weight-${field.key}`} className="mb-1 block text-sm font-medium text-ink">{field.label} (%)</label>
                   <Input id={`weight-${field.key}`} type="number" min="0" max="100" step="1" value={form.weights[field.key]} onChange={(event) => setWeight(field.key, Number(event.target.value))} />
-                  <p className="mt-1 text-xs text-zinc-500">{field.help}</p>
+                  <p className="mt-1 text-xs text-muted">{field.help}</p>
                 </div>
               ))}
             </div>
-            <p className={`mt-2 text-sm font-medium ${weightTotal === 100 ? 'text-green-700' : 'text-amber-700'}`} aria-live="polite">Soma dos pesos: {weightTotal}/100</p>
+            <p className={`mt-2 text-sm font-medium ${weightTotal === 100 ? 'text-success' : 'text-warning'}`} aria-live="polite">Soma dos pesos: {weightTotal}/100</p>
           </fieldset>
 
           <fieldset className="mt-5">
-            <legend className="font-medium text-zinc-900">Escala dos sinais comerciais</legend>
-            <p className="mt-1 text-xs text-zinc-500">O teto define quando desconto ou comissão já recebem sua pontuação máxima.</p>
+            <legend className="font-medium text-ink">Escala dos sinais comerciais</legend>
+            <p className="mt-1 text-xs text-muted">O teto define quando desconto ou comissão já recebem sua pontuação máxima.</p>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <div><label htmlFor="discount-cap" className="mb-1 block text-sm font-medium text-zinc-700">Desconto para pontuação máxima (%)</label><Input id="discount-cap" type="number" min="0.01" max="100" step="0.01" value={form.discountCap} onChange={(event) => setForm({ ...form, discountCap: Number(event.target.value) })} /></div>
-              <div><label htmlFor="commission-cap" className="mb-1 block text-sm font-medium text-zinc-700">Comissão para pontuação máxima (%)</label><Input id="commission-cap" type="number" min="0.01" max="100" step="0.01" value={form.commissionCap} onChange={(event) => setForm({ ...form, commissionCap: Number(event.target.value) })} /></div>
+              <div><label htmlFor="discount-cap" className="mb-1 block text-sm font-medium text-ink">Desconto para pontuação máxima (%)</label><Input id="discount-cap" type="number" min="0.01" max="100" step="0.01" value={form.discountCap} onChange={(event) => setForm({ ...form, discountCap: Number(event.target.value) })} /></div>
+              <div><label htmlFor="commission-cap" className="mb-1 block text-sm font-medium text-ink">Comissão para pontuação máxima (%)</label><Input id="commission-cap" type="number" min="0.01" max="100" step="0.01" value={form.commissionCap} onChange={(event) => setForm({ ...form, commissionCap: Number(event.target.value) })} /></div>
             </div>
           </fieldset>
 
-          <details className="mt-5 rounded-lg border border-zinc-200 p-3">
-            <summary className="cursor-pointer font-medium text-zinc-800">Limites avançados das categorias A–D</summary>
-            <p className="mt-2 text-xs text-zinc-500">A é a prioridade mais alta. Produtos abaixo do limite de afinidade D são descartados da disputa comercial.</p>
+          <details className="mt-5 rounded-lg border border-line p-3">
+            <summary className="cursor-pointer font-medium text-ink">Limites avançados das categorias A–D</summary>
+            <p className="mt-2 text-xs text-muted">A é a prioridade mais alta. Produtos abaixo do limite de afinidade D são descartados da disputa comercial.</p>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
               {THRESHOLD_FIELDS.map((field) => (
                 <div key={field.key}>
-                  <label htmlFor={`threshold-${field.key}`} className="mb-1 block text-sm font-medium text-zinc-700">{field.label}</label>
+                  <label htmlFor={`threshold-${field.key}`} className="mb-1 block text-sm font-medium text-ink">{field.label}</label>
                   <Input id={`threshold-${field.key}`} type="number" min="0" max="100" step="1" value={form.thresholds[field.key]} onChange={(event) => setThreshold(field.key, Number(event.target.value))} />
-                  <p className="mt-1 text-xs text-zinc-500">{field.help}</p>
+                  <p className="mt-1 text-xs text-muted">{field.help}</p>
                 </div>
               ))}
             </div>
           </details>
 
           {(formErrors.length > 0 || requestError) && (
-            <div role="alert" className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-800">
+            <div role="alert" className="mt-4 rounded-lg bg-danger-soft p-3 text-sm text-danger">
               {requestError && <p>{requestError}</p>}
               {formErrors.length > 0 && <ul className="list-disc space-y-1 pl-5">{formErrors.map((message) => <li key={message}>{message}</li>)}</ul>}
             </div>
@@ -349,6 +371,7 @@ export function ClassificationProfilePanel({
             <Button type="button" variant="secondary" disabled={saveProfile.isPending} onClick={() => setForm((current) => current ? { ...copyInput(defaultValues), name: current.name } : current)}>Restaurar critérios padrão</Button>
             <Button type="button" variant="ghost" disabled={saveProfile.isPending} onClick={closeForm}>Cancelar</Button>
           </div>
+          </fieldset>
         </form>
       )}
     </section>

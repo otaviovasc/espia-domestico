@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type SyntheticEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AudioLines,
@@ -7,7 +7,6 @@ import {
   Clapperboard,
   Clock3,
     Copy,
-    Crop,
     Download,
   Film,
     Focus,
@@ -19,7 +18,6 @@ import {
   Play,
   Plus,
     Save,
-    Scissors,
     ShieldCheck,
   Sparkles,
   Trash2,
@@ -27,7 +25,6 @@ import {
   Video,
   Volume2,
   VolumeX,
-  WandSparkles,
   X,
 } from 'lucide-react'
 import {
@@ -43,10 +40,13 @@ import {
 } from '@/lib/api'
 import { Button, Input, Spinner } from '@/components/ui'
 import ClipSequenceEditor from '@/components/ClipSequenceEditor'
+import { ActionStatus } from '@/components/ActionStatus'
+import { StudioConfirmDialog } from '@/components/PublicationPlanner'
 import { CarouselEditor, CarouselPreview } from '@/components/CarouselCreator'
 import { addUploadedMedia, carouselValidation } from '@/lib/adCarouselConfig'
 import { usePreviewFullscreen } from '@/hooks/usePreviewFullscreen'
 import { useCreativeHistory } from '@/hooks/useCreativeHistory'
+import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
 import { StudioTools } from '@/components/StudioTools'
 import { CompositionLayers, CompositionOverlay } from '@/components/CompositionLayers'
 import AudioFinishingControls from '@/components/AudioFinishingControls'
@@ -57,6 +57,7 @@ import CreativeControls from '@/components/CreativeControls'
 import EmojiPicker from '@/components/EmojiPicker'
 import { DEFAULT_HOOK, DEFAULT_VISUAL_EFFECTS, normaliseCreativeConfig } from '@/lib/adCreativeConfig'
 import { DEFAULT_TRANSITION, clipSequenceValidation, getAdClipEdit } from '@/lib/adClipConfig'
+import '@/styles/studio-theme.css'
 import { previewClipGeometry } from '@/lib/adPreviewFraming'
 import {
   previewClipLoops,
@@ -138,7 +139,7 @@ const STATUS_LABEL: Record<AdRenderJob['status'], string> = {
 }
 
 const TIMING_SOURCE = {
-  beat: { label: 'Cortes na batida', className: 'bg-violet-500/20 text-violet-100' },
+  beat: { label: 'Cortes na batida', className: 'bg-accent/20 text-accent' },
   fixed: { label: 'Intervalo fixo', className: 'bg-white/10 text-white/65' },
   fallback: { label: 'Sem batidas · intervalo fixo', className: 'bg-amber-400/20 text-amber-100' },
 } as const
@@ -332,15 +333,15 @@ function AssetRow({
     || (readableBase.length >= 24 && !/\s/.test(readableBase) && /\d/.test(readableBase))
   const label = `${prefix} ${ordinal}${opaque ? '' : ` · ${readableBase}`}`
   return (
-    <div className="group flex items-center gap-3 rounded-xl border border-zinc-200 bg-white p-2.5">
-      <div className="relative flex h-12 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-zinc-950 text-white">
+    <div className="group flex items-center gap-3 rounded-xl border border-line bg-surface p-2.5">
+      <div className="relative flex h-12 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-accent-soft text-accent">
         {asset.kind === 'clip' ? <Film size={18} /> : <Music2 size={18} />}
       </div>
       <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-zinc-800" title={label}>
+          <div className="truncate text-sm font-medium text-ink" title={label}>
             {label}
         </div>
-          <div className="mt-0.5 text-xs text-zinc-500">
+          <div className="mt-0.5 text-xs text-muted">
             {duration(asset.durationSeconds)} · {bytes(asset.sizeBytes)}
             {asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ''}
         </div>
@@ -349,7 +350,7 @@ function AssetRow({
         type="button"
         onClick={onToggle}
         aria-pressed={selected}
-        className={`rounded-lg px-2 py-1.5 text-xs font-semibold ${selected ? 'bg-emerald-50 text-emerald-700' : 'bg-zinc-100 text-zinc-500 hover:bg-violet-50 hover:text-violet-700'}`}
+        className={`rounded-lg px-2 py-1.5 text-xs font-semibold ${selected ? 'bg-success-soft text-success' : 'bg-surface-muted text-muted hover:bg-accent-soft hover:text-accent'}`}
       >
         {selected ? 'Usando' : 'Usar'}
       </button>
@@ -358,7 +359,7 @@ function AssetRow({
         onClick={onRemove}
         disabled={removing}
           aria-label={`Remover ${label}`}
-        className="rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+        className="studio-icon-button rounded-lg p-2 text-subtle hover:bg-danger-soft hover:text-danger disabled:opacity-40"
       >
         {removing ? <LoaderCircle size={16} className="animate-spin" /> : <Trash2 size={16} />}
       </button>
@@ -397,6 +398,8 @@ function UploadZone({
       <input
         ref={input}
         type="file"
+        aria-label={kind === 'image' ? 'Enviar imagens para o projeto' : kind === 'clip' ? 'Enviar vídeos para o projeto' : 'Enviar músicas para o projeto'}
+        tabIndex={-1}
         accept={accept}
         multiple={multiple}
         className="sr-only"
@@ -415,8 +418,8 @@ function UploadZone({
         disabled={busy}
         className={`flex w-full items-center justify-center gap-2 rounded-xl border border-dashed px-4 py-3 text-sm font-medium transition ${
           dragging
-            ? 'border-violet-500 bg-violet-50 text-violet-700'
-            : 'border-zinc-300 bg-zinc-50 text-zinc-600 hover:border-violet-400 hover:bg-violet-50/50'
+            ? 'border-accent bg-accent-soft text-accent'
+            : 'border-line-strong bg-surface-muted text-muted hover:border-accent hover:bg-accent-soft'
         } disabled:cursor-wait disabled:opacity-60`}
       >
         {busy ? <LoaderCircle size={17} className="animate-spin" /> : <Upload size={17} />}
@@ -550,6 +553,8 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
   const [readyAudioKeys, setReadyAudioKeys] = useState<Set<string>>(() => new Set())
   const [failedAudioKeys, setFailedAudioKeys] = useState<Set<string>>(() => new Set())
   const [audioRetryToken, setAudioRetryToken] = useState(0)
+  const [mediaRetryToken, setMediaRetryToken] = useState(0)
+  const [failedMediaUrl, setFailedMediaUrl] = useState<string | null>(null)
   const [audioPlaybackBlocked, setAudioPlaybackBlocked] = useState(false)
   const [activeLayerReadyKey, setActiveLayerReadyKey] = useState<string | null>(null)
   const [outgoingLayerReadyKey, setOutgoingLayerReadyKey] = useState<string | null>(null)
@@ -729,7 +734,9 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
     activeClip ? adProjectApi.assetContentUrl(project.id, activeClip.id) : '',
     () => adProjectApi.assetContent(project.id, activeClip!.id),
     Boolean(activeClip),
+    mediaRetryToken,
   )
+  const previewMediaFailed = media.error || Boolean(media.url && failedMediaUrl === media.url)
   const previousMedia = useMediaBlobUrl(
     `asset:${project.id}:${previousClip?.id ?? 'none'}`,
     previousClip ? adProjectApi.assetContentUrl(project.id, previousClip.id) : '',
@@ -1080,7 +1087,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
             backgroundColor: framing.backgroundColor,
           }}
         >
-          {activeClip && media.url ? (
+          {activeClip && media.url && failedMediaUrl !== media.url ? (
             <>
               {preparedOutgoingClip && preparedOutgoingUrl ? (
                 <div className="ad-preview-transition-layer pointer-events-none absolute inset-0 z-0 overflow-hidden" style={{ ...transitionFrame.outgoing, backgroundColor: framing.backgroundColor }} aria-hidden="true">
@@ -1148,9 +1155,10 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
                   style={{ ...backgroundGeometry, filter: `${filter === 'none' ? '' : filter} blur(${backgroundBlur})` }}
                 />)
               ) : null}
-              {activeClip.kind === 'image' ? <img src={media.url} alt="" onLoad={() => setActiveLayerReadyKey(activeLayerKey)} className="absolute max-w-none" style={{ ...activeClipGeometry, filter }} /> : (<video
+              {activeClip.kind === 'image' ? <img src={media.url} alt="" onError={() => setFailedMediaUrl(media.url)} onLoad={() => setActiveLayerReadyKey(activeLayerKey)} className="absolute max-w-none" style={{ ...activeClipGeometry, filter }} /> : (<video
                 ref={foregroundVideo}
                 src={media.url}
+                onError={() => setFailedMediaUrl(media.url)}
                 muted
                 playsInline
                 preload="auto"
@@ -1165,9 +1173,14 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
               </div>
             </>
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[radial-gradient(circle_at_70%_15%,#3d3764,#171725_58%)] px-8 text-center text-white/60">
-            {activeClip ? <LoaderCircle size={30} className={media.error ? 'text-red-300' : 'animate-spin'} /> : <Film size={34} strokeWidth={1.5} />}
-            <span className="mt-3 text-sm">{media.error ? 'Não foi possível carregar a prévia' : activeClip ? 'Carregando prévia…' : 'Adicione clipes para montar a prévia'}</span>
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#1b2638] px-8 text-center text-white/80" role={previewMediaFailed ? "alert" : "status"}>
+            {activeClip ? <LoaderCircle size={30} className={previewMediaFailed ? 'text-red-300' : 'animate-spin'} /> : <Film size={34} strokeWidth={1.5} />}
+            <span className="mt-3 text-sm">{previewMediaFailed ? 'Não foi possível carregar a prévia' : activeClip ? 'Carregando prévia…' : 'Adicione clipes para montar a prévia'}</span>
+            {previewMediaFailed ? <button type="button" className="ad-preview-tool-button mt-3 bg-white/10 px-3" onClick={() => {
+              setFailedMediaUrl(null)
+              mediaBlobRetrySequence += 1
+              setMediaRetryToken(mediaBlobRetrySequence)
+            }}>Tentar carregar novamente</button> : null}
           </div>
         )}
           {showSafeZone ? (
@@ -1204,7 +1217,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
             <span className="absolute right-[4%] top-[4%] rounded bg-black/45 px-1.5 py-1 text-[8px]">Simulação</span>
           </div>
         ) : null}
-        {captionArtwork ? (
+        {captionArtwork && media.url && !previewMediaFailed ? (
           <img
             className="ad-preview-copy pointer-events-none absolute inset-0 z-10 h-full w-full"
             src={captionArtwork}
@@ -1212,7 +1225,7 @@ function PhonePreview({ project, config, onExactPreview, exactPreviewPending, ca
             draggable={false}
           />
         ) : null}
-        <CompositionOverlay project={project} config={config} />
+        {media.url && !previewMediaFailed ? <CompositionOverlay project={project} config={config} /> : null}
       </div>
 
       {captions.isFetching || captionInput !== settledCaptionInput ? <p className="mt-2 text-center text-xs text-white/50" role="status">Atualizando texto da prévia…</p> : null}
@@ -1371,14 +1384,14 @@ function RenderOutput({
       <div className="flex items-center justify-between gap-2 px-3 py-2.5 text-white">
         <div className="min-w-0">
           <div className="truncate text-xs font-medium">{output.fileName}</div>
-          <div className="text-[11px] text-white/50">{bytes(output.sizeBytes)}</div>
+          <div className="text-xs text-white/50">{bytes(output.sizeBytes)}</div>
           {output.mimeType !== 'image/jpeg' && output.timingSource ? (
-            <span className={`mt-1.5 inline-flex rounded-full px-2 py-0.5 text-[10px] font-medium ${TIMING_SOURCE[output.timingSource].className}`}>
+            <span className={`mt-1.5 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${TIMING_SOURCE[output.timingSource].className}`}>
               {TIMING_SOURCE[output.timingSource].label}
             </span>
           ) : null}
-          {downloadError ? <div className="mt-1 text-[10px] text-red-300">Falha ao baixar. Tente novamente.</div> : null}
-          <details className="mt-1.5 text-[10px] text-white/50">
+          {downloadError ? <div className="mt-1 text-xs text-red-300">Falha ao baixar. Tente novamente.</div> : null}
+          <details className="mt-1.5 text-xs text-white/50">
             <summary className="cursor-pointer select-none hover:text-white/75">Sequência usada</summary>
             <div className="mt-1 max-w-52 space-y-0.5 break-words">
               <div>{output.clipAssetIds.length} mídias{output.cutTimes.length ? ` · cortes em ${output.cutTimes.map((cut) => `${cut.toFixed(1)}s`).join(', ')}` : ''}</div>
@@ -1402,25 +1415,25 @@ function RenderCard({ projectId, job, onCancel, initiallyExpanded }: { projectId
   const aspectRatio = `${job.config.output.width} / ${job.config.output.height}`
   const outputPreset = outputPresetFor(job.config.output)
   return (
-    <article className="overflow-hidden rounded-2xl border border-zinc-200 bg-white">
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-100 px-4 py-3">
+    <article className="overflow-hidden rounded-2xl border border-line bg-surface">
+      <div className="flex items-center justify-between gap-3 border-b border-line px-4 py-3">
         <div className="flex items-center gap-2">
           <span className={`h-2 w-2 rounded-full ${
-            job.status === 'completed' ? 'bg-emerald-500' : active ? 'animate-pulse bg-violet-500' : job.status === 'failed' ? 'bg-red-500' : 'bg-zinc-400'
+            job.status === 'completed' ? 'bg-success' : active ? 'animate-pulse bg-accent' : job.status === 'failed' ? 'bg-danger' : 'bg-subtle'
           }`} />
-            <span className="text-sm font-semibold text-zinc-800">{STATUS_LABEL[job.status]}</span>
-            <span className="text-xs text-zinc-400">{formatDate(job.createdAt)}</span>
-            <span className="hidden rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-500 sm:inline-flex">
+            <span className="text-sm font-semibold text-ink">{STATUS_LABEL[job.status]}</span>
+            <span className="text-xs text-subtle">{formatDate(job.createdAt)}</span>
+            <span className="hidden rounded-full bg-surface-muted px-2 py-0.5 text-xs font-medium text-muted sm:inline-flex">
               {outputPreset?.ratio ?? `${job.config.output.width}:${job.config.output.height}`} · {job.config.output.width}×{job.config.output.height}
             </span>
         </div>
         {active && (
-          <button type="button" onClick={onCancel} className="text-xs font-medium text-zinc-500 hover:text-red-600">
+          <button type="button" onClick={onCancel} className="text-xs font-medium text-muted hover:text-danger">
             Cancelar
           </button>
         )}
         {job.status === 'completed' && job.outputs.length > 0 && (
-          <button type="button" onClick={() => setExpanded((value) => !value)} className="text-xs font-medium text-violet-700 hover:text-violet-900">
+          <button type="button" onClick={() => setExpanded((value) => !value)} className="text-xs font-medium text-accent hover:text-accent">
             {expanded ? 'Ocultar arquivos' : `Ver ${job.outputs.length} ${job.config.kind === 'carousel' ? 'slides' : job.outputs.length === 1 ? 'vídeo' : 'vídeos'}`}
           </button>
         )}
@@ -1431,21 +1444,21 @@ function RenderCard({ projectId, job, onCancel, initiallyExpanded }: { projectId
           try { const blob = await studioApi.bundle(projectId, job.id); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `creative-${projectId}-${job.id}.zip`; a.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000) }
           catch (cause) { setBundleError(apiErrorMessage(cause)) } finally { setBundleBusy(false) }
         }}>{bundleBusy ? 'Preparando pacote...' : 'Baixar ZIP com capa e legenda'}</Button>
-        {bundleError ? <p role="alert" className="text-xs text-red-700">{bundleError}</p> : null}
+        {bundleError ? <p role="alert" className="text-xs text-danger">{bundleError}</p> : null}
       </div> : null}
       {active && (
         <div className="px-4 py-4">
-          <div className="mb-2 flex justify-between text-xs text-zinc-500">
+          <div className="mb-2 flex justify-between text-xs text-muted">
             <span>{job.status === 'queued' ? 'Aguardando processador' : job.config.kind === 'carousel' ? 'Criando slides' : 'Criando variações'}</span>
             <span>{Math.round(job.progress)}%</span>
           </div>
-          <div className="h-2 overflow-hidden rounded-full bg-zinc-100">
-            <div className="h-full rounded-full bg-violet-600 transition-all" style={{ width: `${Math.max(3, job.progress)}%` }} />
+          <div className="h-2 overflow-hidden rounded-full bg-surface-muted">
+            <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.max(3, job.progress)}%` }} />
           </div>
         </div>
       )}
       {job.status === 'failed' && (
-        <div className="flex gap-2 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="flex gap-2 bg-danger-soft px-4 py-3 text-sm text-danger">
           <CircleAlert size={17} className="mt-0.5 shrink-0" />
           <span>{job.error || 'Não foi possível gerar os vídeos.'}</span>
         </div>
@@ -1473,12 +1486,25 @@ function QueryErrorState({
   className?: string
 }) {
   return (
-    <div role="alert" className={`flex flex-col items-center justify-center rounded-2xl border border-red-200 bg-white px-6 py-12 text-center ${className}`}>
-      <div className="flex h-11 w-11 items-center justify-center rounded-full bg-red-50 text-red-600"><CircleAlert size={21} /></div>
-      <h2 className="mt-4 text-base font-semibold text-zinc-900">{title}</h2>
-      <p className="mt-1 max-w-md text-sm leading-6 text-zinc-500">{apiErrorMessage(error)}</p>
+    <div role="alert" className={`flex flex-col items-center justify-center rounded-2xl border border-danger/30 bg-surface px-6 py-12 text-center ${className}`}>
+      <div className="flex h-11 w-11 items-center justify-center rounded-full bg-danger-soft text-danger"><CircleAlert size={21} /></div>
+      <h2 className="mt-4 text-base font-semibold text-ink">{title}</h2>
+      <p className="mt-1 max-w-md text-sm leading-6 text-muted">{apiErrorMessage(error)}</p>
       <Button variant="secondary" className="mt-4" onClick={onRetry}>Tentar novamente</Button>
     </div>
+  )
+}
+
+
+function StudioSection({ title, summary, children }: { title: string; summary: ReactNode; children: ReactNode }) {
+  return (
+    <details className="studio-section rounded-xl border border-line bg-surface">
+      <summary className="studio-section-summary">
+        <span className="font-semibold text-ink">{title}</span>
+        <span className="studio-section-description text-muted">{summary}</span>
+      </summary>
+      <div className="border-t border-line p-4">{children}</div>
+    </details>
   )
 }
 
@@ -1489,11 +1515,14 @@ export default function AdLibraryPage() {
   const [draftName, setDraftName] = useState('')
   const { value: draft, set: setDraft, reset: resetDraft, undo, redo, canUndo, canRedo } = useCreativeHistory<AdProjectConfig>(copyConfig(DEFAULT_CONFIG))
   const [studioBusy, setStudioBusy] = useState(false)
+  const [auxiliaryDirty, setAuxiliaryDirty] = useState(false)
   const [autosaveError, setAutosaveError] = useState<string | null>(null)
   const autosaveAttempt = useRef('')
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [projectSwitchTarget, setProjectSwitchTarget] = useState<number | null>(null)
+  const [confirmReload, setConfirmReload] = useState(false)
   const [musicUrl, setMusicUrl] = useState('')
   const [musicRightsConfirmed, setMusicRightsConfirmed] = useState(false)
   const [hydratedProjectId, setHydratedProjectId] = useState<number | null>(null)
@@ -1592,7 +1621,7 @@ export default function AdLibraryPage() {
   const createProject = useMutation({
     mutationFn: (kind: 'video' | 'carousel') => adProjectApi.create({ name: `${kind === 'carousel' ? 'Carrossel' : 'Campanha'} ${new Date().toLocaleDateString('pt-BR')}`, config: { ...copyConfig(DEFAULT_CONFIG), kind, ...(kind === 'carousel' ? { output: { ...DEFAULT_CONFIG.output, width: 1080, height: 1350 } } : {}) } }),
     onSuccess: async (created) => {
-      setSelectedId(created.id)
+      selectProject(created.id)
       setError(null)
       await queryClient.invalidateQueries({ queryKey: ['ad-projects'] })
     },
@@ -1628,7 +1657,7 @@ export default function AdLibraryPage() {
   const duplicate = useMutation({
     mutationFn: () => adProjectApi.duplicate(activeId!),
     onSuccess: async (created) => {
-      setSelectedId(created.id)
+      selectProject(created.id)
       setFeedback('Projeto duplicado.')
       await queryClient.invalidateQueries({ queryKey: ['ad-projects'] })
     },
@@ -1798,15 +1827,7 @@ export default function AdLibraryPage() {
     return () => window.clearTimeout(timer)
   }, [dirty, blocked, autosaveError, activeId, current?.id, hydratedProjectId, draftName, draft, clipValidationError, save, isCarousel])
 
-  useEffect(() => {
-    if (!dirty) return undefined
-    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault()
-      event.returnValue = ''
-    }
-    window.addEventListener('beforeunload', warnBeforeUnload)
-    return () => window.removeEventListener('beforeunload', warnBeforeUnload)
-  }, [dirty])
+  const { prompt: unsavedChangesPrompt } = useUnsavedChanges(dirty || auxiliaryDirty || save.isPending, 'O projeto ou suas ferramentas ainda têm alterações não salvas. Se sair agora, elas serão descartadas.')
 
   useEffect(() => {
     if (!activeId || !current || current.id !== activeId || hydratedProjectId !== current.id) return
@@ -1914,13 +1935,30 @@ export default function AdLibraryPage() {
     importMusic.mutate({ url: musicUrl.trim(), projectId: activeId! })
   }
 
-  function selectProject(projectId: number) {
-    if (projectId === activeId) return
-    if (dirty && !window.confirm('Há alterações não salvas neste projeto. Deseja trocar de projeto e descartá-las?')) return
+  function switchProject(projectId: number) {
     if (dirty && activeId) {
       try { sessionStorage.removeItem(`ad-project-draft:${activeId}`) } catch { /* Storage may be unavailable. */ }
     }
+    setProjectSwitchTarget(null)
+    setAuxiliaryDirty(false)
     setSelectedId(projectId)
+  }
+
+  function selectProject(projectId: number) {
+    if (projectId === activeId) return
+    if (dirty || auxiliaryDirty) { setProjectSwitchTarget(projectId); return }
+    switchProject(projectId)
+  }
+
+  async function reloadSavedProject() {
+    if (!current) return
+    setConfirmReload(false)
+    try {
+      const fresh = await adProjectApi.get(current.id)
+      acknowledged.current = fresh; setWriteRevision(fresh.revision)
+      queryClient.setQueryData(['ad-projects', fresh.id], fresh)
+      resetDraft(copyConfig(fresh.config)); setDraftName(fresh.name); setAutosaveError(null); setError(null); autosaveAttempt.current = ''
+    } catch (cause) { setError(apiErrorMessage(cause)) }
   }
 
   if (projects.isLoading) {
@@ -1928,61 +1966,54 @@ export default function AdLibraryPage() {
   }
 
   return (
-    <div className="ad-library -m-4 min-h-full p-4 lg:-m-8 lg:p-8">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div className="max-w-2xl">
-          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-violet-700">
-            <WandSparkles size={17} /> Biblioteca de anúncios
-          </div>
-          <h1 className="text-3xl font-bold tracking-[-0.035em] text-[#17172a] sm:text-4xl">Crie vídeos e carrosséis para Instagram</h1>
-          <p className="mt-2 max-w-xl text-sm leading-6 text-zinc-600">
-            Combine imagens e vídeos em anúncios ou monte um carrossel com slides na ordem que você escolher.
-          </p>
+    <div className="ad-library workspace-page min-w-0">
+      {unsavedChangesPrompt}
+      {projectSwitchTarget !== null ? <StudioConfirmDialog title="Trocar de projeto?" description="Há alterações não salvas. Se trocar agora, as alterações locais deste projeto serão descartadas." confirmLabel="Descartar e trocar" cancelLabel="Continuar editando" onCancel={() => setProjectSwitchTarget(null)} onConfirm={() => switchProject(projectSwitchTarget)} /> : null}
+      {confirmReload ? <StudioConfirmDialog title="Recarregar versão salva?" description="As alterações locais serão descartadas e substituídas pela versão salva na sua conta." confirmLabel="Descartar e recarregar" cancelLabel="Continuar editando" onCancel={() => setConfirmReload(false)} onConfirm={() => void reloadSavedProject()} /> : null}
+      {confirmDelete ? <StudioConfirmDialog title="Excluir este projeto?" description="O projeto, suas mídias e seus arquivos gerados serão removidos. Esta ação não pode ser desfeita." confirmLabel="Excluir projeto" onCancel={() => setConfirmDelete(false)} onConfirm={() => { setConfirmDelete(false); removeProject.mutate() }} /> : null}
+      <header className="page-header mb-4">
+        <div>
+          <h1 className="page-title">Estúdio de anúncios</h1>
+          <p className="page-description">Monte, revise e exporte vídeos e carrosséis para suas ofertas.</p>
         </div>
-        <div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => createProject.mutate('carousel')} disabled={blocked}><Plus size={17} /> Novo carrossel</Button><Button onClick={() => createProject.mutate('video')} disabled={blocked}>
-          {createProject.isPending ? <LoaderCircle size={17} className="animate-spin" /> : <Plus size={17} />}
-          Novo vídeo
-        </Button></div>
+        <div className="page-actions">
+          <Button variant="secondary" onClick={() => createProject.mutate('carousel')} disabled={blocked}><Plus size={17} /> Novo carrossel</Button>
+          <Button onClick={() => createProject.mutate('video')} disabled={blocked}>
+            {createProject.isPending ? <LoaderCircle size={17} className="animate-spin" /> : <Plus size={17} />} Novo vídeo
+          </Button>
+        </div>
       </header>
 
       {error && (
-        <div role="alert" className="mb-5 flex items-start justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div role="alert" className="mb-5 flex items-start justify-between gap-3 rounded-xl border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger">
           <span className="flex items-start gap-2"><CircleAlert size={17} className="mt-0.5 shrink-0" />{error}</span>
-          <button type="button" onClick={() => setError(null)} aria-label="Fechar erro"><X size={16} /></button>
+          <button type="button" onClick={() => setError(null)} aria-label="Fechar erro" className="studio-icon-button shrink-0"><X size={16} /></button>
         </div>
       )}
       {feedback && (
-        <div role="status" className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+        <div role="status" className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-success/30 bg-success-soft px-4 py-3 text-sm text-success">
           <span className="flex items-center gap-2"><Check size={17} />{feedback}</span>
-          <button type="button" onClick={() => setFeedback(null)} aria-label="Fechar mensagem"><X size={16} /></button>
+          <button type="button" onClick={() => setFeedback(null)} aria-label="Fechar mensagem" className="studio-icon-button shrink-0"><X size={16} /></button>
         </div>
       )}
 
-      {current && hydratedProjectId === current.id ? (
-        <div className="mb-5 space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
+      {projects.data?.length && (project.isError || project.isLoading || !current) ? (
+        <ActionStatus state={project.isError ? 'unavailable' : 'loading'} className="mb-3" />
+      ) : null}
+      {current && hydratedProjectId === current.id && !project.isError && !projects.isError ? (
+        <div className="mb-3 space-y-3">
+          <div className="studio-history-toolbar flex flex-wrap items-center gap-2 border-b border-line py-2">
             <Button variant="secondary" disabled={!canUndo || blocked} onClick={undo}>Desfazer</Button>
             <Button variant="secondary" disabled={!canRedo || blocked} onClick={redo}>Refazer</Button>
-            <span role="status" className="text-xs text-zinc-500">{autosaveError ? 'Salvamento pausado' : save.isPending ? 'Salvando...' : dirty ? 'Alterações pendentes' : 'Salvo na sua conta'}</span>
-            {autosaveError ? <><span role="alert" className="text-xs text-red-700">{autosaveError}</span><Button variant="secondary" disabled={blocked || Boolean(clipValidationError)} onClick={() => {
+            <ActionStatus state={autosaveError ? 'error' : save.isPending ? 'saving' : dirty ? 'unsaved' : 'saved'} label={autosaveError ? 'Falha ao salvar' : save.isPending ? 'Salvando projeto…' : dirty ? 'Alterações pendentes' : `Salvo na conta · versão ${writeRevision}`} />
+            {autosaveError ? <><span role="alert" className="text-xs text-danger">{autosaveError}</span><Button variant="secondary" disabled={blocked || Boolean(clipValidationError)} onClick={() => {
               autosaveAttempt.current = ''
               setAutosaveError(null)
               setError(null)
               save.mutate()
-            }}>Tentar salvar novamente</Button><Button variant="secondary" onClick={async () => {
-              try {
-                const fresh = await adProjectApi.get(current.id)
-                acknowledged.current = fresh; setWriteRevision(fresh.revision)
-                queryClient.setQueryData(['ad-projects', fresh.id], fresh)
-                resetDraft(copyConfig(fresh.config)); setDraftName(fresh.name); setAutosaveError(null); setError(null); autosaveAttempt.current = ''
-              } catch (cause) { setError(apiErrorMessage(cause)) }
-            }}>Recarregar versão salva</Button></> : null}
+            }}>Tentar salvar novamente</Button><Button variant="secondary" onClick={() => { if (dirty) setConfirmReload(true); else void reloadSavedProject() }}>Recarregar versão salva</Button></> : null}
           </div>
-          <StudioTools key={current.id} project={{ ...current, revision: writeRevision }} config={draft} name={draftName} jobs={jobs.data ?? []} disabled={blocked || Boolean(autosaveError)} onBusy={setStudioBusy} onChange={setDraft} onProject={async (updated) => {
-            if (updated.id === activeId) { acknowledged.current = updated; setWriteRevision(updated.revision) }
-            queryClient.setQueryData(['ad-projects', updated.id], updated)
-            await queryClient.invalidateQueries({ queryKey: ['ad-projects'] })
-          }} onSelect={(id) => setSelectedId(id)} onError={(message) => setError(message)} />
+
         </div>
       ) : null}
 
@@ -1994,19 +2025,19 @@ export default function AdLibraryPage() {
           className="min-h-[360px]"
         />
       ) : !projects.data?.length ? (
-        <div className="flex min-h-[480px] flex-col items-center justify-center rounded-3xl border border-dashed border-violet-200 bg-white/75 px-6 text-center">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-100 text-violet-700"><Clapperboard size={30} /></div>
-          <h2 className="mt-5 text-xl font-semibold text-zinc-900">Crie seu primeiro projeto</h2>
-          <p className="mt-2 max-w-md text-sm leading-6 text-zinc-500">Separe seus melhores clipes. A biblioteca cuida das combinações, do texto, da trilha e do acabamento.</p>
+        <div className="flex min-h-[480px] flex-col items-center justify-center rounded-3xl border border-dashed border-line bg-surface px-6 text-center">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-accent-soft text-accent"><Clapperboard size={30} /></div>
+          <h2 className="mt-5 text-xl font-semibold text-ink">Crie seu primeiro projeto</h2>
+          <p className="mt-2 max-w-md text-sm leading-6 text-muted">Separe seus melhores clipes. A biblioteca cuida das combinações, do texto, da trilha e do acabamento.</p>
           <Button className="mt-5" onClick={() => createProject.mutate('video')} disabled={blocked}><Plus size={17} /> Criar projeto</Button>
         </div>
       ) : (
         <>
           <div className="mb-3 flex min-w-0 items-center gap-3">
-            <label htmlFor="creative-project" className="text-xs font-medium text-zinc-500">Projeto</label>
+            <label htmlFor="creative-project" className="text-xs font-medium text-muted">Projeto</label>
             <select id="creative-project" aria-label="Selecionar projeto" value={activeId ?? ''} disabled={blocked}
               onChange={(event) => selectProject(Number(event.target.value))}
-              className="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm font-medium text-zinc-800 sm:max-w-sm">
+              className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-3 py-2 text-sm font-medium text-ink sm:max-w-sm">
               {projects.data.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
             </select>
           </div>
@@ -2020,7 +2051,7 @@ export default function AdLibraryPage() {
                 className="min-h-[520px] lg:col-span-2"
               />
             ) : project.isLoading || !current ? (
-              <div className="lg:col-span-2 flex min-h-[520px] items-center justify-center rounded-2xl border border-zinc-200 bg-white"><Spinner /></div>
+              <div className="lg:col-span-2 flex min-h-[520px] items-center justify-center rounded-2xl border border-line bg-surface"><Spinner /></div>
             ) : (
               <>
                 {isCarousel ? <CarouselPreview project={current} config={draft} index={carouselIndex} onIndexChange={setCarouselIndex} /> : <PhonePreview
@@ -2032,24 +2063,17 @@ export default function AdLibraryPage() {
                   canRenderExact={exportReadiness.ready}
                 />}
 
-                <div className="min-w-0 space-y-5">
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
+                <div className="studio-controls min-w-0 space-y-3">
+                  <section className="rounded-2xl border border-line bg-surface p-5">
                     <div className="flex flex-wrap items-center gap-2">
                       <Input
                         aria-label="Nome do projeto"
                         value={draftName}
                         onChange={(event) => setDraftName(event.target.value)}
-                        className="min-w-[220px] flex-1 border-0 bg-zinc-100 text-base font-semibold focus:bg-white"
+                        className="min-w-0 w-full flex-1 bg-surface-muted text-base font-semibold sm:w-auto"
                       />
                       <Button variant="secondary" onClick={() => duplicate.mutate()} disabled={blocked || Boolean(autosaveError)}><Copy size={16} /> Duplicar</Button>
-                      {confirmDelete ? (
-                        <div className="flex items-center gap-1">
-                          <Button variant="danger" onClick={() => removeProject.mutate()} disabled={removeProject.isPending}>Excluir</Button>
-                          <Button variant="ghost" onClick={() => setConfirmDelete(false)}>Cancelar</Button>
-                        </div>
-                      ) : (
-                        <Button variant="ghost" onClick={() => setConfirmDelete(true)} aria-label="Excluir projeto"><Trash2 size={16} /></Button>
-                      )}
+                      <Button variant="ghost" onClick={() => setConfirmDelete(true)} disabled={blocked} aria-label="Excluir projeto"><Trash2 size={16} /></Button>
                     </div>
                   </section>
 
@@ -2060,13 +2084,13 @@ export default function AdLibraryPage() {
                     uploadImages={<UploadZone kind="image" multiple busy={blocked} onFiles={(files) => upload.mutate({ kind: 'image', files })} />}
                     uploadVideos={<UploadZone kind="clip" multiple busy={blocked} onFiles={(files) => upload.mutate({ kind: 'clip', files })} />}
                   /> : <>
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  <section className="rounded-2xl border border-line bg-surface p-5">
                     <div className="mb-4 flex items-start justify-between gap-3">
                       <div>
-                        <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Video size={18} className="text-violet-600" /> Imagens e vídeos</h2>
-                        <p className="mt-1 text-xs leading-5 text-zinc-500">Organize as imagens e corte, acelere ou ajuste os vídeos. O áudio original será removido.</p>
+                        <h2 className="flex items-center gap-2 text-base font-semibold text-ink"><Video size={18} className="text-accent" /> Imagens e vídeos</h2>
+                        <p className="mt-1 text-xs leading-5 text-muted">Organize as imagens e corte, acelere ou ajuste os vídeos. O áudio original será removido.</p>
                       </div>
-                      <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600">{clips.length}</span>
+                      <span className="rounded-full bg-surface-muted px-2.5 py-1 text-xs font-medium text-muted">{clips.length}</span>
                     </div>
                     <ClipSequenceEditor
                       assets={clips}
@@ -2083,9 +2107,10 @@ export default function AdLibraryPage() {
                     </div>
                   </section>
 
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
-                    <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Music2 size={18} className="text-violet-600" /> Música de fundo</h2>
-                    <p className="mt-1 text-xs leading-5 text-zinc-500">Envie um arquivo de áudio ou cole o link HTTPS direto de um arquivo que você pode usar no anúncio.</p>
+                  <StudioSection title="Música de fundo" summary={`${(draft.musicTracks ?? []).length} faixas selecionadas`}>
+
+
+                    <p className="mt-1 text-xs leading-5 text-muted">Envie um arquivo de áudio ou cole o link HTTPS direto de um arquivo que você pode usar no anúncio.</p>
                     <div className="mt-4 space-y-2">
                       {music.map((asset, index) => (
                         <AssetRow
@@ -2102,8 +2127,8 @@ export default function AdLibraryPage() {
                         <UploadZone kind="music" multiple busy={upload.isPending && upload.variables?.kind === 'music'} onFiles={uploadMusic} />
                       </div>
                     </div>
-                    <form className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 p-3" onSubmit={(event) => { event.preventDefault(); submitMusicUrl() }}>
-                      <label htmlFor="ad-music-url" className="text-xs font-semibold text-zinc-800">Importar áudio por link direto</label>
+                    <form className="mt-4 rounded-xl border border-line bg-surface-muted p-3" onSubmit={(event) => { event.preventDefault(); submitMusicUrl() }}>
+                      <label htmlFor="ad-music-url" className="text-xs font-semibold text-ink">Importar áudio por link direto</label>
                       <div className="mt-2 flex flex-col gap-2 sm:flex-row">
                         <input
                           id="ad-music-url"
@@ -2113,38 +2138,39 @@ export default function AdLibraryPage() {
                           placeholder="https://meus-arquivos.exemplo.com/musica.mp3"
                           value={musicUrl}
                           onChange={(event) => setMusicUrl(event.target.value)}
-                          className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500"
+                          className="min-w-0 flex-1 rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
                         />
                         <Button type="submit" variant="secondary" disabled={importMusic.isPending || upload.isPending || !musicRightsConfirmed}>
                           {importMusic.isPending ? <LoaderCircle size={16} className="animate-spin" /> : <Download size={16} />}
                           {importMusic.isPending ? 'Importando…' : 'Importar áudio'}
                         </Button>
                       </div>
-                      <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs leading-5 text-zinc-700">
-                        <input type="checkbox" checked={musicRightsConfirmed} onChange={(event) => setMusicRightsConfirmed(event.target.checked)} className="mt-1 accent-violet-600" />
+                      <label className="mt-3 flex cursor-pointer items-start gap-2 text-xs leading-5 text-ink">
+                        <input type="checkbox" checked={musicRightsConfirmed} onChange={(event) => setMusicRightsConfirmed(event.target.checked)} className="mt-1 accent-accent" />
                         Confirmo que tenho os direitos para usar este áudio em anúncios.
                       </label>
-                      <p className="mt-2 text-[11px] leading-4 text-zinc-600">Use um arquivo de áudio público com até 10 minutos. YouTube e Spotify não oferecem download de faixas para sincronizar com anúncios; nesses casos, envie o arquivo licenciado.</p>
+                      <p className="mt-2 text-xs leading-4 text-muted">Use um arquivo de áudio público com até 10 minutos. YouTube e Spotify não oferecem download de faixas para sincronizar com anúncios; nesses casos, envie o arquivo licenciado.</p>
                     </form>
-                  </section>
 
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  </StudioSection>
+
+                  <section className="rounded-2xl border border-line bg-surface p-5">
                     <div className="mb-4 flex items-center justify-between gap-3">
                       <div>
-                        <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Sparkles size={18} className="text-violet-600" /> Textos</h2>
-                        <p className="mt-1 text-xs text-zinc-500">Cada texto pode aparecer em combinações diferentes. Use Enter para controlar as quebras de linha.</p>
+                        <h2 className="flex items-center gap-2 text-base font-semibold text-ink"><Sparkles size={18} className="text-accent" /> Textos</h2>
+                        <p className="mt-1 text-xs text-muted">Cada texto pode aparecer em combinações diferentes. Use Enter para controlar as quebras de linha.</p>
                       </div>
                       <button
                         type="button"
                         onClick={() => setDraft((value) => ({ ...value, texts: [...value.texts, ''] }))}
                         disabled={draft.texts.length >= 20}
-                        className="flex items-center gap-1.5 text-xs font-semibold text-violet-700 disabled:text-zinc-300"
+                        className="flex items-center gap-1.5 text-xs font-semibold text-accent disabled:text-subtle"
                       ><Plus size={14} /> Adicionar</button>
                     </div>
                     <div className="space-y-2">
                       {draft.texts.map((text, index) => (
                         <div key={index} className="flex items-start gap-2">
-                          <span className="mt-2.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-violet-50 text-[11px] font-bold text-violet-700">{index + 1}</span>
+                          <span className="mt-2.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-bold text-accent">{index + 1}</span>
                           <textarea
                             ref={(node) => { textAreaRefs.current[index] = node }}
                             value={text}
@@ -2152,7 +2178,7 @@ export default function AdLibraryPage() {
                             rows={2}
                             maxLength={280}
                             aria-label={`Texto ${index + 1}`}
-                            className="min-h-16 flex-1 resize-y rounded-xl border border-zinc-300 px-3 py-2 text-sm leading-5 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100"
+                            className="min-h-16 flex-1 resize-y rounded-xl border border-line-strong px-3 py-2 text-sm leading-5 outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
                           />
                           <div className="mt-1 flex shrink-0 flex-col gap-1">
                             <EmojiPicker onSelect={(emoji) => insertTextEmoji(index, emoji)} ariaLabel={`Adicionar emoji ao texto ${index + 1}`} align="right" />
@@ -2160,7 +2186,7 @@ export default function AdLibraryPage() {
                               type="button"
                               onClick={() => setDraft((value) => ({ ...value, texts: value.texts.filter((_, textIndex) => textIndex !== index) }))}
                               disabled={draft.texts.length === 1}
-                              className="rounded-lg p-2 text-zinc-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-30"
+                              className="studio-icon-button rounded-lg p-2 text-subtle hover:bg-danger-soft hover:text-danger disabled:opacity-30"
                               aria-label={`Remover texto ${index + 1}`}
                             ><Trash2 size={15} /></button>
                           </div>
@@ -2169,10 +2195,11 @@ export default function AdLibraryPage() {
                     </div>
                   </section>
 
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
-                    <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Scissors size={18} className="text-violet-600" /> Ritmo e formato</h2>
+                  <StudioSection title="Ritmo e formato" summary={`${outputPresetFor(draft.output)?.ratio ?? 'Personalizado'} · ${draft.output.durationSeconds}s · ${draft.variationCount} variações`}>
+
+
                     <div className="mt-4">
-                      <div className="text-sm font-medium text-zinc-700">Formato de saída</div>
+                      <div className="text-sm font-medium text-ink">Formato de saída</div>
                       <div className="mt-2 grid gap-2 sm:grid-cols-3">
                         {OUTPUT_PRESETS.map((preset) => {
                           const selected = draft.output.width === preset.width && draft.output.height === preset.height
@@ -2185,37 +2212,37 @@ export default function AdLibraryPage() {
                                 ...value,
                                 output: { ...value.output, width: preset.width, height: preset.height },
                               }))}
-                              className={`flex min-h-24 flex-col items-start rounded-xl border p-3 text-left transition ${selected ? 'border-violet-500 bg-violet-50 ring-2 ring-violet-100' : 'border-zinc-200 hover:border-violet-300 hover:bg-violet-50/40'}`}
+                              className={`flex min-h-24 flex-col items-start rounded-xl border p-3 text-left transition ${selected ? 'border-accent bg-accent-soft ring-2 ring-accent/20' : 'border-line hover:border-accent hover:bg-accent-soft'}`}
                             >
                               <span className="flex w-full items-start justify-between gap-2">
                                 <span
-                                  className={`block h-8 rounded-[4px] border-2 ${selected ? 'border-violet-600 bg-violet-100' : 'border-zinc-400 bg-zinc-100'}`}
+                                  className={`block h-8 rounded-[4px] border-2 ${selected ? 'border-accent bg-accent-soft' : 'border-line-strong bg-surface-muted'}`}
                                   style={{ aspectRatio: `${preset.width}/${preset.height}` }}
                                   aria-hidden="true"
                                 />
-                                <span className={`text-[11px] font-semibold ${selected ? 'text-violet-700' : 'text-zinc-500'}`}>{preset.ratio}</span>
+                                <span className={`text-xs font-semibold ${selected ? 'text-accent' : 'text-muted'}`}>{preset.ratio}</span>
                               </span>
-                              <span className="mt-2 text-xs font-semibold text-zinc-800">{preset.label}</span>
-                              <span className="mt-0.5 text-[10px] text-zinc-500">{preset.placement}</span>
+                              <span className="mt-2 text-xs font-semibold text-ink">{preset.label}</span>
+                              <span className="mt-0.5 text-xs text-muted">{preset.placement}</span>
                             </button>
                           )
                         })}
                       </div>
-                      <p className="mt-2 text-xs leading-5 text-zinc-500">
+                      <p className="mt-2 text-xs leading-5 text-muted">
                         {outputPresetFor(draft.output)?.label ?? 'Formato personalizado'} · {draft.output.width} × {draft.output.height} px · {outputPresetFor(draft.output)?.ratio ?? 'proporção personalizada'}
                       </p>
-                      <div className="mt-3 grid gap-3 rounded-xl bg-zinc-50 p-3 sm:grid-cols-3">
-                        <label className="text-xs font-medium text-zinc-600">
+                      <div className="mt-3 grid gap-3 rounded-xl bg-surface-muted p-3 sm:grid-cols-3">
+                        <label className="text-xs font-medium text-muted">
                           Largura
-                          <div className="relative mt-1.5"><Input type="number" min={360} max={2160} step={2} value={draft.output.width} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, width: Number(event.target.value) } }))} className="pr-9" /><span className="absolute right-2.5 top-2 text-xs text-zinc-400">px</span></div>
+                          <div className="relative mt-1.5"><Input type="number" min={360} max={2160} step={2} value={draft.output.width} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, width: Number(event.target.value) } }))} className="pr-9" /><span className="absolute right-2.5 top-2 text-xs text-subtle">px</span></div>
                         </label>
-                        <label className="text-xs font-medium text-zinc-600">
+                        <label className="text-xs font-medium text-muted">
                           Altura
-                          <div className="relative mt-1.5"><Input type="number" min={640} max={3840} step={2} value={draft.output.height} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, height: Number(event.target.value) } }))} className="pr-9" /><span className="absolute right-2.5 top-2 text-xs text-zinc-400">px</span></div>
+                          <div className="relative mt-1.5"><Input type="number" min={640} max={3840} step={2} value={draft.output.height} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, height: Number(event.target.value) } }))} className="pr-9" /><span className="absolute right-2.5 top-2 text-xs text-subtle">px</span></div>
                         </label>
-                        <label className="text-xs font-medium text-zinc-600">
+                        <label className="text-xs font-medium text-muted">
                           Quadros por segundo
-                          <select value={draft.output.fps} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, fps: Number(event.target.value) as 24 | 25 | 30 } }))} className="mt-1.5 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500">
+                          <select value={draft.output.fps} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, fps: Number(event.target.value) as 24 | 25 | 30 } }))} className="mt-1.5 w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm outline-none focus:border-accent">
                             <option value={24}>24 fps · cinema</option>
                             <option value={25}>25 fps</option>
                             <option value={30}>30 fps · fluido</option>
@@ -2223,7 +2250,7 @@ export default function AdLibraryPage() {
                         </label>
                       </div>
                       {selectedClips.length > 0 && (mismatchedClipCount > 0 || lowResolutionClipCount > 0) ? (
-                        <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
+                        <div className="mt-3 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2 text-xs leading-5 text-warning">
                           {mismatchedClipCount > 0 ? `${mismatchedClipCount} ${mismatchedClipCount === 1 ? 'clipe tem' : 'clipes têm'} outra proporção e ${mismatchedClipCount === 1 ? 'será adaptado' : 'serão adaptados'} pelo enquadramento escolhido.` : ''}
                           {mismatchedClipCount > 0 && lowResolutionClipCount > 0 ? ' ' : ''}
                           {lowResolutionClipCount > 0 ? `${lowResolutionClipCount} ${lowResolutionClipCount === 1 ? 'clipe pode' : 'clipes podem'} perder nitidez ao ampliar.` : ''}
@@ -2231,7 +2258,7 @@ export default function AdLibraryPage() {
                       ) : null}
                     </div>
                     <div className="mt-5 grid gap-4 sm:grid-cols-2">
-                      <label className="text-sm font-medium text-zinc-700">
+                      <label className="text-sm font-medium text-ink">
                         Troca de cena
                         <select
                           value={draft.timing.mode}
@@ -2244,38 +2271,40 @@ export default function AdLibraryPage() {
                                 : { mode: 'beat' },
                             }))
                           }}
-                          className="mt-1.5 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500"
+                          className="mt-1.5 w-full rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
                         >
                           <option value="fixed">A cada intervalo</option>
                           <option value="beat">No ritmo da música</option>
                         </select>
                       </label>
                       {draft.timing.mode === 'fixed' ? (
-                        <label className="text-sm font-medium text-zinc-700">
+                        <label className="text-sm font-medium text-ink">
                           Intervalo
-                          <div className="relative mt-1.5"><Input type="number" min={0.5} max={15} step={0.1} value={draft.timing.seconds ?? 2.5} onChange={(event) => setDraft((value) => ({ ...value, timing: { ...value.timing, seconds: Number(event.target.value) } }))} className="pr-12" /><span className="absolute right-3 top-2 text-sm text-zinc-400">seg</span></div>
+                          <div className="relative mt-1.5"><Input type="number" min={0.5} max={15} step={0.1} value={draft.timing.seconds ?? 2.5} onChange={(event) => setDraft((value) => ({ ...value, timing: { ...value.timing, seconds: Number(event.target.value) } }))} className="pr-12" /><span className="absolute right-3 top-2 text-sm text-subtle">seg</span></div>
                         </label>
                       ) : (
-                        <div className="rounded-xl bg-violet-50 p-3 text-xs leading-5 text-violet-700"><AudioLines size={17} className="mb-1" />Os cortes acompanham os picos da música escolhida.</div>
+                        <div className="rounded-xl bg-accent-soft p-3 text-xs leading-5 text-accent"><AudioLines size={17} className="mb-1" />Os cortes acompanham os picos da música escolhida.</div>
                       )}
-                      <label className="text-sm font-medium text-zinc-700">
+                      <label className="text-sm font-medium text-ink">
                         Duração do anúncio
-                        <div className="relative mt-1.5"><Input type="number" min={3} max={60} value={draft.output.durationSeconds} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, durationSeconds: Number(event.target.value) } }))} className="pr-12" /><span className="absolute right-3 top-2 text-sm text-zinc-400">seg</span></div>
+                        <div className="relative mt-1.5"><Input type="number" min={3} max={60} value={draft.output.durationSeconds} onChange={(event) => setDraft((value) => ({ ...value, output: { ...value.output, durationSeconds: Number(event.target.value) } }))} className="pr-12" /><span className="absolute right-3 top-2 text-sm text-subtle">seg</span></div>
                       </label>
-                      <label className="text-sm font-medium text-zinc-700">
+                      <label className="text-sm font-medium text-ink">
                         Variações
                         <Input type="number" min={1} max={20} value={draft.variationCount} onChange={(event) => setDraft((value) => ({ ...value, variationCount: Number(event.target.value) }))} className="mt-1.5" />
                       </label>
                     </div>
-                  </section>
 
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  </StudioSection>
+
+                  <StudioSection title="Enquadramento" summary={FRAMING_MODES.find((mode) => mode.id === draft.framing.mode)?.label ?? 'Personalizado'}>
+
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><Crop size={18} className="text-violet-600" /> Enquadramento</h2>
-                        <p className="mt-1 text-xs leading-5 text-zinc-500">Escolha como clipes de outras proporções ocupam o formato final.</p>
+
+                        <p className="mt-1 text-xs leading-5 text-muted">Escolha como clipes de outras proporções ocupam o formato final.</p>
                       </div>
-                      <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[11px] font-semibold text-violet-700">Prévia ao vivo</span>
+                      <span className="rounded-full bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">Prévia ao vivo</span>
                     </div>
                     <div className="mt-4 grid gap-2">
                       {FRAMING_MODES.map((mode) => {
@@ -2290,76 +2319,81 @@ export default function AdLibraryPage() {
                               ...value,
                               framing: { ...(value.framing ?? DEFAULT_FRAMING), mode: mode.id },
                             }))}
-                            className={`rounded-xl border px-3 py-2.5 text-left transition ${selected ? 'border-violet-500 bg-violet-50 ring-2 ring-violet-100' : 'border-zinc-200 hover:border-violet-300'}`}
+                            className={`rounded-xl border px-3 py-2.5 text-left transition ${selected ? 'border-accent bg-accent-soft ring-2 ring-accent/20' : 'border-line hover:border-accent'}`}
                           >
-                            <span className="block text-xs font-semibold text-zinc-800">{mode.label}</span>
-                            <span className="mt-0.5 block text-[11px] leading-4 text-zinc-500">{mode.description}</span>
+                            <span className="block text-xs font-semibold text-ink">{mode.label}</span>
+                            <span className="mt-0.5 block text-xs leading-4 text-muted">{mode.description}</span>
                           </button>
                         )
                       })}
                     </div>
                     {(draft.framing ?? DEFAULT_FRAMING).mode === 'cover' ? (
-                      <div className="mt-4 rounded-xl bg-zinc-50 p-3">
-                        <div className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold text-zinc-700">
-                          <span className="flex items-center gap-1.5"><Focus size={15} className="text-violet-600" /> Ponto de foco</span>
+                      <div className="mt-4 rounded-xl bg-surface-muted p-3">
+                        <div className="mb-3 flex items-center justify-between gap-2 text-xs font-semibold text-ink">
+                          <span className="flex items-center gap-1.5"><Focus size={15} className="text-accent" /> Ponto de foco</span>
                           <button
                             type="button"
                             onClick={() => setDraft((value) => ({ ...value, framing: { ...(value.framing ?? DEFAULT_FRAMING), focusX: 50, focusY: 50 } }))}
-                            className="text-[11px] font-medium text-violet-700 hover:text-violet-900"
+                            className="text-xs font-medium text-accent hover:text-accent"
                           >Centralizar</button>
                         </div>
                         <div className="grid gap-4 sm:grid-cols-2">
-                          <label className="text-xs font-medium text-zinc-600">Horizontal <span className="float-right text-zinc-400">{(draft.framing ?? DEFAULT_FRAMING).focusX}%</span><input type="range" min={0} max={100} value={(draft.framing ?? DEFAULT_FRAMING).focusX} onChange={(event) => setDraft((value) => ({ ...value, framing: { ...(value.framing ?? DEFAULT_FRAMING), focusX: Number(event.target.value) } }))} className="mt-2 w-full accent-violet-600" /></label>
-                          <label className="text-xs font-medium text-zinc-600">Vertical <span className="float-right text-zinc-400">{(draft.framing ?? DEFAULT_FRAMING).focusY}%</span><input type="range" min={0} max={100} value={(draft.framing ?? DEFAULT_FRAMING).focusY} onChange={(event) => setDraft((value) => ({ ...value, framing: { ...(value.framing ?? DEFAULT_FRAMING), focusY: Number(event.target.value) } }))} className="mt-2 w-full accent-violet-600" /></label>
+                          <label className="text-xs font-medium text-muted">Horizontal <span className="float-right text-subtle">{(draft.framing ?? DEFAULT_FRAMING).focusX}%</span><input type="range" min={0} max={100} value={(draft.framing ?? DEFAULT_FRAMING).focusX} onChange={(event) => setDraft((value) => ({ ...value, framing: { ...(value.framing ?? DEFAULT_FRAMING), focusX: Number(event.target.value) } }))} className="mt-2 w-full accent-accent" /></label>
+                          <label className="text-xs font-medium text-muted">Vertical <span className="float-right text-subtle">{(draft.framing ?? DEFAULT_FRAMING).focusY}%</span><input type="range" min={0} max={100} value={(draft.framing ?? DEFAULT_FRAMING).focusY} onChange={(event) => setDraft((value) => ({ ...value, framing: { ...(value.framing ?? DEFAULT_FRAMING), focusY: Number(event.target.value) } }))} className="mt-2 w-full accent-accent" /></label>
                         </div>
                       </div>
                     ) : null}
                     {(draft.framing ?? DEFAULT_FRAMING).mode === 'contain-solid' ? (
-                      <label className="mt-4 flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-600">
+                      <label className="mt-4 flex items-center justify-between rounded-xl border border-line px-3 py-2 text-xs font-medium text-muted">
                         Cor do fundo
-                        <span className="flex items-center gap-2 text-[11px] text-zinc-400">
+                        <span className="flex items-center gap-2 text-xs text-subtle">
                           {(draft.framing ?? DEFAULT_FRAMING).backgroundColor.toUpperCase()}
                           <input type="color" value={(draft.framing ?? DEFAULT_FRAMING).backgroundColor} onChange={(event) => setDraft((value) => ({ ...value, framing: { ...(value.framing ?? DEFAULT_FRAMING), backgroundColor: event.target.value } }))} className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent" />
                         </span>
                       </label>
                     ) : null}
-                    <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] leading-5 text-amber-800">
+                    <div className="mt-4 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2.5 text-xs leading-5 text-warning">
                       <ShieldCheck size={16} className="mt-0.5 shrink-0" />
                       Mantenha texto e produto dentro da área pontilhada da prévia. Botões, nome do perfil e legendas da Meta podem cobrir as bordas.
                     </div>
-                  </section>
 
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
-                    <h2 className="text-base font-semibold text-zinc-900">Estilo do texto</h2>
-                    <p className="mt-1 text-xs leading-5 text-zinc-500">Ajuste a leitura da copy sobre qualquer cena.</p>
+                  </StudioSection>
+
+                  <StudioSection title="Estilo do texto" summary={`${draft.textStyle.fontSize}px · posição ${draft.textStyle.positionY}%`}>
+
+
+                    <p className="mt-1 text-xs leading-5 text-muted">Ajuste a leitura do texto sobre qualquer cena.</p>
                     <div className="mt-4 grid gap-4 sm:grid-cols-2">
-                      <label className="text-xs font-medium text-zinc-600">Tamanho do texto <span className="float-right text-zinc-400">{draft.textStyle.fontSize}px</span><input type="range" min={36} max={140} value={draft.textStyle.fontSize} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, fontSize: Number(event.target.value) } }))} className="mt-2 w-full accent-violet-600" /></label>
-                      <label className="text-xs font-medium text-zinc-600">Altura na tela <span className="float-right text-zinc-400">{draft.textStyle.positionY}%</span><input type="range" min={15} max={85} value={draft.textStyle.positionY} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, positionY: Number(event.target.value) } }))} className="mt-2 w-full accent-violet-600" /></label>
-                      <label className="text-xs font-medium text-zinc-600 sm:col-span-2">Espessura do contorno <span className="float-right text-zinc-400">{draft.textStyle.borderWidth}px</span><input type="range" min={0} max={12} value={draft.textStyle.borderWidth} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, borderWidth: Number(event.target.value) } }))} className="mt-2 w-full accent-violet-600" /></label>
-                      <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-600">Cor do texto<input type="color" value={draft.textStyle.fontColor} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, fontColor: event.target.value } }))} className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent" /></label>
-                      <label className="flex items-center justify-between rounded-xl border border-zinc-200 px-3 py-2 text-xs font-medium text-zinc-600">Contorno<input type="color" value={draft.textStyle.borderColor} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, borderColor: event.target.value } }))} className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent" /></label>
+                      <label className="text-xs font-medium text-muted">Tamanho do texto <span className="float-right text-subtle">{draft.textStyle.fontSize}px</span><input type="range" min={36} max={140} value={draft.textStyle.fontSize} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, fontSize: Number(event.target.value) } }))} className="mt-2 w-full accent-accent" /></label>
+                      <label className="text-xs font-medium text-muted">Altura na tela <span className="float-right text-subtle">{draft.textStyle.positionY}%</span><input type="range" min={15} max={85} value={draft.textStyle.positionY} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, positionY: Number(event.target.value) } }))} className="mt-2 w-full accent-accent" /></label>
+                      <label className="text-xs font-medium text-muted sm:col-span-2">Espessura do contorno <span className="float-right text-subtle">{draft.textStyle.borderWidth}px</span><input type="range" min={0} max={12} value={draft.textStyle.borderWidth} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, borderWidth: Number(event.target.value) } }))} className="mt-2 w-full accent-accent" /></label>
+                      <label className="flex items-center justify-between rounded-xl border border-line px-3 py-2 text-xs font-medium text-muted">Cor do texto<input type="color" value={draft.textStyle.fontColor} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, fontColor: event.target.value } }))} className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent" /></label>
+                      <label className="flex items-center justify-between rounded-xl border border-line px-3 py-2 text-xs font-medium text-muted">Contorno<input type="color" value={draft.textStyle.borderColor} onChange={(event) => setDraft((value) => ({ ...value, textStyle: { ...value.textStyle, borderColor: event.target.value } }))} className="h-7 w-9 cursor-pointer rounded border-0 bg-transparent" /></label>
                     </div>
-                  </section>
 
-                  <section className="rounded-2xl border border-zinc-200 bg-white p-5">
+                  </StudioSection>
+
+                  <StudioSection title="Direção criativa" summary={draft.hook?.enabled ? 'Gancho inicial ativo' : 'Acabamento, gancho e trilhas'}>
+
                     <div className="mb-4">
-                      <h2 className="flex items-center gap-2 text-base font-semibold text-zinc-900"><WandSparkles size={18} className="text-violet-600" /> Direção criativa</h2>
-                      <p className="mt-1 text-xs leading-5 text-zinc-500">Aplique uma receita pronta ou combine acabamento, gancho inicial e trilhas em camadas.</p>
+
+                      <p className="mt-1 text-xs leading-5 text-muted">Aplique uma receita pronta ou combine acabamento, gancho inicial e trilhas em camadas.</p>
                     </div>
                     <CreativeControls config={draft} assets={current.assets ?? []} onChange={setDraft} />
-                  </section>
+
+                  </StudioSection>
 
                   </>}
 
                   <CompositionLayers project={current} config={draft} onChange={setDraft} disabled={blocked || Boolean(autosaveError)} />
                   <AudioFinishingControls value={draft.audioFinishing} disabled={blocked} onChange={(audioFinishing) => setDraft((value) => ({ ...value, audioFinishing }))} />
                   <ExportReadiness readiness={exportReadiness} />
-                  <div className="sticky bottom-3 z-30 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-200 bg-white/95 p-3 shadow-xl shadow-zinc-900/10 backdrop-blur">
-                    <Button variant="secondary" onClick={() => save.mutate()} disabled={!dirty || blocked || Boolean(autosaveError) || Boolean(clipValidationError)}><Save size={16} /> {save.isPending ? 'Salvando…' : dirty ? 'Salvar projeto' : 'Salvo'}</Button>
+                  <div className="studio-export-bar sticky bottom-3 z-30 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line-strong bg-surface p-3">
+                    <Button variant="secondary" onClick={() => save.mutate()} loading={save.isPending} loadingText="Salvando projeto…" disabled={!dirty || blocked || Boolean(autosaveError) || Boolean(clipValidationError)}><Save size={16} /> {dirty ? 'Salvar projeto' : 'Salvo'}</Button>
                     <Button
                       onClick={() => render.mutate(false)}
                       disabled={!exportReadiness.ready}
-                      className="bg-[#ee5b47] hover:bg-[#db4c39] disabled:bg-[#f4a397]"
+                      className="studio-export-action"
                     >
                       {render.isPending || hasActiveJob ? <LoaderCircle size={16} className="animate-spin" /> : <Clapperboard size={16} />}
                       {hasActiveJob ? 'Renderizando…' : isCarousel ? 'Gerar carrossel' : `Gerar ${draft.variationCount} ${draft.variationCount === 1 ? 'variação' : 'variações'}`}
@@ -2370,14 +2404,28 @@ export default function AdLibraryPage() {
             )}
           </div>
 
+          {current && hydratedProjectId === current.id ? (
+            <section className="studio-secondary-tools mt-6" aria-label="Ferramentas do projeto">
+              <div className="mb-3">
+                <h2 className="section-heading">Organizar e publicar</h2>
+                <p className="mt-1 text-sm text-muted">Acesse mídias, versões, legendas e o planejamento de publicação.</p>
+              </div>
+          <StudioTools key={current.id} project={{ ...current, revision: writeRevision }} config={draft} name={draftName} jobs={jobs.data ?? []} disabled={blocked || Boolean(autosaveError)} onBusy={setStudioBusy} onDirtyChange={setAuxiliaryDirty} onChange={setDraft} onProject={async (updated) => {
+            if (updated.id === activeId) { acknowledged.current = updated; setWriteRevision(updated.revision) }
+            queryClient.setQueryData(['ad-projects', updated.id], updated)
+            await queryClient.invalidateQueries({ queryKey: ['ad-projects'] })
+          }} onSelect={selectProject} onError={(message) => setError(message)} />
+            </section>
+          ) : null}
+
           {current && (
             <section className="mt-7">
               <div className="mb-4 flex items-end justify-between gap-4">
                 <div>
-                  <h2 className="text-xl font-bold tracking-tight text-zinc-900">Arquivos gerados</h2>
-                  <p className="mt-1 text-sm text-zinc-500">Pré-visualize, baixe e acompanhe os renders deste projeto.</p>
+                  <h2 className="text-xl font-bold tracking-tight text-ink">Arquivos gerados</h2>
+                  <p className="mt-1 text-sm text-muted">Pré-visualize, baixe e acompanhe os renders deste projeto.</p>
                 </div>
-                {hasActiveJob && <span className="flex items-center gap-2 text-xs font-medium text-violet-700"><Clock3 size={15} /> Atualizando automaticamente</span>}
+                {hasActiveJob && <span className="flex items-center gap-2 text-xs font-medium text-accent"><Clock3 size={15} /> Atualizando automaticamente</span>}
               </div>
               {jobs.isError ? (
                 <QueryErrorState
@@ -2387,19 +2435,19 @@ export default function AdLibraryPage() {
                   className="min-h-40"
                 />
               ) : jobs.isLoading ? (
-                <div className="flex h-32 items-center justify-center rounded-2xl border border-zinc-200 bg-white"><Spinner /></div>
+                <div className="flex h-32 items-center justify-center rounded-2xl border border-line bg-surface"><Spinner /></div>
               ) : jobs.data?.length ? (
                 <div className="space-y-4">
                   {jobs.data.map((job, index) => <RenderCard key={job.id} projectId={current.id} job={job} initiallyExpanded={index === 0} onCancel={() => cancelJob.mutate(job.id)} />)}
                 </div>
               ) : (
-                <div className="flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-zinc-300 bg-white/60 px-6 text-center text-sm text-zinc-500">Os arquivos aparecerão aqui depois de gerar o projeto.</div>
+                <div className="flex min-h-40 items-center justify-center rounded-2xl border border-dashed border-line-strong bg-surface px-6 text-center text-sm text-muted">Os arquivos aparecerão aqui depois de gerar o projeto.</div>
               )}
             </section>
           )}
         </>
       )}
-      <p className="mt-8 text-xs leading-5 text-zinc-500">
+      <p className="mt-8 text-xs leading-5 text-muted">
         Confira texto, margens e direitos de uso antes de publicar. Para Reels, use música original ou livre de direitos.
         Emojis por <a href="https://github.com/jdecked/twemoji" target="_blank" rel="noreferrer" className="underline">Twemoji</a>,
         sob <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer" className="underline">CC BY 4.0</a>.

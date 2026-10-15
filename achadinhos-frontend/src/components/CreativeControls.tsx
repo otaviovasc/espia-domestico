@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { studioApi } from '@/lib/adStudioApi'
 import { apiErrorMessage } from '@/lib/api'
-import { memo, useMemo, useRef, useState, useEffect } from 'react'
+import { memo, useId, useMemo, useRef, useState, useEffect } from 'react'
 import {
   AudioLines,
   ChevronDown,
@@ -198,6 +198,7 @@ interface CreativeControlsProps {
 }
 
 function CreativeControls({ config, assets = [], onChange }: CreativeControlsProps) {
+  const controlId = useId()
   const { user } = useAuth()
   const savedPresetsKey = `${SAVED_PRESETS_KEY}:${user?.uuid ?? 'local'}`
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -205,6 +206,9 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
   const [savingPreset, setSavingPreset] = useState(false)
   const client = useQueryClient()
   const [presetError, setPresetError] = useState('')
+  const [presetBusy, setPresetBusy] = useState(false)
+  const [presetToDelete, setPresetToDelete] = useState<SavedCreativePreset | null>(null)
+  const presetMutation = useRef(false)
   const presets = useQuery({ queryKey: ['studio', 'preset'], queryFn: () => studioApi.all<SavedCreativePreset>('preset') })
   const savedPresets = presets.data?.map((r) => r.payload) ?? []
   const migratingPresets = useRef(false)
@@ -315,7 +319,9 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
 
   async function saveCurrentPreset() {
     const name = presetName.trim()
-    if (!name) return
+    if (!name || presetMutation.current) return
+    presetMutation.current = true
+    setPresetBusy(true)
     const saved: SavedCreativePreset = {
       id: crypto.randomUUID(),
       name: name.slice(0, 48),
@@ -333,13 +339,17 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
       await client.invalidateQueries({ queryKey: ['studio', 'preset'] })
       setPresetName(''); setSavingPreset(false); setPresetError('')
     } catch (error) { setPresetError(apiErrorMessage(error)) }
+    finally { presetMutation.current = false; setPresetBusy(false) }
   }
 
   async function removeSavedPreset(presetId: string) {
     const row = presets.data?.find((r) => r.payload.id === presetId)
-    if (!row) return
-    try { await studioApi.remove(row.id); await client.invalidateQueries({ queryKey: ['studio', 'preset'] }); setPresetError('') }
+    if (!row || presetMutation.current) return
+    presetMutation.current = true
+    setPresetBusy(true)
+    try { await studioApi.remove(row.id); await client.invalidateQueries({ queryKey: ['studio', 'preset'] }); setPresetError(''); setPresetToDelete(null) }
     catch (error) { setPresetError(apiErrorMessage(error)) }
+    finally { presetMutation.current = false; setPresetBusy(false) }
   }
 
   function addTrack() {
@@ -380,54 +390,61 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
   }
 
   return (
-    <div className="space-y-5">
-      <section>
+    <div className="space-y-4 text-ink [&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-offset-2 [&_button]:focus-visible:outline-accent [&_input]:accent-accent">
+      <details className="rounded-xl border border-line bg-surface p-3">
+        <summary className="cursor-pointer py-1 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent">Modelos de criativo <span className="ml-2 text-xs font-normal text-muted">Ritmo, transição e abertura</span></summary>
         <div className="mb-3">
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900"><WandSparkles size={16} className="text-violet-600" /> Começar de um modelo</h3>
-          <p className="mt-1 text-xs leading-5 text-zinc-500">Aplique ritmo, transição, acabamento e gancho; depois ajuste cada parte.</p>
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-ink"><WandSparkles size={16} className="text-accent" /> Começar de um modelo</h3>
+          <p className="mt-1 text-xs leading-5 text-muted">Aplique ritmo, transição, acabamento e gancho; depois ajuste cada parte.</p>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {CREATIVE_RECIPES.map((recipe, index) => (
-            <button key={recipe.id} type="button" onClick={() => applyRecipe(recipe)} className="group rounded-xl border border-zinc-200 bg-white p-3 text-left hover:border-violet-300 hover:bg-violet-50/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500">
-              <span className="flex items-center gap-2 text-xs font-semibold text-zinc-800">{index === 0 ? <Zap size={13} className="text-orange-500" /> : index === 1 ? <Film size={13} className="text-violet-600" /> : <Sparkles size={13} className="text-violet-600" />}{recipe.label}</span>
-              <span className="mt-1 block text-[11px] leading-4 text-zinc-600">{recipe.description}</span>
-              <span className="mt-2 block text-[11px] font-semibold text-violet-700">Aplicar modelo</span>
+            <button key={recipe.id} type="button" onClick={() => applyRecipe(recipe)} className="group rounded-xl border border-line bg-surface p-3 text-left hover:border-accent hover:bg-accent-soft/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+              <span className="flex items-center gap-2 text-xs font-semibold text-ink">{index === 0 ? <Zap size={13} className="text-accent" /> : index === 1 ? <Film size={13} className="text-accent" /> : <Sparkles size={13} className="text-accent" />}{recipe.label}</span>
+              <span className="mt-1 block text-xs leading-4 text-muted">{recipe.description}</span>
+              <span className="mt-2 block text-xs font-semibold text-accent">Aplicar modelo</span>
             </button>
           ))}
         </div>
-        {presetError || presets.isError ? <p role="alert" className="text-xs text-red-700">{presetError || apiErrorMessage(presets.error)}</p> : null}
+        {presets.isPending ? <p role="status" className="mt-3 text-xs text-muted">Carregando seus modelos…</p> : null}
+        {presetError || presets.isError ? <div role="alert" className="mt-3 rounded-lg bg-danger-soft p-3 text-xs text-danger"><p>{presetError || apiErrorMessage(presets.error)}</p>{presets.isError ? <button type="button" onClick={() => void presets.refetch()} disabled={presets.isFetching} className="mt-2 min-h-9 font-semibold underline">Tentar carregar novamente</button> : null}</div> : null}
         {savedPresets.length > 0 ? (
           <div className="mt-3">
-            <p className="mb-1.5 text-[11px] font-semibold text-zinc-600">Seus modelos na sua conta</p>
+            <p className="mb-1.5 text-xs font-semibold text-muted">Seus modelos na sua conta</p>
             <div className="flex gap-1.5 overflow-x-auto pb-1">
               {savedPresets.map((preset) => (
-                <span key={preset.id} className="flex shrink-0 items-center overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50">
-                  <button type="button" onClick={() => applySavedPreset(preset)} className="px-2.5 py-1.5 text-[11px] font-semibold text-zinc-700 hover:bg-violet-50 hover:text-violet-700">{preset.name}</button>
-                  <button type="button" onClick={() => removeSavedPreset(preset.id)} className="border-l border-zinc-200 p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600" aria-label={`Excluir modelo ${preset.name}`}><Trash2 size={11} /></button>
+                <span key={preset.id} className="flex shrink-0 items-center overflow-hidden rounded-lg border border-line bg-surface-muted">
+                  <button type="button" onClick={() => applySavedPreset(preset)} className="px-2.5 py-1.5 text-xs font-semibold text-ink hover:bg-accent-soft hover:text-accent">{preset.name}</button>
+                  <button type="button" disabled={presetBusy} onClick={() => setPresetToDelete(preset)} className="flex h-11 w-11 items-center justify-center border-l border-line text-muted hover:bg-danger-soft hover:text-danger disabled:opacity-50" aria-label={`Excluir modelo ${preset.name}`}><Trash2 size={15} /></button>
                 </span>
               ))}
             </div>
           </div>
         ) : null}
+        {presetToDelete ? <div role="group" aria-label="Confirmar exclusão do modelo" className="mt-3 rounded-lg border border-line bg-surface-muted p-3 text-xs">
+          <p>Excluir o modelo “{presetToDelete.name}” da sua conta? Os projetos que já usam esses ajustes serão mantidos.</p>
+          <div className="mt-2 flex flex-wrap gap-2"><button type="button" disabled={presetBusy} onClick={() => void removeSavedPreset(presetToDelete.id)} className="min-h-10 rounded-lg bg-danger-soft px-3 font-semibold text-danger">{presetBusy ? 'Excluindo…' : 'Excluir modelo'}</button><button type="button" disabled={presetBusy} onClick={() => setPresetToDelete(null)} className="min-h-10 rounded-lg border border-line px-3">Cancelar</button></div>
+        </div> : null}
         {savingPreset ? (
-          <div className="mt-3 flex gap-2 rounded-xl bg-zinc-50 p-2">
-            <input autoFocus maxLength={48} value={presetName} onChange={(event) => setPresetName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') saveCurrentPreset(); if (event.key === 'Escape') setSavingPreset(false) }} placeholder="Nome do modelo" className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2.5 py-1.5 text-xs outline-none focus:border-violet-500" />
-            <button type="button" onClick={saveCurrentPreset} disabled={!presetName.trim()} className="rounded-lg bg-violet-600 px-3 py-1.5 text-[11px] font-semibold text-white disabled:bg-violet-300">Salvar</button>
-            <button type="button" onClick={() => setSavingPreset(false)} className="rounded-lg px-2 py-1.5 text-[11px] font-semibold text-zinc-500 hover:bg-zinc-200">Cancelar</button>
+          <div className="mt-3 flex flex-wrap gap-2 rounded-xl bg-surface-muted p-2" aria-busy={presetBusy}>
+            <label htmlFor={`${controlId}-preset-name`} className="w-full text-xs font-medium">Nome do modelo</label>
+            <input id={`${controlId}-preset-name`} autoFocus disabled={presetBusy} maxLength={48} value={presetName} onChange={(event) => setPresetName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void saveCurrentPreset() } if (event.key === 'Escape' && !presetBusy) setSavingPreset(false) }} placeholder="Ex.: Oferta com cortes suaves" className="min-h-10 min-w-0 flex-1 rounded-lg border border-line-strong bg-surface px-2.5 py-1.5 text-sm outline-none focus:border-accent" />
+            <button type="button" onClick={() => void saveCurrentPreset()} disabled={!presetName.trim() || presetBusy} className="min-h-10 rounded-lg bg-accent px-3 py-1.5 text-xs font-semibold text-accent-foreground disabled:opacity-50">{presetBusy ? 'Salvando…' : 'Salvar'}</button>
+            <button type="button" disabled={presetBusy} onClick={() => setSavingPreset(false)} className="min-h-10 rounded-lg px-2 py-1.5 text-xs font-semibold text-muted hover:bg-line">Cancelar</button>
           </div>
         ) : (
-          <button type="button" onClick={() => setSavingPreset(true)} className="mt-3 flex items-center gap-1.5 text-[11px] font-semibold text-violet-700 hover:text-violet-900"><Save size={12} /> Salvar ajustes como modelo</button>
+          <button type="button" onClick={() => setSavingPreset(true)} className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-accent hover:text-accent"><Save size={12} /> Salvar ajustes como modelo</button>
         )}
-        <p className="mt-1.5 text-[11px] leading-4 text-zinc-500">Modelos salvos guardam estilo, ritmo e gancho. Clipes e músicas não são copiados.</p>
-      </section>
+        <p className="mt-1.5 text-xs leading-4 text-muted">Modelos salvos guardam estilo, ritmo e gancho. Clipes e músicas não são copiados.</p>
+      </details>
 
-      <section className="border-t border-zinc-100 pt-5">
+      <section className="border-t border-line pt-5">
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900"><Sparkles size={16} className="text-violet-600" /> Acabamento visual</h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Escolha uma base e refine só o que precisar.</p>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-ink"><Sparkles size={16} className="text-accent" /> Acabamento visual</h3>
+            <p className="mt-1 text-xs leading-5 text-muted">Escolha uma base e refine só o que precisar.</p>
           </div>
-          <button type="button" onClick={() => setEffects({ ...DEFAULT_VISUAL_EFFECTS })} className="flex shrink-0 items-center gap-1 text-[11px] font-semibold text-violet-700 hover:text-violet-900"><RotateCcw size={12} /> Restaurar</button>
+          <button type="button" onClick={() => setEffects({ ...DEFAULT_VISUAL_EFFECTS })} className="flex shrink-0 items-center gap-1 text-xs font-semibold text-accent hover:text-accent"><RotateCcw size={12} /> Restaurar</button>
         </div>
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           {(Object.entries(VISUAL_EFFECT_PRESETS) as Array<[AdVisualEffectsPreset, VisualPresetDefinition]>)
@@ -438,34 +455,34 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
                 type="button"
                 aria-pressed={normalized.visualEffects.preset === id}
                 onClick={() => setEffects({ ...preset.values })}
-                className={`rounded-xl border p-3 text-left transition ${normalized.visualEffects.preset === id ? 'border-violet-500 bg-violet-50 ring-1 ring-violet-200' : 'border-zinc-200 bg-white hover:border-violet-300'}`}
+                className={`rounded-xl border p-3 text-left transition ${normalized.visualEffects.preset === id ? 'border-accent bg-accent-soft ring-1 ring-accent' : 'border-line bg-surface hover:border-accent'}`}
               >
-                <span className="block text-xs font-semibold text-zinc-800">{preset.label}</span>
-                <span className="mt-1 block text-[11px] leading-4 text-zinc-600">{preset.description}</span>
+                <span className="block text-xs font-semibold text-ink">{preset.label}</span>
+                <span className="mt-1 block text-xs leading-4 text-muted">{preset.description}</span>
               </button>
             ))}
         </div>
-        <button type="button" onClick={() => setAdvancedOpen((value) => !value)} aria-expanded={advancedOpen} className="mt-3 flex w-full items-center justify-between rounded-lg bg-zinc-50 px-3 py-2 text-xs font-semibold text-zinc-700 hover:bg-zinc-100">
-          <span className="flex items-center gap-2"><Gauge size={14} /> Ajustes finos {normalized.visualEffects.preset === 'custom' ? <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] text-violet-700">Personalizado</span> : null}</span>
+        <button type="button" onClick={() => setAdvancedOpen((value) => !value)} aria-expanded={advancedOpen} aria-controls={`${controlId}-effects`} className="mt-3 flex w-full items-center justify-between rounded-lg bg-surface-muted px-3 py-2 text-xs font-semibold text-ink hover:bg-surface-muted">
+          <span className="flex items-center gap-2"><Gauge size={14} /> Ajustes finos {normalized.visualEffects.preset === 'custom' ? <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-xs text-accent">Personalizado</span> : null}</span>
           {advancedOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
         </button>
         {advancedOpen ? (
-          <div className="mt-3 grid gap-x-4 gap-y-3 rounded-xl border border-zinc-200 bg-zinc-50/60 p-3 sm:grid-cols-2">
+          <div id={`${controlId}-effects`} className="mt-3 grid gap-x-4 gap-y-3 rounded-xl border border-line bg-surface-muted/60 p-3 sm:grid-cols-2">
             {EFFECT_CONTROLS.map((control) => (
-              <label key={control.key} className="text-[11px] font-medium text-zinc-600" title={control.hint}>
-                <span className="flex items-center justify-between gap-2"><span>{control.label}</span><span className="tabular-nums text-zinc-500">{control.format(normalized.visualEffects[control.key])}</span></span>
-                <input type="range" min={control.min} max={control.max} step={control.step} value={normalized.visualEffects[control.key]} onChange={(event) => patchEffect(control.key, Number(event.target.value))} className="mt-1.5 w-full accent-violet-600" />
+              <label key={control.key} className="text-xs font-medium text-muted" title={control.hint}>
+                <span className="flex items-center justify-between gap-2"><span>{control.label}</span><span className="tabular-nums text-muted">{control.format(normalized.visualEffects[control.key])}</span></span>
+                <input type="range" min={control.min} max={control.max} step={control.step} value={normalized.visualEffects[control.key]} onChange={(event) => patchEffect(control.key, Number(event.target.value))} className="mt-1.5 h-8 w-full accent-accent" />
               </label>
             ))}
           </div>
         ) : null}
       </section>
 
-      <section className="border-t border-zinc-100 pt-5">
+      <section className="border-t border-line pt-5">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900"><Flame size={16} className="text-orange-500" /> Gancho de abertura</h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Reserve os primeiros {normalized.hook.durationSeconds.toFixed(1)}s para a cena e frase mais fortes.</p>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-ink"><Flame size={16} className="text-accent" /> Gancho de abertura</h3>
+            <p className="mt-1 text-xs leading-5 text-muted">Reserve os primeiros {normalized.hook.durationSeconds.toFixed(1)}s para a cena e frase mais fortes.</p>
           </div>
           <button
             type="button"
@@ -474,16 +491,17 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
             aria-label={normalized.hook.enabled ? 'Desativar gancho de abertura' : 'Ativar gancho de abertura'}
             disabled={clips.length === 0}
             onClick={() => patchHook({ enabled: !normalized.hook.enabled, clipAssetId: normalized.hook.clipAssetId ?? normalized.selectedClipIds[0] ?? clips[0]?.id ?? null })}
-            className={`relative h-6 w-11 shrink-0 rounded-full transition disabled:cursor-not-allowed disabled:opacity-45 ${normalized.hook.enabled ? 'bg-violet-600' : 'bg-zinc-300'}`}
+            className="relative h-11 w-11 shrink-0 rounded-lg disabled:cursor-not-allowed disabled:opacity-45"
           >
-            <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition ${normalized.hook.enabled ? 'left-[22px]' : 'left-0.5'}`} />
+            <span aria-hidden="true" className={`absolute inset-x-0 top-2.5 h-6 rounded-full ${normalized.hook.enabled ? 'bg-accent' : 'bg-line-strong'}`} />
+            <span aria-hidden="true" className={`absolute top-3 h-5 w-5 rounded-full bg-surface shadow-sm motion-safe:transition-all ${normalized.hook.enabled ? 'left-[22px]' : 'left-0.5'}`} />
           </button>
         </div>
         {normalized.hook.enabled ? (
-          <div className="mt-3 space-y-3 rounded-xl border border-orange-100 bg-orange-50/40 p-3">
+          <div className="mt-3 space-y-3 rounded-xl border border-accent bg-accent-soft/40 p-3">
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_110px]">
-              <label className="text-[11px] font-medium text-zinc-600">Clipe do gancho
-                <select value={normalized.hook.clipAssetId ?? ''} onChange={(event) => patchHook({ clipAssetId: event.target.value ? Number(event.target.value) : null })} className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 text-xs outline-none focus:border-violet-500">
+              <label className="text-xs font-medium text-muted">Clipe do gancho
+                <select value={normalized.hook.clipAssetId ?? ''} onChange={(event) => patchHook({ clipAssetId: event.target.value ? Number(event.target.value) : null })} className="mt-1 min-h-10 w-full rounded-lg border border-line-strong bg-surface px-2 py-2 text-xs outline-none focus:border-accent">
                   <option value="">Escolher clipe</option>
                   {clips.map((clip) => (
                     <option key={clip.id} value={clip.id}>
@@ -492,78 +510,79 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
                   ))}
                 </select>
               </label>
-              <label className="text-[11px] font-medium text-zinc-600">Duração
-                <span className="relative mt-1 block"><input type="number" min={0.5} max={5} step={0.1} value={normalized.hook.durationSeconds} onChange={(event) => patchHook({ durationSeconds: clamp(Number(event.target.value), 0.5, 5) })} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-2 pr-7 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-2 text-xs text-zinc-400">s</span></span>
+              <label className="text-xs font-medium text-muted">Duração
+                <span className="relative mt-1 block"><input type="number" min={0.5} max={5} step={0.1} value={normalized.hook.durationSeconds} onChange={(event) => patchHook({ durationSeconds: clamp(Number(event.target.value), 0.5, 5) })} className="min-h-10 w-full rounded-lg border border-line-strong bg-surface px-2 py-2 pr-7 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-2 text-xs text-subtle">s</span></span>
               </label>
             </div>
-            <div className="text-[11px] font-medium text-zinc-600">
-              <label htmlFor="ad-hook-text">Texto do gancho</label>
-              <textarea id="ad-hook-text" ref={hookTextRef} maxLength={MAX_HOOK_TEXT_LENGTH} rows={2} value={normalized.hook.text} onChange={(event) => patchHook({ text: event.target.value })} placeholder="Ex.: Espera: olha o preço disso" className="mt-1 w-full resize-none rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-100" />
+            <div className="text-xs font-medium text-muted">
+              <label htmlFor={`${controlId}-hook-text`}>Texto do gancho</label>
+              <textarea id={`${controlId}-hook-text`} ref={hookTextRef} maxLength={MAX_HOOK_TEXT_LENGTH} rows={2} value={normalized.hook.text} onChange={(event) => patchHook({ text: event.target.value })} placeholder="Ex.: Espera: olha o preço disso" className="mt-1 w-full resize-none rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent" />
               <span className="mt-1 flex items-start justify-between gap-2">
                 <EmojiPicker onSelect={insertHookEmoji} ariaLabel="Adicionar emoji ao texto do gancho" />
-                <span className="pt-1 text-[11px] text-zinc-500">{normalized.hook.text.length}/{MAX_HOOK_TEXT_LENGTH}</span>
+                <span className="pt-1 text-xs text-muted">{normalized.hook.text.length}/{MAX_HOOK_TEXT_LENGTH}</span>
               </span>
             </div>
             <div>
-              <p className="mb-1.5 flex items-center gap-1 text-[11px] font-semibold text-zinc-600"><Lightbulb size={11} /> Modelos de abertura</p>
+              <p className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-muted"><Lightbulb size={11} /> Modelos de abertura</p>
               <div className="flex gap-1.5 overflow-x-auto pb-1">
-                {HOOK_EXAMPLES.map((example) => <button key={example} type="button" onClick={() => patchHook({ text: example })} className="shrink-0 rounded-full border border-orange-200 bg-white px-2.5 py-1 text-[11px] font-medium text-zinc-700 hover:border-orange-400">{example}</button>)}
+                {HOOK_EXAMPLES.map((example) => <button key={example} type="button" onClick={() => patchHook({ text: example })} className="shrink-0 rounded-lg border border-accent bg-surface px-2.5 py-1 text-xs font-medium text-ink hover:border-accent">{example}</button>)}
               </div>
             </div>
           </div>
         ) : null}
       </section>
 
-      <section className="border-t border-zinc-100 pt-5">
+      <details className="rounded-xl border border-line bg-surface p-3">
+        <summary className="cursor-pointer py-1 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent">Trilha sonora <span className="ml-2 text-xs font-normal text-muted">{tracks.length ? `${tracks.length} de 8 faixas` : 'Sem faixas adicionadas'}</span></summary>
         <div className="mb-3 flex items-start justify-between gap-3">
           <div>
-            <h3 className="flex items-center gap-2 text-sm font-semibold text-zinc-900"><Music2 size={16} className="text-fuchsia-600" /> Trilha em camadas</h3>
-            <p className="mt-1 text-xs leading-5 text-zinc-500">Combine até 8 faixas. Sobreposições são mixadas.</p>
+            <h3 className="flex items-center gap-2 text-sm font-semibold text-ink"><Music2 size={16} className="text-accent" /> Trilha em camadas</h3>
+            <p className="mt-1 text-xs leading-5 text-muted">Combine até 8 faixas. Sobreposições são mixadas.</p>
           </div>
-          <button type="button" onClick={addTrack} disabled={music.length === 0 || tracks.length >= 8} className="flex shrink-0 items-center gap-1 rounded-lg bg-fuchsia-50 px-2.5 py-1.5 text-[11px] font-semibold text-fuchsia-700 hover:bg-fuchsia-100 disabled:cursor-not-allowed disabled:opacity-40"><Plus size={12} /> Faixa</button>
+          <button type="button" onClick={addTrack} disabled={music.length === 0 || tracks.length >= 8} className="flex shrink-0 items-center gap-1 rounded-lg bg-accent-soft px-2.5 py-1.5 text-xs font-semibold text-accent hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-40"><Plus size={12} /> Faixa</button>
         </div>
         {music.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-zinc-300 px-4 py-5 text-center"><AudioLines size={20} className="mx-auto text-zinc-400" /><p className="mt-2 text-xs font-medium text-zinc-700">Envie músicas para montar a trilha</p><p className="mt-1 text-[11px] text-zinc-500">Use apenas áudio que você tem direito de anunciar.</p></div>
+          <div className="rounded-xl border border-dashed border-line-strong px-4 py-5 text-center"><AudioLines size={20} className="mx-auto text-subtle" /><p className="mt-2 text-xs font-medium text-ink">Envie músicas para montar a trilha</p><p className="mt-1 text-xs text-muted">Use apenas áudio que você tem direito de anunciar.</p></div>
         ) : tracks.length === 0 ? (
-          <button type="button" onClick={addTrack} className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-fuchsia-200 bg-fuchsia-50/40 px-4 py-5 text-xs font-semibold text-fuchsia-700 hover:bg-fuchsia-50"><Plus size={14} /> Adicionar primeira faixa</button>
+          <button type="button" onClick={addTrack} className="flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-accent bg-accent-soft/40 px-4 py-5 text-xs font-semibold text-accent hover:bg-accent-soft"><Plus size={14} /> Adicionar primeira faixa</button>
         ) : (
           <div className="space-y-2">
-            <div className="relative h-8 overflow-hidden rounded-lg bg-zinc-100" aria-label="Linha do tempo das músicas">
+            <div className="relative h-8 overflow-hidden rounded-lg bg-surface-muted" aria-label="Linha do tempo das músicas">
               {tracks.map((track, index) => {
                 const start = (track.startSeconds / normalized.output.durationSeconds) * 100
                 const end = ((track.endSeconds ?? normalized.output.durationSeconds) / normalized.output.durationSeconds) * 100
-                return <span key={`timeline-${index}`} className={`absolute h-2 rounded-full ${['bg-fuchsia-500', 'bg-violet-500', 'bg-sky-500', 'bg-emerald-500'][index % 4]}`} style={{ left: `${start}%`, top: `${5 + (index % 3) * 7}px`, width: `${Math.max(1, end - start)}%` }} title={`${musicLabelById.get(track.assetId) ?? 'Faixa'}: ${seconds(track.startSeconds)} até ${track.endSeconds === null ? 'o fim' : seconds(track.endSeconds)}`} />
+                return <span key={`timeline-${index}`} className={`absolute h-2 rounded-full ${['bg-accent', 'bg-info', 'bg-warning', 'bg-success'][index % 4]}`} style={{ left: `${start}%`, top: `${5 + (index % 3) * 7}px`, width: `${Math.max(1, end - start)}%` }} title={`${musicLabelById.get(track.assetId) ?? 'Faixa'}: ${seconds(track.startSeconds)} até ${track.endSeconds === null ? 'o fim' : seconds(track.endSeconds)}`} />
               })}
             </div>
             {tracks.map((track, index) => {
               const asset = musicById.get(track.assetId)
               return (
-                <div key={`music-track-${index}`} className="rounded-xl border border-zinc-200 bg-zinc-50/60 p-3">
+                <div key={`music-track-${index}`} className="rounded-xl border border-line bg-surface-muted/60 p-3">
                   <div className="mb-3 flex items-center gap-2">
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-fuchsia-100 text-xs font-bold text-fuchsia-700">{index + 1}</span>
-                    <select value={track.assetId} onChange={(event) => patchTrack(index, { assetId: Number(event.target.value), sourceStartSeconds: 0 })} className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-xs outline-none focus:border-violet-500">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-xs font-bold text-accent">{index + 1}</span>
+                    <select aria-label={`Música da faixa ${index + 1}`} value={track.assetId} onChange={(event) => patchTrack(index, { assetId: Number(event.target.value), sourceStartSeconds: 0 })} className="min-h-10 min-w-0 flex-1 rounded-lg border border-line-strong bg-surface px-2 py-1.5 text-xs outline-none focus:border-accent">
                       {music.map((item) => <option key={item.id} value={item.id}>{musicLabelById.get(item.id) ?? 'Música'}</option>)}
                     </select>
-                    <button type="button" onClick={() => removeTrack(index)} className="rounded-lg p-1.5 text-zinc-500 hover:bg-red-50 hover:text-red-600" aria-label={`Remover faixa ${index + 1}`}><Trash2 size={14} /></button>
+                    <button type="button" onClick={() => removeTrack(index)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-danger-soft hover:text-danger" aria-label={`Remover faixa ${index + 1}`}><Trash2 size={14} /></button>
                   </div>
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                    <label className="text-[11px] font-medium text-zinc-700">Entra em
-                      <span className="relative mt-1 block"><input type="number" min={0} max={Math.max(0, normalized.output.durationSeconds - 0.25)} step={0.1} value={track.startSeconds} onChange={(event) => patchTrack(index, { startSeconds: Number(event.target.value) })} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-6 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
+                    <label className="text-xs font-medium text-ink">Entra em
+                      <span className="relative mt-1 block"><input type="number" min={0} max={Math.max(0, normalized.output.durationSeconds - 0.25)} step={0.1} value={track.startSeconds} onChange={(event) => patchTrack(index, { startSeconds: Number(event.target.value) })} className="min-h-10 w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 pr-6 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-1.5 text-xs text-subtle">s</span></span>
                     </label>
-                    <label className="text-[11px] font-medium text-zinc-700">Sai em
-                      <span className="relative mt-1 block"><input type="number" min={track.startSeconds + 0.25} max={normalized.output.durationSeconds} step={0.1} placeholder="Fim" value={track.endSeconds ?? ''} onChange={(event) => patchTrack(index, { endSeconds: event.target.value === '' ? null : Number(event.target.value) })} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-6 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
+                    <label className="text-xs font-medium text-ink">Sai em
+                      <span className="relative mt-1 block"><input type="number" min={track.startSeconds + 0.25} max={normalized.output.durationSeconds} step={0.1} placeholder="Fim" value={track.endSeconds ?? ''} onChange={(event) => patchTrack(index, { endSeconds: event.target.value === '' ? null : Number(event.target.value) })} className="min-h-10 w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 pr-6 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-1.5 text-xs text-subtle">s</span></span>
                     </label>
-                    <label className="text-[11px] font-medium text-zinc-700">Começa na música
-                      <span className="relative mt-1 block"><input type="number" min={0} max={Math.min(3600, asset?.durationSeconds ?? 3600)} step={0.1} value={track.sourceStartSeconds} onChange={(event) => patchTrack(index, { sourceStartSeconds: Number(event.target.value) })} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-6 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
+                    <label className="text-xs font-medium text-ink">Começa na música
+                      <span className="relative mt-1 block"><input type="number" min={0} max={Math.min(3600, asset?.durationSeconds ?? 3600)} step={0.1} value={track.sourceStartSeconds} onChange={(event) => patchTrack(index, { sourceStartSeconds: Number(event.target.value) })} className="min-h-10 w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 pr-6 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-1.5 text-xs text-subtle">s</span></span>
                     </label>
-                    <label className="text-[11px] font-medium text-zinc-700">Volume <span className="float-right tabular-nums text-zinc-500">{percent(track.volume)}</span>
-                      <input type="range" min={0} max={1} step={0.01} value={track.volume} onChange={(event) => patchTrack(index, { volume: Number(event.target.value) })} className="mt-2.5 w-full accent-fuchsia-600" />
+                    <label className="text-xs font-medium text-ink">Volume <span className="float-right tabular-nums text-muted">{percent(track.volume)}</span>
+                      <input type="range" min={0} max={1} step={0.01} value={track.volume} onChange={(event) => patchTrack(index, { volume: Number(event.target.value) })} className="mt-2.5 h-8 w-full accent-accent" />
                     </label>
-                    <label className="text-[11px] font-medium text-zinc-700">Fade de entrada
-                      <span className="relative mt-1 block"><input type="number" min={0} max={5} step={0.1} value={track.fadeInSeconds} onChange={(event) => patchTrack(index, { fadeInSeconds: Number(event.target.value) })} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-6 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
+                    <label className="text-xs font-medium text-ink">Fade de entrada
+                      <span className="relative mt-1 block"><input type="number" min={0} max={5} step={0.1} value={track.fadeInSeconds} onChange={(event) => patchTrack(index, { fadeInSeconds: Number(event.target.value) })} className="min-h-10 w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 pr-6 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-1.5 text-xs text-subtle">s</span></span>
                     </label>
-                    <label className="text-[11px] font-medium text-zinc-700">Fade de saída
-                      <span className="relative mt-1 block"><input type="number" min={0} max={5} step={0.1} value={track.fadeOutSeconds} onChange={(event) => patchTrack(index, { fadeOutSeconds: Number(event.target.value) })} className="w-full rounded-lg border border-zinc-300 bg-white px-2 py-1.5 pr-6 text-xs outline-none focus:border-violet-500" /><span className="absolute right-2 top-1.5 text-xs text-zinc-400">s</span></span>
+                    <label className="text-xs font-medium text-ink">Fade de saída
+                      <span className="relative mt-1 block"><input type="number" min={0} max={5} step={0.1} value={track.fadeOutSeconds} onChange={(event) => patchTrack(index, { fadeOutSeconds: Number(event.target.value) })} className="min-h-10 w-full rounded-lg border border-line-strong bg-surface px-2 py-1.5 pr-6 text-xs outline-none focus:border-accent" /><span className="absolute right-2 top-1.5 text-xs text-subtle">s</span></span>
                     </label>
                   </div>
                 </div>
@@ -571,7 +590,7 @@ function CreativeControls({ config, assets = [], onChange }: CreativeControlsPro
             })}
           </div>
         )}
-      </section>
+      </details>
 
     </div>
   )

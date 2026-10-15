@@ -90,6 +90,26 @@ test('multiple formats normalize independently with stable raw indexes and file 
   )
 })
 
+test('duplicate scoped files merge their audience provenance without repeating the offer', () => {
+  const result = new OfferImportService().parsePayloads([
+    { name: 'casa.json', json: mlPayload([mlCard(1)]), targetAudienceSlug: 'domestica' },
+    { name: 'masculino.json', json: mlPayload([mlCard(1)]), targetAudienceSlug: 'masculino' },
+  ])
+  assert.equal(result.offers.length, 1)
+  assert.deepEqual(result.provenance[0].targetAudienceSlugs, ['domestica', 'masculino'])
+  assert.equal(result.provenance[0].fileName, 'casa.json')
+})
+
+test('a generic duplicate keeps the merged offer unrestricted and omits the optional scope field', () => {
+  const result = new OfferImportService().parsePayloads([
+    { name: 'casa.json', json: mlPayload([mlCard(1)]), targetAudienceSlug: 'domestica' },
+    { name: 'geral.json', json: mlPayload([mlCard(1)]) },
+  ])
+  assert.equal(result.offers.length, 1)
+  assert.equal(Object.hasOwn(result.provenance[0], 'targetAudienceSlugs'), false)
+  assert.equal(result.duplicateCount, 1)
+})
+
 test('overlapping files deduplicate source/product and URL aliases, preserving first entries', () => {
   const result = new OfferImportService().parsePayloads([
     { name: 'first.json', json: mlPayload([mlCard(1), mlCard(2)]) },

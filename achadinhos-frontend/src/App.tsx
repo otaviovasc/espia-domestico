@@ -1,125 +1,68 @@
-import { Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
-import { BrainCircuit, Clapperboard, Send, History, LogOut, Smartphone, Tags, MessagesSquare } from 'lucide-react'
+import { lazy, Suspense } from 'react'
+import { createBrowserRouter, RouterProvider, Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui'
+import WorkspaceShell from '@/components/WorkspaceShell'
 import LoginPage from '@/pages/LoginPage'
-import ConnectionPage from '@/pages/ConnectionPage'
-import ComposePage from '@/pages/ComposePage'
-import CampaignsPage from '@/pages/CampaignsPage'
-import CampaignDetailPage from '@/pages/CampaignDetailPage'
-import { lazy, Suspense, type ReactNode } from 'react'
+import NotFoundPage from '@/pages/NotFoundPage'
+import LogoutPage from '@/pages/LogoutPage'
+const ConnectionPage = lazy(() => import('@/pages/ConnectionPage'))
+const ComposePage = lazy(() => import('@/pages/ComposePage'))
+const CampaignsPage = lazy(() => import('@/pages/CampaignsPage'))
+const CampaignDetailPage = lazy(() => import('@/pages/CampaignDetailPage'))
 
 const AdLibraryPage = lazy(() => import('@/pages/AdLibraryPage'))
 const ProductCatalogPage = lazy(() => import('@/pages/ProductCatalogPage'))
 const GroupMessagesPage = lazy(() => import('@/pages/GroupMessagesPage'))
 const SmartCampaignsPage = lazy(() => import('@/pages/SmartCampaignsPage'))
 
-function Shell({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuth()
-  const navigate = useNavigate()
-
-  const navItem =
-    'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition'
-  const active = 'bg-violet-600 text-white'
-  const idle = 'text-zinc-600 hover:bg-zinc-100'
-
+function LoadingPage() {
   return (
-    <div className="flex h-full flex-col lg:flex-row">
-      <aside className="flex w-full shrink-0 flex-col border-b border-zinc-200 bg-white p-3 lg:w-60 lg:border-b-0 lg:border-r lg:p-4">
-        <div className="mb-6 flex items-center gap-2 px-2">
-          <div className="brand-gradient flex h-9 w-9 items-center justify-center rounded-xl text-lg">
-            🛍️
-          </div>
-          <div>
-            <div className="text-sm font-bold leading-tight">Achadinhos</div>
-            <div className="text-xs text-zinc-400">Ofertas no WhatsApp</div>
-          </div>
-        </div>
-
-        <nav className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:flex lg:flex-col">
-          <NavLink to="/connection" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
-            <Smartphone size={18} /> Conexão
-          </NavLink>
-          <NavLink to="/compose" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
-            <Send size={18} /> Nova campanha
-          </NavLink>
-          <NavLink to="/messages" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
-            <MessagesSquare size={18} /> Mensagens
-          </NavLink>
-          <NavLink to="/products" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
-            <Tags size={18} /> Produtos
-          </NavLink>
-          <NavLink to="/campaigns" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
-            <History size={18} /> Campanhas
-          </NavLink>
-          <NavLink to="/smart-campaigns" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
-            <BrainCircuit size={18} /> Campanhas smart
-          </NavLink>
-          <NavLink to="/ads" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
-            <Clapperboard size={18} /> Anúncios
-          </NavLink>
-        </nav>
-
-        <div className="mt-2 flex items-center justify-between border-t border-zinc-100 pt-3 lg:mt-auto lg:block">
-          <div className="px-2 text-xs text-zinc-500 lg:mb-2">
-            {user?.name}
-            <div className="hidden text-zinc-400 sm:block">{user?.email}</div>
-          </div>
-          <button
-            onClick={async () => {
-              await logout()
-              navigate('/login')
-            }}
-            className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-100 lg:w-full"
-          >
-            <LogOut size={16} /> Sair
-          </button>
-        </div>
-      </aside>
-      <main className="min-h-0 flex-1 overflow-y-auto p-4 lg:p-8">{children}</main>
+    <div className="flex min-h-[50vh] items-center justify-center gap-3 text-sm text-muted" role="status">
+      <Spinner /> Carregando…
     </div>
   )
 }
 
-function Protected({ children }: { children: ReactNode }) {
+function ProtectedWorkspace() {
   const { user, loading } = useAuth()
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <Spinner />
-      </div>
-    )
-  }
+  if (loading) return <LoadingPage />
   if (!user) return <Navigate to="/login" replace />
-  return <Shell>{children}</Shell>
+  return <WorkspaceShell><Suspense fallback={<LoadingPage />}><Outlet /></Suspense></WorkspaceShell>
 }
 
-export default function App() {
+function UnknownRoute() {
   const { user, loading } = useAuth()
-  return (
-    <Routes>
-      <Route
-        path="/login"
-        element={loading ? null : user ? <Navigate to="/connection" replace /> : <LoginPage />}
-      />
-      <Route path="/connection" element={<Protected><ConnectionPage /></Protected>} />
-      <Route path="/compose" element={<Protected><ComposePage /></Protected>} />
-      <Route path="/messages" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><GroupMessagesPage /></Suspense></Protected>} />
-      <Route path="/products" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><ProductCatalogPage /></Suspense></Protected>} />
-      <Route path="/campaigns" element={<Protected><CampaignsPage /></Protected>} />
-      <Route path="/campaigns/:id" element={<Protected><CampaignDetailPage /></Protected>} />
-      <Route path="/smart-campaigns" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><SmartCampaignsPage /></Suspense></Protected>} />
-      <Route
-        path="/ads"
-        element={(
-          <Protected>
-            <Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}>
-              <AdLibraryPage />
-            </Suspense>
-          </Protected>
-        )}
-      />
-      <Route path="*" element={<Navigate to="/connection" replace />} />
-    </Routes>
-  )
+  if (loading) return <LoadingPage />
+  return user ? <WorkspaceShell><NotFoundPage embedded /></WorkspaceShell> : <NotFoundPage />
+}
+
+function LoginRoute() {
+  const { user, loading } = useAuth()
+  if (loading) return <LoadingPage />
+  return user ? <Navigate to="/campaigns" replace /> : <LoginPage />
+}
+
+const router = createBrowserRouter([
+  { path: '/', element: <Navigate to="/campaigns" replace /> },
+  { path: '/login', element: <LoginRoute /> },
+  {
+    element: <ProtectedWorkspace />,
+    children: [
+      { path: '/connection', element: <ConnectionPage /> },
+      { path: '/logout', element: <LogoutPage /> },
+      { path: '/compose', element: <ComposePage /> },
+      { path: '/messages', element: <GroupMessagesPage /> },
+      { path: '/products', element: <ProductCatalogPage /> },
+      { path: '/campaigns', element: <CampaignsPage /> },
+      { path: '/campaigns/:id', element: <CampaignDetailPage /> },
+      { path: '/ads', element: <AdLibraryPage /> },
+      { path: '/smart-campaigns', element: <SmartCampaignsPage /> },
+    ],
+  },
+  { path: '*', element: <UnknownRoute /> },
+], { basename: '/painel' })
+
+export default function App() {
+  return <RouterProvider router={router} />
 }

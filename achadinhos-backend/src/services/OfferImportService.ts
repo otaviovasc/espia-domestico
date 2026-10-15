@@ -216,12 +216,13 @@ export class OfferImportService {
       if (canonical === position) {
         offers.push(offer)
         const targetAudienceSlugs = componentAudienceSlugs.get(canonical)
-        provenance.push({
-          ...origin,
-          ...(!unrestrictedComponents.has(canonical) && targetAudienceSlugs?.size
-            ? { targetAudienceSlugs: [...targetAudienceSlugs].sort() }
-            : { targetAudienceSlugs: undefined }),
-        })
+        const finalOrigin = { ...origin }
+        if (!unrestrictedComponents.has(canonical) && targetAudienceSlugs?.size) {
+          finalOrigin.targetAudienceSlugs = [...targetAudienceSlugs].sort()
+        } else {
+          delete finalOrigin.targetAudienceSlugs
+        }
+        provenance.push(finalOrigin)
         summary.imported++
       } else {
         duplicates.push({ ...origin, duplicateOf: candidates[canonical].origin.index })

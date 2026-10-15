@@ -13,15 +13,18 @@
     "preview": "vite preview",
     "start": "serve dist -l ${PORT:-5273}",
     "lint": "eslint .",
+    "test:ui": "node --experimental-strip-types --test test/theme.test.mjs test/api-error-message.test.mjs test/catalog-import-state.test.mjs",
     "test:smart": "node --experimental-strip-types --test test/smart-search-preset.test.mjs test/smart-ai-safety.test.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@base-ui/react": "^1.9.0",
     "@tanstack/react-query": "^5.90.12",
     "axios": "^1.13.2",
     "lucide-react": "^0.556.0",
+    "motion": "^12.34.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.6",

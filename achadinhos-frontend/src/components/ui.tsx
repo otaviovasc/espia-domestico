@@ -1,75 +1,99 @@
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, LabelHTMLAttributes, ReactNode } from 'react'
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
 
 const variantClass: Record<ButtonVariant, string> = {
-  primary: 'bg-violet-600 text-white hover:bg-violet-700 disabled:bg-violet-300',
-  secondary: 'bg-zinc-100 text-zinc-800 hover:bg-zinc-200 disabled:opacity-50',
-  danger: 'bg-red-600 text-white hover:bg-red-700 disabled:bg-red-300',
-  ghost: 'bg-transparent text-zinc-600 hover:bg-zinc-100',
+  primary: 'border-line-strong bg-accent text-accent-foreground hover:bg-accent/95',
+  secondary: 'border-line-strong bg-surface text-ink hover:bg-surface-muted',
+  danger: 'border-danger bg-danger-soft text-danger hover:bg-danger/15',
+  ghost: 'border-transparent bg-transparent text-muted hover:bg-surface-muted hover:text-ink',
 }
 
 export function Button({
   variant = 'primary',
   className = '',
   children,
+  loading = false,
+  loadingText,
+  disabled,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant; loading?: boolean; loadingText?: string }) {
+  // Pending contract adapted from Cult UI Halo Button (MIT, Jordan-Gilliam).
+  // The local button retains its native type behavior and restrained visual design.
+  const pendingLabel = loadingText ?? 'Processando…'
+  const hasPendingLabel = loading || loadingText !== undefined
   return (
     <button
-      className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed ${variantClass[variant]} ${className}`}
       {...props}
+      data-variant={variant}
+      data-loading={loading || undefined}
+      aria-busy={loading || props['aria-busy']}
+      disabled={disabled || loading}
+      className={`ui-button inline-flex shrink-0 items-center justify-center gap-2 border-2 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-50 ${variantClass[variant]} ${className}`}
     >
-      {children}
+      {hasPendingLabel ? (
+        <span className="inline-grid items-center">
+          <span aria-hidden={loading || undefined} className={`col-start-1 row-start-1 inline-flex items-center justify-center gap-2 ${loading ? 'invisible' : ''}`}>{children}</span>
+          <span aria-hidden={!loading || undefined} className={`col-start-1 row-start-1 inline-flex items-center justify-center gap-2 ${loading ? '' : 'invisible'}`}>
+            <span aria-hidden="true" className={`h-4 w-4 shrink-0 rounded-full border-2 border-current border-r-transparent ${loading ? 'animate-spin' : ''}`} />
+            {pendingLabel}
+          </span>
+        </span>
+      ) : children}
     </button>
   )
 }
 
-export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return (
-    <div className={`rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm ${className}`}>
-      {children}
-    </div>
-  )
+export function Card({ children, className = '', ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={`surface-panel p-5 ${className}`} {...props}>{children}</div>
 }
 
 export function Input({ className = '', ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return (
-    <input
-      className={`w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200 ${className}`}
-      {...props}
-    />
-  )
+  return <input className={`field-control w-full ${className}`} {...props} />
 }
 
-export function Label({ children }: { children: ReactNode }) {
-  return <label className="mb-1 block text-sm font-medium text-zinc-700">{children}</label>
+export function Label({ children, className = '', ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
+  return <label className={`field-label ${className}`} {...props}>{children}</label>
 }
 
-export function Badge({
-  children,
-  tone = 'zinc',
-}: {
-  children: ReactNode
-  tone?: 'zinc' | 'green' | 'red' | 'amber' | 'violet' | 'blue'
-}) {
-  const tones: Record<string, string> = {
-    zinc: 'bg-zinc-100 text-zinc-700',
-    green: 'bg-green-100 text-green-700',
-    red: 'bg-red-100 text-red-700',
-    amber: 'bg-amber-100 text-amber-700',
-    violet: 'bg-violet-100 text-violet-700',
-    blue: 'bg-blue-100 text-blue-700',
-  }
+type BadgeTone = 'zinc' | 'green' | 'red' | 'amber' | 'violet' | 'blue' | 'neutral' | 'success' | 'danger' | 'warning' | 'accent' | 'info'
+const toneClass: Record<BadgeTone, string> = {
+  zinc: 'bg-surface-muted text-muted', neutral: 'bg-surface-muted text-muted',
+  green: 'bg-success-soft text-success', success: 'bg-success-soft text-success',
+  red: 'bg-danger-soft text-danger', danger: 'bg-danger-soft text-danger',
+  amber: 'bg-warning-soft text-warning', warning: 'bg-warning-soft text-warning',
+  violet: 'bg-accent-soft text-accent', accent: 'bg-accent-soft text-accent',
+  blue: 'bg-info-soft text-info', info: 'bg-info-soft text-info',
+}
+
+export function Badge({ children, tone = 'zinc', className = '', ...props }: HTMLAttributes<HTMLSpanElement> & { tone?: BadgeTone }) {
+  return <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${toneClass[tone]} ${className}`} {...props}>{children}</span>
+}
+
+export function Spinner({ label = 'Carregando', className = '', decorative = false }: { label?: string; className?: string; decorative?: boolean }) {
   return (
-    <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${tones[tone]}`}>
-      {children}
+    <span role={decorative ? undefined : 'status'} aria-hidden={decorative || undefined} className={`inline-flex items-center justify-center ${className}`}>
+      <span aria-hidden="true" className="h-5 w-5 animate-spin rounded-full border-2 border-line-strong border-t-accent" />
+      {!decorative ? <span className="sr-only">{label}</span> : null}
     </span>
   )
 }
 
-export function Spinner() {
+export function Skeleton({ className = '', ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div aria-hidden="true" className={`ui-skeleton h-4 ${className}`} {...props} />
+}
+
+export function EmptyState({ title, children, action, className = '' }: { title: string; children?: ReactNode; action?: ReactNode; className?: string }) {
   return (
-    <div className="h-5 w-5 animate-spin rounded-full border-2 border-zinc-300 border-t-violet-600" />
+    <div className={`ui-empty-state px-5 py-10 text-center ${className}`}>
+      <h2 className="section-heading">{title}</h2>
+      {children ? <div className="mx-auto mt-2 max-w-xl text-sm text-muted">{children}</div> : null}
+      {action ? <div className="mt-5 flex flex-wrap justify-center gap-2">{action}</div> : null}
+    </div>
   )
+}
+
+const alertClass = { info: 'border-info/25 bg-info-soft text-info', danger: 'border-danger/25 bg-danger-soft text-danger', warning: 'border-warning/25 bg-warning-soft text-warning', success: 'border-success/25 bg-success-soft text-success' }
+export function InlineAlert({ children, tone = 'info', className = '', ...props }: HTMLAttributes<HTMLDivElement> & { tone?: keyof typeof alertClass }) {
+  return <div role={tone === 'danger' ? 'alert' : 'status'} className={`rounded-lg border px-4 py-3 text-sm ${alertClass[tone]} ${className}`} {...props}>{children}</div>
 }
