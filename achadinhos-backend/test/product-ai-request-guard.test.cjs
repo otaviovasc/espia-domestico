@@ -53,9 +53,9 @@ class MemoryLedger {
   async failUnknown() {}
 }
 
-function request(userId, execute) {
+function request(userId, execute, retryAttempt = 1) {
   return {
-    context: { userId, operationId: `click-${userId}` },
+    context: { userId, operationId: `click-${userId}`, retryAttempt },
     operation: 'classification',
     model: 'test/model',
     modelVersion: 'classifier:v2',
@@ -66,6 +66,32 @@ function request(userId, execute) {
     execute,
   }
 }
+
+test('an explicit retry gets a new idempotency key while successful semantic cache remains reusable', async () => {
+  const guard = new ProductAIRequestGuard(new MemoryLedger(), config)
+  let calls = 0
+  await assert.rejects(
+    guard.run(request(1, async () => {
+      calls++
+      throw new Error('uncertain provider response')
+    }, 1)),
+  )
+  await assert.rejects(
+    guard.run(request(1, async () => ({ value: 'unexpected' }), 1)),
+    (error) => error.code === 'AI_REQUEST_ALREADY_RESERVED',
+    'duplicate workers in the same attempt must not repeat a paid call',
+  )
+
+  assert.deepEqual(await guard.run(request(1, async () => {
+    calls++
+    return { value: { score: 98 } }
+  }, 2)), { score: 98 })
+  assert.deepEqual(await guard.run(request(1, async () => {
+    calls++
+    return { value: { score: 0 } }
+  }, 3)), { score: 98 })
+  assert.equal(calls, 2, 'a successful retry is reused across later attempts')
+})
 
 test('persistent cache prevents a second provider call for one tenant but never crosses users', async () => {
   const guard = new ProductAIRequestGuard(new MemoryLedger(), config)

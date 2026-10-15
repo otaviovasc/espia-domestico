@@ -978,7 +978,7 @@ export class SmartCampaignService {
             plan.startDate,
             frozenProfiles,
             [],
-            { userId: plan.userId, operationId: plan.uuid },
+            { userId: plan.userId, operationId: plan.uuid, retryAttempt: plan.revision },
           )
           results.forEach((analysis, localIndex) => {
             analyses[String(indexes[localIndex])] = { ...analysis, index: indexes[localIndex] }

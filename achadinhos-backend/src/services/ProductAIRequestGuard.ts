@@ -9,6 +9,8 @@ export interface AIRequestContext {
   userId: number
   /** Correlates an explicit user action without affecting semantic deduplication. */
   operationId?: string
+  /** Explicit retry generation. A failed uncertain attempt is never auto-replayed. */
+  retryAttempt?: number
 }
 
 export interface AIProviderUsage {
@@ -305,6 +307,12 @@ export class ProductAIRequestGuard {
     if (request.context.operationId && request.context.operationId.length > 120) {
       throw BadRequestError('Identificador da operação é muito longo.')
     }
+    if (
+      request.context.retryAttempt !== undefined &&
+      (!Number.isSafeInteger(request.context.retryAttempt) || request.context.retryAttempt < 0)
+    ) {
+      throw BadRequestError('Tentativa da solicitação de IA inválida.')
+    }
     if (!Number.isInteger(request.maxOutputTokens) || request.maxOutputTokens < 1) {
       throw BadRequestError('Limite de saída da IA inválido.')
     }
@@ -351,7 +359,11 @@ export class ProductAIRequestGuard {
         model: request.model,
         modelVersion: request.modelVersion,
         cacheKey,
-        requestKey: digest(`${quotaDate}:${cacheKey}`),
+        requestKey: digest(
+          request.context.retryAttempt === undefined || request.context.retryAttempt === 0
+            ? `${quotaDate}:${cacheKey}`
+            : `${quotaDate}:${cacheKey}:attempt:${request.context.retryAttempt}`,
+        ),
         quotaDate,
         reservedInputTokens: inputTokens,
         reservedOutputTokens: request.maxOutputTokens,

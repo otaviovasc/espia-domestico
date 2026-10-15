@@ -12,6 +12,7 @@ const {
   SMART_AI_CONCURRENCY,
   SMART_AI_RETRIES,
 } = require('../dist/services/SmartCampaignIntelligence.js')
+const { AppError } = require('../dist/middleware/Error/AppError.js')
 
 const offer = (title, extra = {}) => ({
   title,
@@ -212,7 +213,7 @@ test('analysis has hard item and concurrency bounds and never invents a missing 
   )
   await assert.rejects(
     intelligence.analyze([offer('item')], ['pet', 'pesca'], '2026-10-15'),
-    (error) => error.code === 'SMART_AI_INCOMPLETE_RESPONSE',
+    (error) => error.code === 'SMART_AI_INVALID_RESPONSE',
   )
   assert.equal(calls, SMART_AI_RETRIES + 1)
   assert.equal(SMART_AI_CONCURRENCY, 3)
@@ -263,13 +264,42 @@ test('analysis shares the niche prompt across bounded product batches and preser
 test('analysis batch leaves enough output headroom for strict structured responses', async () => {
   const intelligence = new SmartCampaignIntelligence({
     async generate(request) {
-      assert.equal(request.maxOutputTokens, 6_000)
+      assert.equal(request.maxOutputTokens, 3_800)
       const productData = JSON.parse(request.prompt).productData
       return { items: productData.map(({ id }) => ({ id, analysis: { fits: [{ slug: 'pet', score: 90, reason: 'Uso direto para gatos.', category: 'pet', seasonalScore: 50 }], warnings: [] } })) }
     },
   })
   const [result] = await intelligence.analyze([offer('Arranhador para gatos'), offer('Outro arranhador')], ['pet'], '2026-10-15')
   assert.equal(result.fits[0].score, 90)
+})
+
+test('analysis shrinks oversized or malformed structured batches before failing the plan', async () => {
+  const products = Array.from({ length: 4 }, (_, index) => offer(`Arranhador para gatos ${index}`))
+  for (const failureCode of ['AI_OUTPUT_TOO_LARGE', 'SMART_AI_INVALID_RESPONSE']) {
+    const requestSizes = []
+    const intelligence = new SmartCampaignIntelligence({
+      async generate(request) {
+        const productData = JSON.parse(request.prompt).productData
+        requestSizes.push(productData.length)
+        if (productData.length > 2) {
+          throw new AppError('structured response failed', 422, failureCode)
+        }
+        return {
+          items: productData.map(({ id }) => ({
+            id,
+            analysis: {
+              fits: [{ slug: 'pet', score: 90, reason: 'Uso direto para pets.', category: 'pet', seasonalScore: 50 }],
+              warnings: [],
+            },
+          })),
+        }
+      },
+    })
+    const result = await intelligence.analyze(products, ['pet'], '2026-10-15')
+    assert.deepEqual(requestSizes, [4, 2, 2], failureCode)
+    assert.equal(result.length, 4)
+    assert.ok(result.every(({ fits }) => fits[0].score === 90))
+  }
 })
 
 test('standout copy returns safe use-case copy and rejects commercial claims', async () => {
