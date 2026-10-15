@@ -417,11 +417,31 @@ function KeywordPlanner({ audiences, selected, setSelected, planDate, setPlanDat
   )
 }
 
-function ImportPlanner({ selected, planDate, onCreated, aiStatus, aiBlocked }: { selected: Set<SmartAudienceSlug>; planDate: string; onCreated: (plan: SmartPlan) => void; aiStatus?: SmartAIStatus; aiBlocked: boolean }) {
+function inferFileAudience(name: string, selected: Set<SmartAudienceSlug>, audiences: SmartAudience[]): SmartAudienceSlug | undefined {
+  if (selected.size === 1) return [...selected][0]
+  const normalizedName = name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR')
+  const matches = audiences.filter((audience) => {
+    if (!selected.has(audience.slug)) return false
+    const labels = [audience.slug, audience.name].map((value) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR'))
+    return labels.some((label) => label.length > 3 && normalizedName.includes(label)) || new RegExp(`(^|[^a-z])${audience.slug.toLocaleLowerCase()}([^a-z]|$)`).test(normalizedName)
+  })
+  return matches.length === 1 ? matches[0].slug : undefined
+}
+
+function countFileOffers(value: unknown): number | null {
+  if (Array.isArray(value)) return value.length
+  if (!value || typeof value !== 'object') return null
+  const record = value as Record<string, unknown>
+  for (const key of ['offers', 'products', 'items', 'produtos', 'ofertas', 'data', 'cards']) {
+    if (Array.isArray(record[key])) return (record[key] as unknown[]).length
+  }
+  return null
+}
+
+function ImportPlanner({ audiences, selected, planDate, onCreated, aiStatus, aiBlocked }: { audiences: SmartAudience[]; selected: Set<SmartAudienceSlug>; planDate: string; onCreated: (plan: SmartPlan) => void; aiStatus?: SmartAIStatus; aiBlocked: boolean }) {
   const queryClient = useQueryClient()
   const [rawJson, setRawJson] = useState('')
   const [days, setDays] = useState(1)
-  const [fileNames, setFileNames] = useState<string[]>([])
   const [filePayloads, setFilePayloads] = useState<SmartImportPayload[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const submitting = useRef(false)
@@ -447,17 +467,19 @@ function ImportPlanner({ selected, planDate, onCreated, aiStatus, aiBlocked }: {
     const files = [...(event.target.files ?? [])]
     if (files.length === 0) return
     setFileError(null)
-    setFileNames([])
     setFilePayloads([])
+    setRawJson('')
     try {
       if (files.length > 50) throw new Error('files')
       if (files.some((file) => file.name.length > 255)) throw new Error('name')
       if (files.reduce((total, file) => total + file.size, 0) > 30 * 1024 * 1024) throw new Error('size')
       const parsed = await Promise.all(files.map(async (file) => JSON.parse(await file.text()) as unknown))
-      const payloads = parsed.map((json, index) => ({ name: files[index].name, json }))
-      setRawJson(JSON.stringify(parsed.length === 1 ? parsed[0] : { payloads }, null, 2))
+      const payloads = parsed.map((json, index) => ({
+        name: files[index].name,
+        json,
+        targetAudienceSlug: inferFileAudience(files[index].name, selected, audiences),
+      }))
       setFilePayloads(payloads)
-      setFileNames(files.map((file) => file.name))
     } catch (error) {
       const reason = error instanceof Error ? error.message : ''
       setFileError(reason === 'files'
@@ -487,26 +509,58 @@ function ImportPlanner({ selected, planDate, onCreated, aiStatus, aiBlocked }: {
 
   return (
     <section aria-labelledby="import-title">
-      <h2 id="import-title" className="text-xl font-bold">Importar coleta e criar plano</h2>
-      <p className="mt-1 text-sm text-zinc-500">Cole o JSON gerado pela extensão ou carregue arquivos. A análise roda em segundo plano e não envia mensagens.</p>
+      <h2 id="import-title" className="text-xl font-bold">Importar arquivos e montar proposta</h2>
+      <p className="mt-1 text-sm text-zinc-500">A IA classifica os produtos e prepara uma agenda para revisão. Esta etapa não aprova o plano e não envia mensagens.</p>
+      <Card className="mt-4 border-blue-200 bg-blue-50">
+        <h3 className="font-semibold text-blue-950">Importação inteligente</h3>
+        <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm leading-relaxed text-blue-900">
+          <li><strong>Recomendado para menor custo e melhor precisão:</strong> gere um preset por público, rode uma coleta separada na extensão e selecione o grupo daquela coleta.</li>
+          <li>Você também pode carregar arquivos genéricos ou uma coleta mista. Deixe “Classificar entre todos”; regras locais pré-selecionam nichos prováveis e a IA decide os casos ambíguos.</li>
+          <li>Não confie no nome do arquivo para definir o nicho: confirme o grupo abaixo. Produto com sinal claro de outro nicho pode ser redirecionado pela triagem, enquanto itens ambíguos são avaliados em todos os grupos selecionados.</li>
+          <li>Defina a data inicial e quantos dias usar. A proposta começa às 09h, respeita o limite diário e usa intervalos de 12–16 minutos.</li>
+        </ol>
+        <p className="mt-2 text-xs text-blue-800">Revise, mova, reserve ou rejeite produtos na etapa seguinte. Os envios só são ativados quando você confirma “Agendar campanha”.</p>
+      </Card>
       <div className="mt-5 grid gap-4 lg:grid-cols-[1fr_300px]">
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div><Label>JSON da extensão</Label><p className="text-xs text-zinc-500">Um lote misto pode ser distribuído entre todos os públicos.</p></div>
+            <div><Label>JSON da extensão</Label><p className="text-xs text-zinc-500">Confira o público de cada arquivo antes de analisar.</p></div>
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-200">
-              <Upload size={16} /> Carregar arquivo(s)
+              <Upload size={16} /> Carregar ou substituir arquivo(s)
               <input className="sr-only" type="file" accept="application/json,.json" multiple onChange={loadFiles} />
             </label>
           </div>
-          {fileNames.length > 0 && <p className="mt-3 text-xs text-zinc-500">Carregado: {fileNames.join(', ')}</p>}
-          <textarea
+          {filePayloads.length > 0 && <div className="mt-4 space-y-3">
+            {filePayloads.map((file, index) => {
+              const target = file.targetAudienceSlug
+              const targetName = audiences.find((audience) => audience.slug === target)?.name ?? target
+              const count = countFileOffers(file.json)
+              return <div key={`${file.name}-${index}`} className="rounded-xl border border-zinc-200 bg-white p-3">
+                <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                  <div className="min-w-0"><p className="truncate text-sm font-medium text-zinc-800">{file.name}</p><p className="text-xs text-zinc-500">{count === null ? 'Formato detectado pelo servidor' : `${count} produto(s) no arquivo`}</p></div>
+                  <label className="shrink-0 text-xs font-medium text-zinc-600">Analisar para
+                    <select className="ml-2 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-800" value={target ?? 'ALL'} onChange={(event) => {
+                      const value = event.target.value as SmartAudienceSlug | 'ALL'
+                      setFilePayloads((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, targetAudienceSlug: value === 'ALL' ? undefined : value } : item))
+                    }}>
+                      <option value="ALL">Classificar entre todos</option>
+                      {audiences.filter((audience) => selected.has(audience.slug)).map((audience) => <option key={audience.slug} value={audience.slug}>{audience.name}</option>)}
+                    </select>
+                  </label>
+                </div>
+                {target ? <p className="mt-2 text-xs text-green-700">Grupo de origem: {targetName}. A pré-triagem ainda pode incluir outro nicho se houver evidência clara no produto.</p> : <p className="mt-2 text-xs text-amber-700">Coleta genérica: regras locais limitam nichos óbvios; casos ambíguos vão para todos os públicos selecionados.</p>}
+              </div>
+            })}
+            <Button type="button" variant="secondary" onClick={() => { setFilePayloads([]); setRawJson(''); setFileError(null) }}>Remover arquivos e colar JSON manualmente</Button>
+          </div>}
+          {filePayloads.length === 0 && <textarea
             className="mt-3 min-h-80 w-full rounded-xl border border-zinc-300 bg-zinc-950 p-4 font-mono text-xs text-zinc-100 outline-none focus:border-violet-500 focus:ring-2 focus:ring-violet-200"
             value={rawJson}
-            onChange={(e) => { setRawJson(e.target.value); setFileNames([]); setFilePayloads([]) }}
+            onChange={(e) => { setRawJson(e.target.value); setFilePayloads([]) }}
             placeholder='Cole aqui o JSON exportado pela extensão…'
             spellCheck={false}
             aria-label="JSON exportado pela extensão"
-          />
+          />}
           {fileError && <p className="mt-2 text-sm text-red-700">{fileError}</p>}
           {rawJson && jsonCheckPending && <p className="mt-2 text-xs text-zinc-500">Validando JSON…</p>}
           {rawJson && jsonValid && <p className="mt-2 text-xs text-green-700">JSON válido{parsedCount ? ` · ${parsedCount} registro(s) no nível principal` : ''}</p>}
@@ -514,15 +568,15 @@ function ImportPlanner({ selected, planDate, onCreated, aiStatus, aiBlocked }: {
         </Card>
         <div className="space-y-4">
           <Card>
-            <h3 className="font-semibold">Janela do plano</h3>
+            <h3 className="font-semibold">Proposta de agenda</h3>
             <dl className="mt-3 space-y-2 text-sm">
               <div className="flex justify-between gap-2"><dt className="text-zinc-500">Início</dt><dd className="font-medium">{formatDate(planDate)}</dd></div>
               <div className="flex justify-between gap-2"><dt className="text-zinc-500">Públicos</dt><dd className="font-medium">{selected.size}</dd></div>
             </dl>
             <div className="mt-4"><Label>Dias para distribuir</Label><select className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={1}>1 dia</option><option value={2}>2 dias</option><option value={3}>3 dias</option></select></div>
-            <div className="mt-4 rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs leading-relaxed text-violet-800">A seleção prioriza encaixe no público, valor da oferta, comissão, sazonalidade, frescor e variedade. Esta ação usa IA para no máximo {aiStatus?.limits.batchSize ?? 'o limite configurado de'} produtos por lote.</div>
-            <Button className="mt-4 w-full" type="button" disabled={mutation.isPending || !rawJson.trim() || selected.size === 0 || !jsonValid || aiBlocked} onClick={() => submit()}>
-              {mutation.isPending ? <Spinner /> : <BrainCircuit size={17} />} Usar IA: classificar e criar plano
+            <div className="mt-4 rounded-lg border border-violet-100 bg-violet-50 p-3 text-xs leading-relaxed text-violet-800">A IA considera encaixe no público, comissão, desconto comprovado, sazonalidade, frescor e variedade. Ela avalia até {aiStatus?.limits.batchSize ?? 'o limite configurado de'} produtos por lote. Ao concluir, você verá a proposta em <strong>Revisar agenda</strong>; nada é enviado até a aprovação explícita.</div>
+            <Button className="mt-4 w-full" type="button" disabled={mutation.isPending || !(filePayloads.length > 0 || (rawJson.trim() && jsonValid)) || selected.size === 0 || (filePayloads.length === 0 && !jsonValid) || aiBlocked} onClick={() => submit()}>
+              {mutation.isPending ? <Spinner /> : <BrainCircuit size={17} />} Analisar e montar proposta
             </Button>
           </Card>
           {mutation.isError && <ErrorState message={apiErrorMessage(mutation.error)} retry={mutation.variables ? () => submit(mutation.variables) : undefined} />}
@@ -787,6 +841,7 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked }
         <div role="alertdialog" aria-label={confirming === 'approve' ? 'Confirmar aprovação' : 'Confirmar cancelamento'} className={`mt-4 rounded-xl border p-4 ${confirming === 'approve' ? 'border-violet-200 bg-violet-50' : 'border-red-200 bg-red-50'}`}>
           <p className="font-semibold">{confirming === 'approve' ? 'Confirmar agenda e envios' : 'Confirmar cancelamento do plano'}</p>
           <p className="mt-1 text-sm text-zinc-700">{selectedCount} produto(s) · {plan.audienceSlugs.length} público(s) ({plan.audienceSlugs.join(', ')}) · início em {formatDate(plan.startDate)}.</p>
+          {confirming === 'approve' && <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-medium text-amber-950">Esta confirmação ativa os envios agendados para os grupos listados. Até você confirmar aqui, nenhuma campanha será iniciada.</p>}
           <p className="mt-1 text-sm text-zinc-700">{destinationNames.length} grupo(s): {destinationNames.join(', ') || 'nenhum grupo vinculado'}</p>
           <div className="mt-3 flex gap-2"><Button type="button" variant="secondary" onClick={() => setConfirming(null)} disabled={mutation.isPending}>Voltar</Button><Button type="button" variant={confirming === 'cancel' ? 'danger' : 'primary'} onClick={() => action(confirming)} disabled={mutation.isPending}>{confirming === 'approve' ? 'Confirmar e agendar' : 'Confirmar cancelamento'}</Button></div>
         </div>
@@ -884,7 +939,7 @@ export default function SmartCampaignsPage() {
 
       {audiencesQuery.data && stage === 'audiences' && <AudienceSetup audiences={audiencesQuery.data} groups={groupsQuery.data ?? []} />}
       {audiencesQuery.data && stage === 'keywords' && <KeywordPlanner audiences={audiencesQuery.data} selected={workflowSelection} setSelected={selectAudiences} planDate={planDate} setPlanDate={setPlanDate} aiBlocked={aiBlocked} />}
-      {stage === 'import' && <ImportPlanner selected={workflowSelection} planDate={planDate} onCreated={onCreated} aiStatus={aiStatusQuery.data} aiBlocked={aiBlocked} />}
+      {stage === 'import' && audiencesQuery.data && <ImportPlanner audiences={audiencesQuery.data} selected={workflowSelection} planDate={planDate} onCreated={onCreated} aiStatus={aiStatusQuery.data} aiBlocked={aiBlocked} />}
       {stage === 'review' && (
         <div>
           {!selectedPlanId && <EmptyState title="Escolha um plano">Abra um plano no acompanhamento ou crie uma análise a partir do JSON da extensão.</EmptyState>}

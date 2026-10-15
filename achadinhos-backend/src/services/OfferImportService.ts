@@ -25,6 +25,7 @@ export interface ImportPayload {
   name: string
   json: unknown
   source?: string
+  targetAudienceSlug?: string
 }
 
 export interface ImportProvenance {
@@ -32,6 +33,7 @@ export interface ImportProvenance {
   fileIndex: number
   itemIndex: number
   fileName: string
+  targetAudienceSlugs?: string[]
 }
 
 export interface ImportDuplicate extends ImportProvenance {
@@ -47,6 +49,7 @@ export interface ImportFileSummary {
   invalid: number
   duplicates: number
   warnings: number
+  targetAudienceSlug?: string
 }
 
 /**
@@ -123,6 +126,7 @@ export class OfferImportService {
           fileIndex,
           fileName,
           source: payload.source,
+          targetAudienceSlug: payload.targetAudienceSlug,
           offset: totalSeen - array.length,
         }
       } catch (error) {
@@ -161,12 +165,14 @@ export class OfferImportService {
         invalid: parsed.totalSeen - parsed.offers.length,
         duplicates: 0,
         warnings: parsed.errors.filter((error) => validIndexes.has(error.index)).length,
+        targetAudienceSlug: file.targetAudienceSlug,
       }
       const origin = (itemIndex: number): ImportProvenance => ({
         index: file.offset + itemIndex,
         fileIndex: file.fileIndex,
         itemIndex,
         fileName: file.fileName,
+        ...(file.targetAudienceSlug ? { targetAudienceSlugs: [file.targetAudienceSlug] } : {}),
       })
       errors.push(...parsed.errors.map((error) => ({ ...error, ...origin(error.index) })))
       parsed.offers.forEach((offer, position) => {
@@ -192,12 +198,30 @@ export class OfferImportService {
     }
     // Later cards can bridge earlier identities. Finish the components before
     // choosing winners so only the earliest raw record gets evaluated.
+    const componentAudienceSlugs = new Map<number, Set<string>>()
+    const unrestrictedComponents = new Set<number>()
+    candidates.forEach(({ origin }, position) => {
+      const canonical = root(position)
+      if (!origin.targetAudienceSlugs?.length) {
+        unrestrictedComponents.add(canonical)
+        return
+      }
+      const values = componentAudienceSlugs.get(canonical) ?? new Set<string>()
+      origin.targetAudienceSlugs.forEach((slug) => values.add(slug))
+      componentAudienceSlugs.set(canonical, values)
+    })
     candidates.forEach(({ offer, origin }, position) => {
       const canonical = root(position)
       const summary = files[origin.fileIndex]
       if (canonical === position) {
         offers.push(offer)
-        provenance.push(origin)
+        const targetAudienceSlugs = componentAudienceSlugs.get(canonical)
+        provenance.push({
+          ...origin,
+          ...(!unrestrictedComponents.has(canonical) && targetAudienceSlugs?.size
+            ? { targetAudienceSlugs: [...targetAudienceSlugs].sort() }
+            : { targetAudienceSlugs: undefined }),
+        })
         summary.imported++
       } else {
         duplicates.push({ ...origin, duplicateOf: candidates[canonical].origin.index })

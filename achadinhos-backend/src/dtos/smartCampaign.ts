@@ -126,6 +126,7 @@ export const CreateSmartPlanSchema = z
           name: z.string().trim().min(1).max(255),
           json: z.unknown().refine((value) => value !== undefined, 'JSON é obrigatório'),
           source: z.string().trim().max(40).optional(),
+          targetAudienceSlug: SmartAudienceSlugSchema.optional(),
         }),
       )
       .min(1)

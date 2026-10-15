@@ -226,6 +226,7 @@ export interface SmartImportPayload {
   name: string
   json: unknown
   source?: string
+  targetAudienceSlug?: SmartAudienceSlug
 }
 
 export type SmartCreatePlanInput = {

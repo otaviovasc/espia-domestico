@@ -26,6 +26,7 @@ import type {
   NicheSlug,
   SmartProductAnalysis,
 } from '@/dtos/smartIntelligence'
+import { NicheSlugSchema } from '@/dtos/smartIntelligence'
 import {
   AppError,
   BadRequestError,
@@ -45,6 +46,22 @@ import { recordSmartOperation } from '@/utils/smartOperationAudit'
 import { env } from '@/config/env'
 
 const MIN_SMART_FIT = 70
+
+const NICHE_CUES: Record<NicheSlug, RegExp> = {
+  domestica: /\b(cozinha|panela|air ?fryer|airfryer|liquidificador|aspirador|limpeza|organizador|edredom|cama|banho|skincare|maquiagem|secador|chapinha|bolsa|necessaire)\b/i,
+  masculino: /\b(barbeador|barba|furadeira|parafusadeira|ferramenta|halter|muscula[cç][aã]o|smartwatch|carteira|masculin[oa]|automotivo|carro|mult[ií]metro)\b/i,
+  natal: /\b(natal|natalin[oa]|guirlanda|pisca.?pisca|pres[eé]pio|panetone|papai noel|[aá]rvore de natal|enfeite|amigo secreto)\b/i,
+  pesca: /\b(pesca|molinete|carretilha|anz[oó]is?|isca artificial|vara de pesca|multifilamento|chumbada|passagu[aá])\b/i,
+  pet: /\b(pet|c[aã]o|cachorro|gato|ra[cç][aã]o|comedouro|bebedouro|coleira|peitoral|arranhador|tapete higi[eê]nico|areia para gato)\b/i,
+}
+
+function likelyAudienceSlugs(offer: OfferInput, allowed: NicheSlug[]): NicheSlug[] {
+  const text = `${offer.title} ${offer.description ?? ''}`.slice(0, 1_000)
+  const matched = allowed.filter((slug) => NICHE_CUES[slug].test(text))
+  // Broad/general merchandise has little lexical signal. Keep all audiences so the
+  // classifier decides; only prune clearly unrelated niches for strong cues.
+  return matched.length ? matched : allowed
+}
 
 const DEFAULT_POLICY: SmartAudiencePolicy = {
   dailyCap: 50,
@@ -90,6 +107,7 @@ interface PlanInputPayload {
   totalSeen: number
   errors: Array<Record<string, unknown>>
   duplicateCount: number
+  offerAudienceSlugs?: Array<NicheSlug[] | null>
   analysisResults?: Record<string, SmartProductAnalysis>
 }
 
@@ -636,6 +654,18 @@ export class SmartCampaignService {
     if (parsed.offers.length > 500) {
       throw BadRequestError('Planos inteligentes aceitam no máximo 500 produtos por análise')
     }
+    const selectedSlugs = new Set(input.audienceSlugs)
+    const offerAudienceSlugs = parsed.offers.map((offer, index) => {
+      const origin = parsed.provenance?.[index]
+      if (!origin?.targetAudienceSlugs?.length) return null
+      const slugs = origin.targetAudienceSlugs.map((slug) => NicheSlugSchema.parse(slug) as NicheSlug)
+      if (slugs.some((slug) => !selectedSlugs.has(slug))) {
+        throw BadRequestError('O público de cada arquivo precisa estar incluído na seleção do plano')
+      }
+      // File audience is a weak prior, not a forced destination. Include strong
+      // lexical evidence from another selected niche; AI still scores the candidate.
+      return [...new Set<NicheSlug>([...slugs, ...likelyAudienceSlugs(offer, input.audienceSlugs as NicheSlug[])])].sort()
+    })
     const observedAt = parsed.offers.map(observedAtFor)
     const settings = {
       audiences: Object.fromEntries(
@@ -663,6 +693,7 @@ export class SmartCampaignService {
             days: input.days,
             audienceSlugs: input.audienceSlugs,
             offers: parsed.offers,
+            offerAudienceSlugs,
             settings: input.settings ?? {},
           }),
         )
@@ -735,6 +766,7 @@ export class SmartCampaignService {
             totalSeen: parsed.totalSeen,
             errors: parsed.errors,
             duplicateCount: parsed.duplicateCount ?? 0,
+            offerAudienceSlugs,
             analysisResults: {},
           },
           items: [],
@@ -922,24 +954,37 @@ export class SmartCampaignService {
           'SMART_ANALYSIS_SNAPSHOT_MISSING',
         )
       }
-      // Share the niche rubric across a bounded batch; the AI ledger prevents
-      // recharging completed/uncertain requests after a worker restart.
-      for (let offset = 0; offset < missing.length; offset += 4) {
-        await this.renewAnalysisLease(plan.id, workerToken)
-        const indexes = missing.slice(offset, offset + 4)
-        const chunk = indexes.map((index) => input.offers[index])
-        const results = await this.intelligence.analyze(
-          chunk,
-          plan.audienceSlugs as NicheSlug[],
-          plan.startDate,
-          frozenProfiles,
-          [],
-          { userId: plan.userId, operationId: plan.uuid },
-        )
-        results.forEach((analysis, localIndex) => {
-          analyses[String(indexes[localIndex])] = { ...analysis, index: indexes[localIndex] }
-        })
-        await this.persistAnalysisChunk(plan.id, workerToken, analyses, input.offers.length)
+      // Explicitly assigned files are analyzed only for their group. Unassigned
+      // pasted/mixed files are analyzed across every group the operator selected.
+      const scopedIndexes = new Map<string, { slugs: NicheSlug[]; indexes: number[] }>()
+      for (const index of missing) {
+        const scopedSlugs = input.offerAudienceSlugs?.[index]?.length
+        ? input.offerAudienceSlugs[index]!
+          : likelyAudienceSlugs(input.offers[index], plan.audienceSlugs as NicheSlug[])
+        const key = [...scopedSlugs].sort().join(',')
+        const scoped = scopedIndexes.get(key) ?? { slugs: [...scopedSlugs], indexes: [] }
+        scoped.indexes.push(index)
+        scopedIndexes.set(key, scoped)
+      }
+      // Keep calls bounded and persist each completed chunk for safe resumption.
+      for (const scoped of scopedIndexes.values()) {
+        for (let offset = 0; offset < scoped.indexes.length; offset += 4) {
+          await this.renewAnalysisLease(plan.id, workerToken)
+          const indexes = scoped.indexes.slice(offset, offset + 4)
+          const chunk = indexes.map((index) => input.offers[index])
+          const results = await this.intelligence.analyze(
+            chunk,
+            scoped.slugs,
+            plan.startDate,
+            frozenProfiles,
+            [],
+            { userId: plan.userId, operationId: plan.uuid },
+          )
+          results.forEach((analysis, localIndex) => {
+            analyses[String(indexes[localIndex])] = { ...analysis, index: indexes[localIndex] }
+          })
+          await this.persistAnalysisChunk(plan.id, workerToken, analyses, input.offers.length)
+        }
       }
       const catalogOffers = await this.saveCatalog(plan.userId, input.offers, analyses, audiences)
       const items = await this.buildItems(
@@ -981,6 +1026,20 @@ export class SmartCampaignService {
       })
       return true
     } catch (error) {
+      const errorCategory = error instanceof AppError && typeof error.details?.category === 'string'
+        ? error.details.category
+        : error instanceof AppError
+          ? error.code ?? 'application_error'
+          : 'unexpected_error'
+      const safeFailureMessage = errorCategory === 'structured_output'
+        ? 'A IA não devolveu uma análise válida nesta tentativa. Os resultados já salvos foram preservados; tente novamente.'
+        : errorCategory === 'no_matching_endpoint'
+          ? 'O provedor não encontrou um modelo compatível com a análise. Revise a configuração da IA e tente novamente.'
+          : errorCategory === 'rate_limit'
+            ? 'O provedor de IA está temporariamente ocupado. Aguarde um pouco e tente novamente.'
+            : errorCategory === 'timeout'
+              ? 'A análise excedeu o tempo limite. Os resultados já salvos foram preservados; tente novamente.'
+              : 'Não foi possível concluir a análise. Os resultados já salvos foram preservados; tente novamente.'
       await sequelize.transaction(async (transaction) => {
         const current = await SmartPlan.findByPk(plan.id, {
           transaction,
@@ -996,10 +1055,7 @@ export class SmartCampaignService {
           current.progress = {
             ...current.progress,
             phase: 'FAILED',
-            error:
-              error instanceof AppError
-                ? error.message
-                : 'Não foi possível concluir a análise. Os resultados já salvos foram preservados; tente novamente.',
+            error: safeFailureMessage,
           }
           await current.save({ transaction })
         }
@@ -1008,6 +1064,7 @@ export class SmartCampaignService {
         {
           errorName: error instanceof Error ? error.name : 'Error',
           errorCode: error instanceof AppError ? error.code : 'SMART_ANALYSIS_FAILED',
+          errorCategory,
           planId: plan.id,
           userId: plan.userId,
         },
