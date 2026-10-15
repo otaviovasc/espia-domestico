@@ -118,6 +118,14 @@ test('Mercado Livre complete payload signals survive normalization', () => {
         visible: {
           pricing: { currentAmount: 80, originalAmount: 100, discountPercent: 20 },
           commissionPercent: '12%',
+          text: 'Classificação 4,8 de 5 estrelas. Mais de 1.000 produtos vendidos.',
+        },
+        commission: {
+          percent: 12,
+          priceBrl: 80,
+          estimatedBrl: 9.6,
+          basis: 'visible_current_price_times_displayed_percent',
+          guaranteed: false,
         },
       },
     ],
@@ -126,6 +134,12 @@ test('Mercado Livre complete payload signals survive normalization', () => {
   assert.equal(result.offers.length, 1)
   assert.equal(result.offers[0].discountPercent, 20)
   assert.equal(result.offers[0].commissionPercent, '12%')
+  assert.equal(result.offers[0].commissionRate, 12)
+  assert.deepEqual(result.offers[0].extensionEvidence.visibleSignals, {
+    rating: 4.8,
+    soldCount: 1000,
+    soldCountIsLowerBound: true,
+  })
   assert.equal(result.offers[0].commissioned, true)
 })
 

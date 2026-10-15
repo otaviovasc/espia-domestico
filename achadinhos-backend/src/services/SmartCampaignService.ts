@@ -267,6 +267,38 @@ function discount(offer: OfferInput): number {
   return Math.min(100, Math.max(0, (1 - offer.discountedPrice / offer.originalPrice) * 100))
 }
 
+function marketplaceSignalScore(offer: OfferInput): number {
+  const signals = offer.extensionEvidence?.visibleSignals
+  const values: number[] = []
+  if (typeof signals?.rating === 'number') values.push(signals.rating * 20)
+  if (typeof signals?.soldCount === 'number') {
+    // A logarithmic scale keeps a large marketplace count useful without letting
+    // popularity overwhelm audience fit, price, commission, or freshness.
+    values.push(Math.min(100, (Math.log10(signals.soldCount + 1) / 4) * 100))
+  }
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 75
+}
+
+export function validateAudienceDailyCaps(
+  items: SmartPlanItem[],
+  policies: Record<string, Pick<SmartAudiencePolicy, 'dailyCap'>>,
+): void {
+  const counts = new Map<string, number>()
+  for (const item of items) {
+    const key = `${item.audienceSlug}:${item.date}`
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  for (const [key, count] of counts) {
+    const separator = key.indexOf(':')
+    const slug = key.slice(0, separator)
+    const date = key.slice(separator + 1)
+    const dailyCap = policies[slug]?.dailyCap ?? DEFAULT_POLICY.dailyCap
+    if (count > dailyCap) {
+      throw BadRequestError(`O público ${slug} excede ${dailyCap} produtos em ${date}`)
+    }
+  }
+}
+
 function categoryForScore(score: number): 'A' | 'B' | 'C' | 'D' {
   if (score >= 80) return 'A'
   if (score >= 60) return 'B'
@@ -1098,7 +1130,7 @@ export class SmartCampaignService {
       ? Math.max(0, (Date.now() - new Date(observedAt).getTime()) / 3_600_000)
       : 999
     const freshness = Math.max(0, 100 - ageHours * (100 / DEFAULT_POLICY.freshnessHours))
-    const assortment = 75
+    const assortment = marketplaceSignalScore(offer)
     const total =
       0.4 * fit +
       0.2 * offerValue +
@@ -1161,11 +1193,9 @@ export class SmartCampaignService {
       allowedRoutes.set(index, allowed)
     })
     const globallySelected = new Set<string>()
-    const globalCategoryCounts = new Map<string, number>()
-    const globalDailyCap = 50
-    const globalDailyCounts = new Map<string, number>()
     for (const audience of audiences) {
       const policy = settings.audiences[audience.slug]
+      const audienceCategoryCounts = new Map<string, number>()
       const candidates: SmartPlanItem[] = []
       offers.forEach((offer, index) => {
         const analysis = analyses[String(index)]
@@ -1244,16 +1274,15 @@ export class SmartCampaignService {
         for (const item of dayCandidates) {
           const scheduledToday = selected.filter((entry) => entry.date === date).length
           if (chosen.length >= Math.min(maximum, audienceTarget - scheduledToday)) break
-          const alreadyOnDate = globalDailyCounts.get(date) ?? 0
-          if (alreadyOnDate >= globalDailyCap) break
           if (chosen.length >= maximum) break
           const category = item.category ?? 'outros'
-          const count = globalCategoryCounts.get(`${date}:${category}`) ?? 0
+          const categoryKey = `${date}:${category}`
+          const count = audienceCategoryCounts.get(categoryKey) ?? 0
           if (count >= categoryLimit) continue
           const sendAt = smartZonedInstant(date, policy.startTime, policy.timezone)
           if (!isEvidenceFresh(item.observedAt, sendAt, policy.freshnessHours)) continue
           chosen.push(item)
-          globalCategoryCounts.set(`${date}:${category}`, count + 1)
+          audienceCategoryCounts.set(categoryKey, count + 1)
         }
         const slots = buildSmartSchedule(
           date,
@@ -1267,7 +1296,6 @@ export class SmartCampaignService {
           item.scheduledAt = slots[index].toISOString()
           selected.push(item)
           globallySelected.add(item.id)
-          globalDailyCounts.set(date, (globalDailyCounts.get(date) ?? 0) + 1)
         })
       }
       const standoutsByDate = new Map<string, SmartPlanItem[]>()
@@ -1336,8 +1364,12 @@ export class SmartCampaignService {
         ? (result as unknown as Array<{ id?: number }>)
         : result.saved
       savedRows.forEach((product, index) => {
-        if (product.id)
-          catalogOffers[index] = { ...catalogOffers[index], savedProductId: product.id }
+        catalogOffers[index] = {
+          ...catalogOffers[index],
+          savedProductId: product.id ?? catalogOffers[index].savedProductId,
+          commissionRate: commissionRate(catalogOffers[index]),
+          discountPercent: discount(catalogOffers[index]),
+        }
       })
     }
     return catalogOffers
@@ -1558,13 +1590,7 @@ export class SmartCampaignService {
         throw BadRequestError('O plano contém produtos em datas passadas; mova-os antes de aprovar')
       }
       const rows: CreationAttributes<SmartSend>[] = []
-      const selectedByDate = new Map<string, number>()
-      for (const item of selected) {
-        selectedByDate.set(item.date, (selectedByDate.get(item.date) ?? 0) + 1)
-      }
-      if ([...selectedByDate.values()].some((count) => count > 50)) {
-        throw BadRequestError('A campanha não pode enviar mais de 50 produtos no total por dia')
-      }
+      validateAudienceDailyCaps(selected, settings.audiences)
       for (const slug of usedSlugs) {
         const audience = selectedAudiences.get(slug)!
         const policy = settings.audiences[slug] ?? audience.policy

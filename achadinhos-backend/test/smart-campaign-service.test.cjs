@@ -8,6 +8,7 @@ const {
   isEvidenceFresh,
   smartUnknownResolutionAvailableAt,
   smartZonedInstant,
+  validateAudienceDailyCaps,
 } = require('../dist/services/SmartCampaignService.js')
 
 const policy = {
@@ -81,6 +82,25 @@ test('smart schedule rejects a count that cannot fit the requested window', () =
     /comporta 2 envio/,
   )
 })
+
+test('daily caps are independent per audience and date', () => {
+  const item = (audienceSlug, index, date = '2026-10-16') => ({ audienceSlug, date })
+  const schedule = [
+    ...Array.from({ length: 50 }, (_, index) => item('domestica', index)),
+    ...Array.from({ length: 50 }, (_, index) => item('masculino', index)),
+  ]
+  assert.doesNotThrow(() => validateAudienceDailyCaps(schedule, policyByAudience))
+  assert.throws(
+    () => validateAudienceDailyCaps([...schedule, item('masculino', 50)], policyByAudience),
+    /masculino excede 50 produtos em 2026-10-16/,
+  )
+  assert.doesNotThrow(() => validateAudienceDailyCaps([
+    ...schedule,
+    item('domestica', 50, '2026-10-17'),
+  ], policyByAudience))
+})
+
+const policyByAudience = { domestica: policy, masculino: policy }
 
 test('freshness requires real evidence and is measured against the send instant', () => {
   const sendAt = new Date('2026-10-16T12:00:00.000Z')

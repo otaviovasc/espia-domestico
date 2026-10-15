@@ -107,9 +107,17 @@ export interface SmartPlanProduct {
   discountedPrice: number
   originalPrice?: number
   commissionRate?: number
+  commissionPercent?: string
   affiliateUrl?: string
   source?: string
   productId?: string
+  extensionEvidence?: {
+    visibleSignals?: {
+      rating?: number
+      soldCount?: number
+      soldCountIsLowerBound?: boolean
+    }
+  }
 }
 
 export interface SmartPlanScores {

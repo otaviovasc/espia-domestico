@@ -22,7 +22,7 @@ interface MlCard {
   productUrl?: string | null
   commissionedUrl?: string | null
   commissionedUrlStatus?: string | null
-  commission?: unknown
+  commission?: { percent?: number | null } | null
   searchMatch?: unknown
   selection?: unknown
   reviewVideos?: unknown
@@ -34,6 +34,7 @@ interface MlCard {
   visible?: {
     pricing?: MlPricing | null
     commissionPercent?: string | null
+    text?: string | null
     images?: Array<{ src?: string | null }> | null
   } | null
 }
@@ -54,6 +55,21 @@ function isMlPayload(payload: unknown): payload is MlPayload {
   return (
     hasCards && (looksMl || p.extractorVersion === 'dom-v1' || typeof p.schemaVersion === 'number')
   )
+}
+
+function visibleSignals(text: string | null | undefined) {
+  if (!text) return undefined
+  const ratingMatch = text.match(/classifica[cç][aã]o\s*(\d(?:[.,]\d+)?)\s*de\s*5\s*estrelas/i)
+  const soldMatch = text.match(/(?:mais de\s*)?\+?([\d.]+)\s+(?:produtos?\s+)?vendidos/i)
+  const rating = ratingMatch ? Number(ratingMatch[1].replace(',', '.')) : undefined
+  const soldCount = soldMatch ? Number(soldMatch[1].replace(/\./g, '')) : undefined
+  if (rating === undefined && soldCount === undefined) return undefined
+  return {
+    ...(rating !== undefined && Number.isFinite(rating) && rating <= 5 ? { rating } : {}),
+    ...(soldCount !== undefined && Number.isSafeInteger(soldCount)
+      ? { soldCount, soldCountIsLowerBound: /mais de|\+/i.test(soldMatch?.[0] ?? '') }
+      : {}),
+  }
 }
 
 /**
@@ -150,13 +166,16 @@ export class MercadoLivreIngestor implements SourceIngestor {
           : undefined) ??
         undefined
 
+      const observedCommissionRate = card.commission?.percent
       const commissionPercent =
-        card.commissionPercent ?? card.visible?.commissionPercent ?? undefined
+        card.commissionPercent ?? card.visible?.commissionPercent ??
+        (typeof observedCommissionRate === 'number' ? `${observedCommissionRate}%` : undefined)
 
       const rawEvidence = {
         productUrl: card.productUrl ?? undefined,
         extractedAt: payload.extractedAt,
         commission: card.commission ?? undefined,
+        visibleSignals: visibleSignals(card.visible?.text),
         searchMatch: card.searchMatch ?? (payload.search ? {
           commission: payload.search.commission,
           keywords: payload.search.keywords,
@@ -179,6 +198,10 @@ export class MercadoLivreIngestor implements SourceIngestor {
         imageUrl: image ?? undefined,
         installmentLabel: pricing?.installment?.label ?? undefined,
         commissionPercent: commissionPercent ?? undefined,
+        commissionRate:
+          typeof observedCommissionRate === 'number'
+            ? observedCommissionRate
+            : undefined,
         productId,
         source: this.id,
         commissioned,

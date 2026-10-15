@@ -22,6 +22,12 @@ export const ExtensionEvidenceSchema = z.object({
     basis: z.literal('visible_current_price_times_displayed_percent'),
     guaranteed: z.literal(false),
   }).optional(),
+  /** Structured marketplace signals parsed from the visible product card. */
+  visibleSignals: z.object({
+    rating: z.number().min(0).max(5).optional(),
+    soldCount: z.number().int().nonnegative().optional(),
+    soldCountIsLowerBound: z.boolean().optional(),
+  }).optional(),
   searchMatch: match.optional(),
   selection: match.extend({
     method: z.string().max(60).optional(),

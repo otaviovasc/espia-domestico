@@ -17,18 +17,20 @@ The extension examines discovered cards in the affiliate hub. It does not submit
 
 Native legacy searches default to accent/case-insensitive substring matching. Smart presets use `matchStyle: "word"`, with accent/case-insensitive lexical boundaries and `matchMode: "any"`. Thus `pet` does not find `tapete`, and `ração` does not find `decoração`. Complete singular/plural words are generated deliberately; stems do not work in whole-word mode. Short phrases remain useful when a single word is ambiguous. ANY alternatives are appropriate for a mixed collection; ALL requires every supplied term on the same card.
 
+When the extension records which search terms matched a product, the classifier receives up to six as weak collection context. The product's own title/description must still support a niche match; a keyword alone never assigns a product to an audience.
+
 Smart packs contain at most 20 keywords (generated packs normally at most 12). The existing native collector still supports 100 phrases. Backend evidence accepts that native limit; no provenance is silently dropped at 20.
 
 The calendar supplies bounded, sourced preparation windows for Christmas, New Year, Mother's/Father's Day, Black Friday and World Animal Day. Calendar relevance is not evidence of live demand, product availability or delivery dates. There is no invented sales conversion or shipping promise.
 
 ## Selection and scheduling
 
-- Transparent commercial ranking: affinity 40%, observed offer value 20%, commission opportunity 15%, seasonality 10%, freshness 10%, assortment 5%. It is a starting policy, not a proven sales optimum.
+- Transparent commercial ranking: affinity 40%, observed offer value 20%, commission opportunity 15%, seasonality 10%, freshness 10%, marketplace rating/sales signal 5% when observed (75/100 neutral fallback). Marketplace popularity never replaces audience fit and does not establish sales in the target WhatsApp group. It is a starting policy, not a proven sales optimum.
 - Automatic fit floor: 70/100. Primary routing chooses the strongest niche; a secondary niche requires at least 85 and a score within 10 of the primary. Products do not go to every selected audience.
-- Estimated commission is current observed price × displayed commission rate. It is an estimate per eligible sale, not expected profit. Actual conversions, eligibility and cancellations are not inferred.
+- Estimated commission is current observed price × displayed commission rate. The Mercado Livre export's structured rate is normalized and retained through review. This is an estimate per eligible sale, not expected profit. Actual conversions, eligibility and cancellations are not inferred.
 - No automatic use of unverified/non-affiliate links, missing observation times or expired commercial evidence. Original marketplace prices are not treated as verified price history.
 - Up to three standout introductions per audience/day by default. Other offers use the existing template. Verified fields supply prices, coupons and affiliate links.
-- Maximum 50 messages per actual destination/local day, shared with legacy sends. Start is 09:00; closing is at or before 21:00, exclusively. Normal gaps are 720–960 seconds. Deterministic bounded slots fit the window; 50 is a ceiling, never a requirement to include weak products.
+- Maximum 50 selected products per audience/local day. The actual WhatsApp destination also has a 50-message daily ceiling shared with legacy sends, so audiences mapped to the same group share that group's available capacity. Start is 09:00; closing is at or before 21:00, exclusively. Normal gaps are 720–960 seconds. Deterministic bounded slots fit the window; 50 is a ceiling, never a requirement to include weak products.
 - The same connection also has a short account-wide throttle. Each group's 12–16 minute cadence is independent, so five audiences do not wait on one global 15-minute loop.
 - Late approval uses future feasible slots; it never backdates or bursts to catch up. Downtime/provider delays can make real gaps longer than 16 minutes. Excess/stale work is deferred or skipped rather than sent at night.
 - Commercial evidence has a hard maximum age of 24 hours. Planning up to three days is supported, but later sends need evidence valid at their scheduled time. There is no server-side live ML price/commission refresh yet; reimport updated evidence and create a new plan when needed.
