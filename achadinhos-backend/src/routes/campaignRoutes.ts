@@ -2,12 +2,23 @@ import { Router } from 'express'
 import { container } from 'tsyringe'
 import { CampaignController } from '@/controllers/CampaignController'
 import { authenticate } from '@/middleware/auth'
+import rateLimit from 'express-rate-limit'
 
 const campaignRoutes = Router()
 const controller = container.resolve(CampaignController)
+const paidImportLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (request) => request.body?.parseOnly === true,
+  keyGenerator: (request) => `classification:${request.user!.userId}`,
+})
 
 campaignRoutes.get('/meta', authenticate, (req, res) => controller.meta(req, res))
-campaignRoutes.post('/import-offers', authenticate, (req, res) => controller.importOffers(req, res))
+campaignRoutes.post('/import-offers', authenticate, paidImportLimiter, (req, res) =>
+  controller.importOffers(req, res),
+)
 campaignRoutes.post('/preview', authenticate, (req, res) => controller.preview(req, res))
 campaignRoutes.post('/check-offers', authenticate, (req, res) => controller.checkOffers(req, res))
 campaignRoutes.post('/delivery-claims/resolve', authenticate, (req, res) =>

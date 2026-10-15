@@ -1,0 +1,85 @@
+{
+  "runDate": "2026-10-15",
+  "fixtureDate": "2026-12-10",
+  "configuration": {
+    "batchSize": 4,
+    "maxOutputTokens": 4000,
+    "maxInputUsdPerMillion": 0.2,
+    "maxOutputUsdPerMillion": 0.8,
+    "reasoning": false,
+    "dataCollection": "deny",
+    "modelFallbacks": false,
+    "sameModelProviderFailover": true,
+    "sdkRetries": 0
+  },
+  "selected": {
+    "model": "deepseek/deepseek-v4.1-flash",
+    "reason": "Passed full and held-out fixtures with no false positives or false negatives, passed every production schema smoke, and stayed inside static price ceilings.",
+    "full24": {
+      "cases": 24,
+      "rangeAccuracy": 0.8667,
+      "confusion": {
+        "truePositive": 21,
+        "trueNegative": 89,
+        "falsePositive": 0,
+        "falseNegative": 0,
+        "ambiguous": 10
+      },
+      "elapsedMs": 28486,
+      "usage": {
+        "inputTokens": 11408,
+        "outputTokens": 8261,
+        "measuredCostUsd": 0.00683
+      }
+    },
+    "heldout8": {
+      "cases": 8,
+      "rangeAccuracy": 0.9,
+      "confusion": {
+        "truePositive": 7,
+        "trueNegative": 29,
+        "falsePositive": 0,
+        "falseNegative": 0,
+        "ambiguous": 4
+      },
+      "elapsedMs": 27392,
+      "usageIncludingSchemaSmokes": {
+        "inputTokens": 6318,
+        "outputTokens": 3456,
+        "measuredCostUsd": 0.001823
+      },
+      "schemaSmokes": {
+        "fiveAudienceKeywordPacks": true,
+        "standoutCopy": true,
+        "manualRelevanceScore": true
+      }
+    }
+  },
+  "rejected": [
+    {
+      "model": "qwen/qwen3.8-27b",
+      "priceCapsUsdPerMillion": { "input": 0.2, "output": 0.8 },
+      "result": "failed",
+      "cause": "no_matching_endpoint",
+      "providerStatus": 404
+    },
+    {
+      "model": "qwen/qwen3.8-27b",
+      "priceCapsUsdPerMillion": { "input": 0.2, "output": 2 },
+      "result": "failed",
+      "cause": "structured_output"
+    },
+    {
+      "model": "qwen/qwen3.8-flash",
+      "priceCapsUsdPerMillion": { "input": 0.2, "output": 0.8 },
+      "result": "failed",
+      "cause": "structured_output"
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash",
+      "priceCapsUsdPerMillion": { "input": 0.2, "output": 0.8 },
+      "result": "failed",
+      "cause": "structured_output"
+    }
+  ]
+}

@@ -12,7 +12,8 @@
     "test:preview": "node --experimental-strip-types --test test/ad-preview-parity.test.mjs",
     "preview": "vite preview",
     "start": "serve dist -l ${PORT:-5273}",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:smart": "node --experimental-strip-types --test test/smart-search-preset.test.mjs test/smart-ai-safety.test.mjs"
   },
   "engines": {
     "node": ">=20"

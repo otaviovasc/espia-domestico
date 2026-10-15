@@ -23,7 +23,10 @@
     "test": "npm run build && node --test test/*.test.cjs",
     "test:catalog:integration": "npm run build && node --test test/saved-products.integration.cjs",
     "test:delivery:integration": "npm run build && node --test test/campaign-group-delivery.integration.cjs",
-    "test:profiles:integration": "npm run build && node --test test/classification-profiles.integration.cjs"
+    "test:profiles:integration": "npm run build && node --test test/classification-profiles.integration.cjs",
+    "test:smart:integration": "npm run build && node --test test/smart-campaigns.integration.cjs",
+    "benchmark:smart": "node scripts/benchmark-smart-classification.cjs",
+    "test:ai:integration": "npm run build && node --test test/product-ai-request-guard.integration.cjs"
   },
   "keywords": [
     "whatsapp",

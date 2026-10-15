@@ -1,6 +1,6 @@
 import 'reflect-metadata'
 import '@/types/express'
-import '@/config/env'
+import { env } from '@/config/env'
 import { logger } from '@/utils/logger'
 import { assertDatabaseConnection } from '@/database'
 import { registerAssociations } from '@/database/models'
@@ -13,6 +13,9 @@ import { startScheduler, stopScheduler } from '@/jobs/scheduler'
  * recovered by the campaign heartbeat + auto-resume logic.
  */
 async function main(): Promise<void> {
+  if (!env.RUN_SCHEDULER) {
+    throw new Error('Dedicated worker requires RUN_SCHEDULER=true; sending remains disabled')
+  }
   registerAssociations()
   await assertDatabaseConnection()
 
@@ -33,6 +36,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error) => {
-  logger.error({ error }, 'Fatal worker boot error')
+  logger.error({ err: error }, 'Fatal worker boot error')
   process.exit(1)
 })

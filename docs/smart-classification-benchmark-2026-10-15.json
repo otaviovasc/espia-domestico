@@ -1,0 +1,697 @@
+{
+  "mode": "live",
+  "fixtureVersion": 1,
+  "date": "2026-12-10",
+  "results": [
+    {
+      "model": "openai/gpt-4.1-mini",
+      "cases": 24,
+      "rangeAccuracy": 0.825,
+      "confusion": {
+        "truePositive": 21,
+        "trueNegative": 82,
+        "falsePositive": 7,
+        "falseNegative": 0,
+        "ambiguous": 10
+      },
+      "elapsedMs": 29838,
+      "usage": {
+        "inputTokens": 23963,
+        "outputTokens": 6626,
+        "estimatedCostUsd": 0.020187
+      },
+      "misses": [
+        {
+          "id": "beauty-skincare",
+          "slug": "natal",
+          "expected": [
+            15,
+            55
+          ],
+          "actual": 65
+        },
+        {
+          "id": "impact-drill",
+          "slug": "domestica",
+          "expected": [
+            45,
+            75
+          ],
+          "actual": 40
+        },
+        {
+          "id": "car-phone-holder",
+          "slug": "natal",
+          "expected": [
+            5,
+            35
+          ],
+          "actual": 40
+        },
+        {
+          "id": "bluetooth-headphones",
+          "slug": "domestica",
+          "expected": [
+            20,
+            55
+          ],
+          "actual": 70
+        },
+        {
+          "id": "christmas-wreath",
+          "slug": "domestica",
+          "expected": [
+            45,
+            75
+          ],
+          "actual": 80
+        },
+        {
+          "id": "generic-phone",
+          "slug": "domestica",
+          "expected": [
+            15,
+            50
+          ],
+          "actual": 75
+        },
+        {
+          "id": "generic-phone",
+          "slug": "masculino",
+          "expected": [
+            55,
+            80
+          ],
+          "actual": 90
+        },
+        {
+          "id": "smart-pet-feeder",
+          "slug": "natal",
+          "expected": [
+            5,
+            35
+          ],
+          "actual": 60
+        },
+        {
+          "id": "cat-litter",
+          "slug": "domestica",
+          "expected": [
+            20,
+            55
+          ],
+          "actual": 75
+        },
+        {
+          "id": "veterinary-medicine",
+          "slug": "pet",
+          "expected": [
+            15,
+            45
+          ],
+          "actual": 10
+        },
+        {
+          "id": "pet-carrier",
+          "slug": "domestica",
+          "expected": [
+            25,
+            55
+          ],
+          "actual": 65
+        },
+        {
+          "id": "pet-carrier",
+          "slug": "masculino",
+          "expected": [
+            0,
+            25
+          ],
+          "actual": 30
+        },
+        {
+          "id": "pet-carrier",
+          "slug": "natal",
+          "expected": [
+            0,
+            25
+          ],
+          "actual": 40
+        },
+        {
+          "id": "fishing-lure",
+          "slug": "masculino",
+          "expected": [
+            25,
+            60
+          ],
+          "actual": 65
+        },
+        {
+          "id": "fishing-lure",
+          "slug": "natal",
+          "expected": [
+            0,
+            20
+          ],
+          "actual": 35
+        },
+        {
+          "id": "generic-camping-chair",
+          "slug": "natal",
+          "expected": [
+            0,
+            25
+          ],
+          "actual": 40
+        },
+        {
+          "id": "aquarium-decoration",
+          "slug": "domestica",
+          "expected": [
+            15,
+            45
+          ],
+          "actual": 80
+        },
+        {
+          "id": "aquarium-decoration",
+          "slug": "masculino",
+          "expected": [
+            0,
+            20
+          ],
+          "actual": 30
+        },
+        {
+          "id": "aquarium-decoration",
+          "slug": "pet",
+          "expected": [
+            20,
+            55
+          ],
+          "actual": 0
+        },
+        {
+          "id": "fish-shaped-dog-toy",
+          "slug": "natal",
+          "expected": [
+            0,
+            20
+          ],
+          "actual": 30
+        }
+      ]
+    },
+    {
+      "model": "google/gemini-2.5-flash-lite",
+      "cases": 24,
+      "rangeAccuracy": 0.55,
+      "confusion": {
+        "truePositive": 21,
+        "trueNegative": 61,
+        "falsePositive": 28,
+        "falseNegative": 0,
+        "ambiguous": 10
+      },
+      "elapsedMs": 17902,
+      "usage": {
+        "inputTokens": 24478,
+        "outputTokens": 10773,
+        "estimatedCostUsd": 0.006757
+      },
+      "misses": [
+        {
+          "id": "beauty-skincare",
+          "slug": "masculino",
+          "expected": [
+            0,
+            35
+          ],
+          "actual": 60
+        },
+        {
+          "id": "beauty-skincare",
+          "slug": "natal",
+          "expected": [
+            15,
+            55
+          ],
+          "actual": 75
+        },
+        {
+          "id": "women-handbag",
+          "slug": "masculino",
+          "expected": [
+            0,
+            25
+          ],
+          "actual": 30
+        },
+        {
+          "id": "women-handbag",
+          "slug": "natal",
+          "expected": [
+            10,
+            50
+          ],
+          "actual": 70
+        },
+        {
+          "id": "women-handbag",
+          "slug": "pet",
+          "expected": [
+            0,
+            10
+          ],
+          "actual": 50
+        },
+        {
+          "id": "air-fryer",
+          "slug": "masculino",
+          "expected": [
+            20,
+            55
+          ],
+          "actual": 60
+        },
+        {
+          "id": "air-fryer",
+          "slug": "natal",
+          "expected": [
+            10,
+            50
+          ],
+          "actual": 75
+        },
+        {
+          "id": "impact-drill",
+          "slug": "natal",
+          "expected": [
+            5,
+            35
+          ],
+          "actual": 60
+        },
+        {
+          "id": "beard-trimmer",
+          "slug": "domestica",
+          "expected": [
+            10,
+            45
+          ],
+          "actual": 60
+        },
+        {
+          "id": "beard-trimmer",
+          "slug": "masculino",
+          "expected": [
+            90,
+            100
+          ],
+          "actual": 85
+        },
+        {
+          "id": "car-phone-holder",
+          "slug": "natal",
+          "expected": [
+            5,
+            35
+          ],
+          "actual": 0
+        },
+        {
+          "id": "bluetooth-headphones",
+          "slug": "domestica",
+          "expected": [
+            20,
+            55
+          ],
+          "actual": 75
+        },
+        {
+          "id": "bluetooth-headphones",
+          "slug": "natal",
+          "expected": [
+            10,
+            50
+          ],
+          "actual": 80
+        },
+        {
+          "id": "bluetooth-headphones",
+          "slug": "pet",
+          "expected": [
+            0,
+            10
+          ],
+          "actual": 50
+        },
+        {
+          "id": "christmas-wreath",
+          "slug": "masculino",
+          "expected": [
+            0,
+            25
+          ],
+          "actual": 50
+        },
+        {
+          "id": "generic-phone",
+          "slug": "domestica",
+          "expected": [
+            15,
+            50
+          ],
+          "actual": 75
+        },
+        {
+          "id": "generic-phone",
+          "slug": "masculino",
+          "expected": [
+            55,
+            80
+          ],
+          "actual": 100
+        },
+        {
+          "id": "generic-phone",
+          "slug": "natal",
+          "expected": [
+            0,
+            35
+          ],
+          "actual": 75
+        },
+        {
+          "id": "generic-phone",
+          "slug": "pesca",
+          "expected": [
+            0,
+            10
+          ],
+          "actual": 50
+        },
+        {
+          "id": "generic-phone",
+          "slug": "pet",
+          "expected": [
+            0,
+            10
+          ],
+          "actual": 60
+        }
+      ]
+    }
+  ],
+  "runDate": "2026-10-15",
+  "note": "Initial calibration on 24 manually labelled synthetic products (120 product/niche scores); this is a small development benchmark, not measured sales performance. Binary metrics exclude 10 ambiguous labels. Costs are reported by OpenRouter for these requests, not a future price guarantee.",
+  "refinedPrompt": {
+    "mode": "live",
+    "fixtureVersion": 1,
+    "date": "2026-12-10",
+    "results": [
+      {
+        "model": "openai/gpt-4.1-mini",
+        "cases": 24,
+        "rangeAccuracy": 0.8333,
+        "confusion": {
+          "truePositive": 21,
+          "trueNegative": 88,
+          "falsePositive": 1,
+          "falseNegative": 0,
+          "ambiguous": 10
+        },
+        "elapsedMs": 25041,
+        "usage": {
+          "inputTokens": 32075,
+          "outputTokens": 6423,
+          "estimatedCostUsd": 0.023107
+        },
+        "misses": [
+          {
+            "id": "air-fryer",
+            "slug": "masculino",
+            "expected": [
+              20,
+              55
+            ],
+            "actual": 70
+          },
+          {
+            "id": "impact-drill",
+            "slug": "domestica",
+            "expected": [
+              45,
+              75
+            ],
+            "actual": 10
+          },
+          {
+            "id": "generic-phone",
+            "slug": "domestica",
+            "expected": [
+              15,
+              50
+            ],
+            "actual": 10
+          },
+          {
+            "id": "christmas-pet-outfit",
+            "slug": "domestica",
+            "expected": [
+              20,
+              55
+            ],
+            "actual": 10
+          },
+          {
+            "id": "smart-pet-feeder",
+            "slug": "domestica",
+            "expected": [
+              55,
+              80
+            ],
+            "actual": 10
+          },
+          {
+            "id": "cat-litter",
+            "slug": "domestica",
+            "expected": [
+              20,
+              55
+            ],
+            "actual": 0
+          },
+          {
+            "id": "cat-litter",
+            "slug": "pet",
+            "expected": [
+              95,
+              100
+            ],
+            "actual": 90
+          },
+          {
+            "id": "veterinary-medicine",
+            "slug": "natal",
+            "expected": [
+              0,
+              10
+            ],
+            "actual": 15
+          },
+          {
+            "id": "veterinary-medicine",
+            "slug": "pet",
+            "expected": [
+              15,
+              45
+            ],
+            "actual": 0
+          },
+          {
+            "id": "pet-carrier",
+            "slug": "domestica",
+            "expected": [
+              25,
+              55
+            ],
+            "actual": 20
+          },
+          {
+            "id": "pet-carrier",
+            "slug": "natal",
+            "expected": [
+              0,
+              25
+            ],
+            "actual": 30
+          },
+          {
+            "id": "fishing-reel",
+            "slug": "masculino",
+            "expected": [
+              35,
+              70
+            ],
+            "actual": 85
+          },
+          {
+            "id": "fishing-lure",
+            "slug": "natal",
+            "expected": [
+              0,
+              20
+            ],
+            "actual": 25
+          },
+          {
+            "id": "fishing-pliers",
+            "slug": "domestica",
+            "expected": [
+              5,
+              30
+            ],
+            "actual": 0
+          },
+          {
+            "id": "fishing-pliers",
+            "slug": "masculino",
+            "expected": [
+              40,
+              75
+            ],
+            "actual": 85
+          },
+          {
+            "id": "generic-camping-chair",
+            "slug": "masculino",
+            "expected": [
+              25,
+              60
+            ],
+            "actual": 65
+          },
+          {
+            "id": "aquarium-decoration",
+            "slug": "pet",
+            "expected": [
+              20,
+              55
+            ],
+            "actual": 0
+          },
+          {
+            "id": "tool-organizer",
+            "slug": "natal",
+            "expected": [
+              0,
+              25
+            ],
+            "actual": 30
+          },
+          {
+            "id": "tool-organizer",
+            "slug": "pesca",
+            "expected": [
+              15,
+              45
+            ],
+            "actual": 0
+          },
+          {
+            "id": "fish-shaped-dog-toy",
+            "slug": "domestica",
+            "expected": [
+              10,
+              40
+            ],
+            "actual": 5
+          }
+        ]
+      }
+    ]
+  },
+  "heldout": {
+    "mode": "live",
+    "fixtureVersion": 1,
+    "date": "2026-12-10",
+    "results": [
+      {
+        "model": "openai/gpt-4.1-mini",
+        "cases": 8,
+        "rangeAccuracy": 0.85,
+        "confusion": {
+          "truePositive": 7,
+          "trueNegative": 27,
+          "falsePositive": 2,
+          "falseNegative": 0,
+          "ambiguous": 4
+        },
+        "elapsedMs": 38994,
+        "usage": {
+          "inputTokens": 10693,
+          "outputTokens": 2240,
+          "estimatedCostUsd": 0.007861
+        },
+        "misses": [
+          {
+            "id": "window-cleaner",
+            "slug": "domestica",
+            "expected": [
+              85,
+              100
+            ],
+            "actual": 80
+          },
+          {
+            "id": "window-cleaner",
+            "slug": "masculino",
+            "expected": [
+              15,
+              50
+            ],
+            "actual": 60
+          },
+          {
+            "id": "nail-care-device",
+            "slug": "masculino",
+            "expected": [
+              0,
+              35
+            ],
+            "actual": 40
+          },
+          {
+            "id": "dog-car-seat",
+            "slug": "domestica",
+            "expected": [
+              10,
+              40
+            ],
+            "actual": 0
+          },
+          {
+            "id": "dog-car-seat",
+            "slug": "masculino",
+            "expected": [
+              20,
+              55
+            ],
+            "actual": 70
+          },
+          {
+            "id": "cat-themed-mug",
+            "slug": "domestica",
+            "expected": [
+              35,
+              65
+            ],
+            "actual": 80
+          }
+        ]
+      }
+    ]
+  }
+}

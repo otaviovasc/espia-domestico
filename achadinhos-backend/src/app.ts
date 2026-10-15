@@ -19,6 +19,8 @@ import { classificationProfileRoutes } from '@/routes/classificationProfileRoute
 import { productGroupRoutes } from '@/routes/productGroupRoutes'
 import { adProjectRoutes } from '@/routes/adProjectRoutes'
 import { webhookRoutes } from '@/routes/webhookRoutes'
+import { smartCampaignRoutes } from '@/routes/smartCampaignRoutes'
+import { authenticate } from '@/middleware/auth'
 
 export function createApp(): Application {
   const app = express()
@@ -39,13 +41,7 @@ export function createApp(): Application {
       credentials: true,
     }),
   )
-  // Full marketplace exports include card HTML. Only ingestion accepts that
-  // larger payload; all other API bodies retain the existing 2 MB limit.
-  app.use(`${env.API_PREFIX}/campaigns/import-offers`, express.json({ limit: '32mb' }))
-  app.use(express.json({ limit: '2mb' }))
-  app.use(express.urlencoded({ extended: true }))
   app.use(cookieParser())
-  app.use(hpp())
 
   // Global, generous rate limit (login has its own tighter limiter).
   app.use(
@@ -57,6 +53,31 @@ export function createApp(): Application {
     }),
   )
 
+  // Reject unauthenticated large imports before allocating/parsing their body.
+  // The global IP limit also runs before every body parser.
+  const importLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (request) => `import:${request.user!.userId}`,
+  })
+  app.post(
+    `${env.API_PREFIX}/campaigns/import-offers`,
+    authenticate,
+    importLimiter,
+    express.json({ limit: '32mb' }),
+  )
+  app.post(
+    `${env.API_PREFIX}/smart-campaigns/plans`,
+    authenticate,
+    importLimiter,
+    express.json({ limit: '32mb' }),
+  )
+  app.use(express.json({ limit: '2mb' }))
+  app.use(express.urlencoded({ extended: true }))
+  app.use(hpp())
+
   const prefix = env.API_PREFIX
   app.use(`${prefix}/health`, healthRoutes)
   app.use(`${prefix}/auth`, authRoutes)
@@ -67,6 +88,7 @@ export function createApp(): Application {
   app.use(`${prefix}/saved-products`, savedProductRoutes)
   app.use(`${prefix}/classification-profiles`, classificationProfileRoutes)
   app.use(`${prefix}/product-groups`, productGroupRoutes)
+  app.use(`${prefix}/smart-campaigns`, smartCampaignRoutes)
   app.use(`${prefix}/ad-projects`, adProjectRoutes)
 
   app.use(notFoundHandler)

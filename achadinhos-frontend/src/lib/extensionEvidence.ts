@@ -7,8 +7,8 @@ export interface ExtensionEvidence {
   productUrl?: string
   extractedAt?: string
   commission?: { percent: number | null; priceBrl: number | null; estimatedBrl: number | null; basis: 'visible_current_price_times_displayed_percent'; guaranteed: false }
-  searchMatch?: { keywords?: string[]; matchMode?: 'any' | 'all'; commission?: ExtensionCommissionFilters | null }
-  selection?: { method?: string; evidenceStatus?: string; addedAt?: string; sourceUrl?: string | null; keyword?: string; keywords?: string[]; matchMode?: 'any' | 'all'; commission?: ExtensionCommissionFilters | null }
+  searchMatch?: { keywords?: string[]; matchMode?: 'any' | 'all'; matchStyle?: 'word' | 'substring'; commission?: ExtensionCommissionFilters | null }
+  selection?: { method?: string; evidenceStatus?: string; addedAt?: string; sourceUrl?: string | null; keyword?: string; keywords?: string[]; matchMode?: 'any' | 'all'; matchStyle?: 'word' | 'substring'; commission?: ExtensionCommissionFilters | null }
   reviewVideos?: {
     source: 'mercado_livre_product_page'
     requested?: number

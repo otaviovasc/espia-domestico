@@ -149,7 +149,7 @@ test('saved product API persists selected categories and isolates users', async 
     assert.equal(first.body.data.created, 1)
     assert.equal(first.body.data.saved[0].offer.category, 'A')
     assert.equal(first.body.data.saved[0].classifications.default.category, 'A')
-    assert.equal(first.body.data.saved[0].classifications.default.profileName, 'Doméstico')
+    assert.equal(first.body.data.saved[0].classifications.default.profileName, 'Doméstica')
     assert.equal(first.body.data.saved[0].groupIds.length, 0)
     const id = first.body.data.saved[0].id
 

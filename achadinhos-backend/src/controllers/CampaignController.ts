@@ -58,6 +58,7 @@ const ImportSchema = z
     parseOnly: z.boolean().default(false),
     partialResults: z.boolean().default(false),
     template: z.string().max(4000).optional(),
+    requestId: z.string().uuid().optional(),
   })
   .superRefine((value, context) => {
     if ((value.json === undefined) === (value.payloads === undefined)) {
@@ -204,6 +205,8 @@ export class CampaignController {
     try {
       categorized = await this.offerCategorizationService.categorize(result.offers, profile, {
         partialResults: parsed.data.partialResults,
+        userId,
+        operationId: parsed.data.requestId,
       })
     } catch (error) {
       if (error instanceof AppError) throw error

@@ -72,7 +72,8 @@ test('classification profile CRUD is user-scoped and keeps the built-in default 
     assert.equal(initial.status, 200)
     assert.equal(initial.body.data.length, 1)
     assert.equal(initial.body.data[0].id, 'default')
-    assert.equal(initial.body.data[0].name, 'Doméstico')
+    assert.equal(initial.body.data[0].name, 'Doméstica')
+    assert.match(initial.body.data[0].nicheDescription, /beleza/)
     assert.equal(initial.body.data[0].builtIn, true)
 
     const invalid = await request(0, '', {

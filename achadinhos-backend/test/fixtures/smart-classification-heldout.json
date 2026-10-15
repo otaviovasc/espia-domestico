@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "purpose": "heldout",
+  "date": "2026-12-10",
+  "scoreThreshold": 60,
+  "audiences": ["domestica", "masculino", "natal", "pesca", "pet"],
+  "cases": [
+    {
+      "id": "window-cleaner",
+      "title": "Robô limpa vidro com controle remoto",
+      "description": "Eletrodoméstico para limpeza de janelas residenciais.",
+      "expected": {
+        "domestica": [85, 100],
+        "masculino": [15, 50],
+        "natal": [0, 35],
+        "pesca": [0, 10],
+        "pet": [0, 10]
+      }
+    },
+    {
+      "id": "nail-care-device",
+      "title": "Lixa elétrica para unhas com acessórios",
+      "description": "Aparelho de manicure e autocuidado pessoal.",
+      "expected": {
+        "domestica": [75, 100],
+        "masculino": [0, 35],
+        "natal": [0, 35],
+        "pesca": [0, 10],
+        "pet": [0, 10]
+      }
+    },
+    {
+      "id": "fish-finder",
+      "title": "Sonar localizador de peixes portátil",
+      "description": "Equipamento eletrônico específico para pesca embarcada.",
+      "expected": {
+        "domestica": [0, 15],
+        "masculino": [35, 70],
+        "natal": [0, 30],
+        "pesca": [90, 100],
+        "pet": [0, 10]
+      }
+    },
+    {
+      "id": "dog-car-seat",
+      "title": "Assento automotivo de segurança para cachorro",
+      "description": "Cadeirinha com cinto para transporte de cães no carro.",
+      "expected": {
+        "domestica": [10, 40],
+        "masculino": [20, 55],
+        "natal": [0, 30],
+        "pesca": [0, 10],
+        "pet": [90, 100]
+      }
+    },
+    {
+      "id": "christmas-table-runner",
+      "title": "Caminho de mesa natalino bordado",
+      "description": "Decoração têxtil para mesa de Natal.",
+      "expected": {
+        "domestica": [65, 90],
+        "masculino": [0, 20],
+        "natal": [90, 100],
+        "pesca": [0, 10],
+        "pet": [0, 10]
+      }
+    },
+    {
+      "id": "generic-powerbank",
+      "title": "Carregador portátil power bank 20000 mAh",
+      "description": "Bateria externa unissex, sem contexto de presente.",
+      "expected": {
+        "domestica": [10, 45],
+        "masculino": [55, 80],
+        "natal": [0, 35],
+        "pesca": [0, 15],
+        "pet": [0, 10]
+      }
+    },
+    {
+      "id": "cat-themed-mug",
+      "title": "Caneca decorada com desenho de gato",
+      "description": "Caneca de cerâmica para pessoas; não é produto para animais.",
+      "expected": {
+        "domestica": [35, 65],
+        "masculino": [0, 30],
+        "natal": [0, 35],
+        "pesca": [0, 10],
+        "pet": [0, 30]
+      }
+    },
+    {
+      "id": "gift-wrapping",
+      "title": "Kit de embalagem natalina com laços e etiquetas",
+      "description": "Materiais explicitamente destinados a embrulhar presentes de Natal.",
+      "expected": {
+        "domestica": [30, 60],
+        "masculino": [0, 25],
+        "natal": [95, 100],
+        "pesca": [0, 10],
+        "pet": [0, 10]
+      }
+    }
+  ]
+}

@@ -42,7 +42,7 @@ interface MlPayload {
   schemaVersion?: number
   sourceUrl?: string
   extractedAt?: string
-  search?: { commission?: unknown }
+  search?: { commission?: unknown; keywords?: unknown; matchMode?: unknown; matchStyle?: unknown }
   cards?: MlCard[]
 }
 
@@ -157,7 +157,12 @@ export class MercadoLivreIngestor implements SourceIngestor {
         productUrl: card.productUrl ?? undefined,
         extractedAt: payload.extractedAt,
         commission: card.commission ?? undefined,
-        searchMatch: card.searchMatch ?? (payload.search?.commission ? { commission: payload.search.commission } : undefined),
+        searchMatch: card.searchMatch ?? (payload.search ? {
+          commission: payload.search.commission,
+          keywords: payload.search.keywords,
+          matchMode: payload.search.matchMode,
+          matchStyle: payload.search.matchStyle,
+        } : undefined),
         selection: card.selection ?? undefined,
         reviewVideos: card.reviewVideos ?? undefined,
       }

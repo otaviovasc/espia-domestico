@@ -11,11 +11,25 @@ import { AdProject } from './AdProject'
 import { AdAsset } from './AdAsset'
 import { AdRenderJob } from './AdRenderJob'
 import { GroupMessage } from './GroupMessage'
+import { SmartAudience } from './SmartAudience'
+import { SmartPlan } from './SmartPlan'
+import { SmartSend } from './SmartSend'
+import { SmartAIRequest } from './SmartAIRequest'
 
 /**
  * Register model associations. Call once at boot before serving requests.
  */
 export function registerAssociations(): void {
+  User.hasMany(SmartAudience, { foreignKey: 'userId', as: 'smartAudiences' })
+  SmartAudience.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+  User.hasMany(SmartPlan, { foreignKey: 'userId', as: 'smartPlans' })
+  SmartPlan.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+  SmartPlan.hasMany(SmartSend, { foreignKey: 'planId', as: 'sends' })
+  SmartSend.belongsTo(SmartPlan, { foreignKey: 'planId', as: 'plan' })
+  User.hasMany(SmartSend, { foreignKey: 'userId', as: 'smartSends' })
+  SmartSend.belongsTo(User, { foreignKey: 'userId', as: 'user' })
+  User.hasMany(SmartAIRequest, { foreignKey: 'userId', as: 'smartAIRequests' })
+  SmartAIRequest.belongsTo(User, { foreignKey: 'userId', as: 'user' })
   User.hasOne(Connection, { foreignKey: 'userId', as: 'connection' })
   Connection.belongsTo(User, { foreignKey: 'userId', as: 'user' })
 
@@ -70,4 +84,8 @@ export {
   AdAsset,
   AdRenderJob,
   GroupMessage,
+  SmartAudience,
+  SmartPlan,
+  SmartSend,
+  SmartAIRequest,
 }

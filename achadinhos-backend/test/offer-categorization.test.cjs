@@ -53,7 +53,7 @@ test('discount and commission use the source values and reject an uncommissioned
   )
 })
 
-test('categorization preserves input order under concurrent Jev responses', async () => {
+test('categorization preserves input order under concurrent AI responses', async () => {
   const input = [offer('panela'), offer('protetor solar'), offer('climatizador')]
   const scores = { panela: 100, 'protetor solar': 1, climatizador: 90 }
   const result = await categorizeOffers(input, async (item) => {
@@ -333,7 +333,7 @@ const sportsProfile = {
   builtIn: false,
 }
 
-test('a custom niche changes both the Jev prompt and deterministic category math', () => {
+test('a custom niche changes both the AI prompt and deterministic category math', () => {
   const question = buildRelevanceQuestion(sportsProfile)
   assert.match(question.instructions, /Corredores de rua/)
   assert.match(question.instructions, /Tênis, hidratação/)

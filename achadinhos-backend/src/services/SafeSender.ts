@@ -2,6 +2,7 @@ import { UazapiClient, UazapiInstanceCredentials } from '@/channels/uazapi/Uazap
 import { CampaignOffer, CampaignGroup, CampaignSafety } from '@/database/models/Campaign'
 import { renderOfferMessage } from '@/utils/messageTemplate'
 import { logger } from '@/utils/logger'
+import { resolveUsablePublicImage } from '@/utils/publicImage'
 
 export interface SendTask {
   group: CampaignGroup
@@ -194,31 +195,7 @@ export class SafeSender {
    * return null so the caller sends text instead.
    */
   private async resolveUsableImageUrl(imageUrl?: string): Promise<string | null> {
-    if (!imageUrl) return null
-    if (imageUrl.startsWith('data:image/')) return imageUrl
-
-    let url: URL
-    try {
-      url = new URL(imageUrl)
-    } catch {
-      return null
-    }
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
-
-    try {
-      const { default: axios } = await import('axios')
-      const head = await axios.head(imageUrl, {
-        timeout: 6000,
-        maxRedirects: 3,
-        validateStatus: (s) => s < 400,
-      })
-      const contentType = String(head.headers['content-type'] ?? '').toLowerCase()
-      if (contentType.startsWith('image/')) return imageUrl
-      return null
-    } catch {
-      // Not reachable / not an image → fall back to text.
-      return null
-    }
+    return resolveUsablePublicImage(imageUrl)
   }
 
   /**

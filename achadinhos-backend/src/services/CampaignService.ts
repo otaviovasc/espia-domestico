@@ -19,7 +19,8 @@ import { ConnectionService, ConnectedContext } from '@/services/ConnectionServic
 import { GroupService } from '@/services/GroupService'
 import { SafeSender, SendResult, SendTask, buildTasks, computeStallMs } from '@/services/SafeSender'
 import { CreateCampaignInput } from '@/dtos/campaign'
-import { BadRequestError, NotFoundError } from '@/middleware/Error/AppError'
+import { AppError, BadRequestError, NotFoundError } from '@/middleware/Error/AppError'
+import { assertLegacySmartPolicy, destinationLockKey } from '@/services/SmartLegacyPolicy'
 import { logger } from '@/utils/logger'
 import {
   offerIdentity,
@@ -1067,7 +1068,8 @@ export class CampaignService {
     } catch (error) {
       await this.refreshCampaignCounters(campaign.id)
       await Campaign.update(
-        { status: CAMPAIGN_STATUS_ENUM.FAILED },
+        { status: error instanceof AppError && error.code === 'SMART_POLICY_BLOCKED'
+          ? CAMPAIGN_STATUS_ENUM.PAUSED : CAMPAIGN_STATUS_ENUM.FAILED },
         { where: { id: campaign.id, status: CAMPAIGN_STATUS_ENUM.RUNNING } },
       )
       throw error
@@ -1109,55 +1111,47 @@ export class CampaignService {
   ): Promise<ProductGroupDelivery | null> {
     const identity = offerIdentity(offer)
     try {
-      return await ProductGroupDelivery.create({
-        userId,
-        connectionScope,
-        offerIdentity: identity,
-        offerSource: offer.source?.trim().toLowerCase() || null,
-        offerProductId: offer.productId?.trim() || null,
-        offerUrl: offer.affiliateUrl.trim(),
-        offerTitle: offer.title,
-        groupId: group.id,
-        groupName: group.name,
-        campaignId,
-        status: PRODUCT_GROUP_DELIVERY_STATUS.SENDING,
-        claimToken: randomUUID(),
-        heartbeatAt: new Date(),
+      return await sequelize.transaction(async (transaction) => {
+        // Serialize all send paths for this account/destination before checking
+        // daily policy and acquiring the product claim.
+        for (const key of [
+          `delivery-account:${userId}:${connectionScope}`,
+          destinationLockKey(userId, connectionScope, group.id),
+        ]) {
+          await sequelize.query('SELECT pg_advisory_xact_lock(hashtext(:key))', {
+            replacements: { key }, transaction,
+          })
+        }
+        await assertLegacySmartPolicy(userId, connectionScope, group.id, transaction)
+        const existing = await ProductGroupDelivery.findAll({
+          where: {
+            userId, connectionScope, groupId: group.id,
+            offerIdentity: { [Op.in]: offerIdentityAliases(offer) },
+          }, transaction, lock: transaction.LOCK.UPDATE,
+        })
+        if (existing.some((entry) => entry.status === PRODUCT_GROUP_DELIVERY_STATUS.SENDING)) return null
+        if (existing.length && !allowResend) return null
+        const values = {
+          userId, connectionScope, offerIdentity: identity,
+          offerSource: offer.source?.trim().toLowerCase() || null,
+          offerProductId: offer.productId?.trim() || null,
+          offerUrl: offer.affiliateUrl.trim(), offerTitle: offer.title,
+          groupId: group.id, groupName: group.name, campaignId,
+          status: PRODUCT_GROUP_DELIVERY_STATUS.SENDING,
+          claimToken: randomUUID(), heartbeatAt: new Date(), messageId: null, sentAt: null,
+        }
+        if (existing.length) {
+          // Preserve the existing key for legacy aliases while taking a new
+          // fenced generation. Never steal an in-flight row.
+          const entry = existing.find((row) => row.offerIdentity === identity) ?? existing[0]
+          await entry.update({ ...values, offerIdentity: entry.offerIdentity }, { transaction })
+          return entry
+        }
+        return ProductGroupDelivery.create(values, { transaction })
       })
     } catch (error) {
-      if (!(error instanceof UniqueConstraintError)) throw error
-      // Resend mode: take over a SENT row for this pair (last delivery wins;
-      // the audit trail stays in campaign_logs). A SENDING row is never
-      // stolen — it belongs to a possibly live run.
-      if (!allowResend) return null
-      const identities = offerIdentityAliases(offer)
-      const [stolen] = await ProductGroupDelivery.update(
-        {
-          campaignId,
-          groupName: group.name,
-          offerUrl: offer.affiliateUrl.trim(),
-          offerTitle: offer.title,
-          status: PRODUCT_GROUP_DELIVERY_STATUS.SENDING,
-          claimToken: randomUUID(),
-          heartbeatAt: new Date(),
-          messageId: null,
-          sentAt: null,
-        },
-        {
-          where: {
-            userId,
-            connectionScope,
-            offerIdentity: { [Op.in]: identities },
-            groupId: group.id,
-            status: PRODUCT_GROUP_DELIVERY_STATUS.SENT,
-          },
-        },
-      )
-      if (stolen !== 1) return null
-      const claim = await ProductGroupDelivery.findOne({
-        where: { userId, connectionScope, offerIdentity: { [Op.in]: identities }, groupId: group.id },
-      })
-      return claim
+      if (error instanceof UniqueConstraintError) return null
+      throw error
     }
   }
 

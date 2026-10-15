@@ -56,7 +56,8 @@ criado automaticamente. Alternativamente, o **primeiro** cadastro via
 - `UAZAPI_ADMIN_TOKEN` — token de administração do servidor UAZAPI (fica **só no backend**).
 - `UAZAPI_BASE_URL` — ex.: `https://free.uazapi.com` ou seu servidor dedicado.
 - `API_BASE_URL` — (opcional) URL pública deste backend para registrar webhooks.
-- `OPENROUTER_KEY` — chave do OpenRouter usada pelo Jev para avaliar a relação de cada produto com o tema doméstico. Necessária para importar produtos.
+- `AI_ENABLED` — habilita chamadas pagas explicitamente; padrão `false`. Configure os limites `AI_*` do `env.example` na API e no worker.
+- `OPENROUTER_KEY` — chave do OpenRouter usada pelo classificador para avaliar a afinidade de produtos com cada nicho. Necessária para importar produtos.
 
 Sem o admin token, tudo funciona exceto conectar um número (a UI mostra um
 aviso claro).
@@ -171,16 +172,17 @@ Também há um caminho genérico (array plano com apelidos de campos) para impor
 manuais. Na página de produtos, a origem é detectada automaticamente.
 
 Antes de importar, selecione o perfil de classificação. O perfil padrão é
-**Doméstico**; cada usuário pode criar, duplicar, editar e remover perfis para
+**Doméstica**; cada usuário pode criar, duplicar, editar e remover perfis para
 outros nichos. Um perfil define o público, as instruções de relevância, os pesos
 de afinidade/desconto/comissão, os tetos comerciais e os limites de A/B/C/D.
-Ao importar, o backend envia apenas título e descrição do produto ao Jev
-(`typesafe/jev-1.13`) pela API de avaliações do OpenRouter, junto com os critérios
-do perfil escolhido. O código combina a nota de relevância
+Ao importar, o backend envia título e descrição ao OpenRouter, junto com os
+critérios do perfil. O padrão `deepseek/deepseek-v4.1-flash` retorna uma nota estruturada
+de afinidade de 0 a 100; `CLASSIFICATION_MODEL` permite trocar o modelo.
+Doméstica inclui casa, beleza, autocuidado e acessórios femininos. O código combina a nota de relevância
 com o desconto e a comissão informados no JSON, atribui A, B, C ou D a cada
 produto e mostra as categorias na revisão. A indica alta relevância e boas
 condições comerciais; D indica baixa prioridade. Produtos sem desconto ou taxa
-de comissão informados recebem zero nesses critérios. Se o Jev estiver
+de comissão informados recebem zero nesses critérios. Se o provedor estiver
 indisponível, os itens afetados aparecem como falhas recuperáveis;
 nenhuma categoria é inventada. Os resultados concluídos continuam disponíveis.
 O catálogo mantém uma classificação separada
@@ -206,7 +208,7 @@ mesmo link, entram uma vez na classificação; a primeira ocorrência é preserv
 A revisão informa duplicados, itens inválidos e os resultados de cada arquivo.
 Nomes e posições originais acompanham resultados e retries nesta sessão.
 A classificação usa lotes de quatro. O backend mantém no
-máximo quatro avaliações Jev simultâneas por processo e não repete chamadas
+máximo quatro avaliações de IA simultâneas por processo e não repete chamadas
 pagas automaticamente. A interface mostra concluídos, falhas, itens ignorados
 e pendentes, permite parar após o lote atual e continuar apenas os pendentes.
 O botão de retry avalia somente falhas recuperáveis. O perfil escolhido fica
@@ -221,7 +223,7 @@ produtos foram carregados e permite carregar os demais; a campanha lê todas as
 páginas do catálogo. A prévia da campanha mostra quatro exemplos.
 
 O endpoint de importação aceita `parseOnly: true` para validar e normalizar até
-5.000 itens sem Jev. Para vários arquivos, envie
+5.000 itens sem IA. Para vários arquivos, envie
 `payloads: [{ "name": "arquivo.json", "json": <conteúdo JSON>, "source": "mercadolivre" }]`.
 O campo `source` é opcional e pertence a cada payload; `json` e `payloads` são
 alternativas exclusivas. A resposta inclui `files`, `provenance`, `duplicates`
@@ -254,7 +256,7 @@ Após compilar o backend, execute `node scripts/validate-bulk-import.cjs` na rai
 O script exige PostgreSQL local, cria um banco temporário, aplica as migrações,
 valida 5.000 itens sem avaliações, testa classificação parcial e retries com um
 avaliador simulado, salva os resultados e verifica catálogo, prévia e histórico.
-O banco é removido ao terminar. `--live` acrescenta duas avaliações Jev pagas com
+O banco é removido ao terminar. `--live` acrescenta duas avaliações de IA pagas com
 a chave local de OpenRouter. `--serve` mantém a API na porta 3100 e o banco
 isolado para QA de navegador, usando o avaliador simulado após o smoke pago.
 Interrompa com Ctrl+C para remover o banco. O relatório de validação fica em
@@ -299,6 +301,29 @@ em 50%) e comissão (15%, com teto em 20%). A exige relevância de pelo menos
 75/100, desconto de 15% e comissão de 10%, além de nota final de 75. B exige
 relevância de pelo menos 50/100 e nota final de 55. C exige nota final de 35. Relevância abaixo
 de 25/100 sempre resulta em D.
+
+## Campanhas inteligentes
+
+Acesse `/painel/smart-campaigns` para configurar DOMESTICA, MASCULINO, NATAL,
+PESCA e PET. Vincule os públicos aos grupos reais da sua conexão, gere palavras
+curtas para a extensão, importe um ou vários JSONs e revise as agendas antes de
+aprovar. Os três novos nichos começam inativos até serem configurados.
+
+Os presets usam correspondência por palavra inteira: `pet` não encontra
+“tapete” e `ração` não encontra “decoração”. Recarregue a extensão atualizada;
+a busca manual mantém a opção de correspondência por trecho. A extensão filtra
+os cards descobertos no hub, sem executar pesquisas globais no Mercado Livre.
+
+A fila persiste cada envio, começa às 09h, encerra até 21h e limita a 50 mensagens
+por grupo/dia, com intervalos de 12–16 minutos. Evidências comerciais vencem em
+até 24 horas; ofertas futuras precisam continuar válidas. Produtos de afinidade
+abaixo de 70 não entram automaticamente; no máximo dois nichos recebem o mesmo
+produto, com critérios mais fortes para a segunda rota. Poucos destaques recebem
+texto especial; preço e link são sempre renderizados dos dados da oferta.
+
+Antes de usar, aplique **todas** as migrações e configure `OPENROUTER_KEY` tanto
+na API quanto no worker. A configuração, os limites, o benchmark real dos modelos
+e o procedimento de ativação estão em [docs/smart-campaigns.md](docs/smart-campaigns.md).
 
 ## Personalização da mensagem (templates)
 
@@ -365,7 +390,7 @@ Bateria de 30h, cancelamento de ruído
 | POST | `/api/v1/connection/connect` | Provisiona + inicia QR/pareamento |
 | POST | `/api/v1/connection/disconnect` | Desconecta |
 | GET | `/api/v1/groups?search=` | Lista grupos do número conectado |
-| POST | `/api/v1/campaigns/import-offers` | Classifica um lote JSON com Jev e o perfil selecionado |
+| POST | `/api/v1/campaigns/import-offers` | Classifica um lote JSON com IA e o perfil selecionado |
 | GET/POST/PUT/DELETE | `/api/v1/classification-profiles` | Gerencia perfis de nicho do usuário |
 | POST | `/api/v1/saved-products` | Salva ou atualiza produtos classificados do usuário |
 | GET | `/api/v1/saved-products?limit=100&offset=0&groupId=` | Lista o catálogo pessoal e suas classificações por nicho |

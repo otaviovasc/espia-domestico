@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, NavLink, useNavigate } from 'react-router-dom'
-import { Clapperboard, Send, History, LogOut, Smartphone, Tags, MessagesSquare } from 'lucide-react'
+import { BrainCircuit, Clapperboard, Send, History, LogOut, Smartphone, Tags, MessagesSquare } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
 import { Spinner } from '@/components/ui'
 import LoginPage from '@/pages/LoginPage'
@@ -12,6 +12,7 @@ import { lazy, Suspense, type ReactNode } from 'react'
 const AdLibraryPage = lazy(() => import('@/pages/AdLibraryPage'))
 const ProductCatalogPage = lazy(() => import('@/pages/ProductCatalogPage'))
 const GroupMessagesPage = lazy(() => import('@/pages/GroupMessagesPage'))
+const SmartCampaignsPage = lazy(() => import('@/pages/SmartCampaignsPage'))
 
 function Shell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
@@ -50,6 +51,9 @@ function Shell({ children }: { children: ReactNode }) {
           </NavLink>
           <NavLink to="/campaigns" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
             <History size={18} /> Campanhas
+          </NavLink>
+          <NavLink to="/smart-campaigns" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
+            <BrainCircuit size={18} /> Campanhas smart
           </NavLink>
           <NavLink to="/ads" className={({ isActive }) => `${navItem} ${isActive ? active : idle}`}>
             <Clapperboard size={18} /> Anúncios
@@ -104,6 +108,7 @@ export default function App() {
       <Route path="/products" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><ProductCatalogPage /></Suspense></Protected>} />
       <Route path="/campaigns" element={<Protected><CampaignsPage /></Protected>} />
       <Route path="/campaigns/:id" element={<Protected><CampaignDetailPage /></Protected>} />
+      <Route path="/smart-campaigns" element={<Protected><Suspense fallback={<div className="flex min-h-[50vh] items-center justify-center"><Spinner /></div>}><SmartCampaignsPage /></Suspense></Protected>} />
       <Route
         path="/ads"
         element={(

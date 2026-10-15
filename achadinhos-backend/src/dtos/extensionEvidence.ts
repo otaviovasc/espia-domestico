@@ -6,8 +6,10 @@ const filters = z.object({
   maxPercent: z.number().min(0).max(100).nullable().optional(),
   minEstimatedBrl: z.number().min(0).max(1000000).nullable().optional(),
 })
-const keywords = z.array(z.string().max(200)).max(20)
-const match = z.object({ keywords: keywords.optional(), matchMode: z.enum(['any', 'all']).optional(), commission: filters.nullable().optional() })
+// Native collections support 100 phrases; Smart Campaign packs intentionally
+// stay smaller, but existing exports must retain their complete provenance.
+const keywords = z.array(z.string().max(200)).max(100)
+const match = z.object({ keywords: keywords.optional(), matchMode: z.enum(['any', 'all']).optional(), matchStyle: z.enum(['word', 'substring']).optional(), commission: filters.nullable().optional() })
 
 /** Evidence only. Local filenames and source URLs never trigger a server-side fetch. */
 export const ExtensionEvidenceSchema = z.object({
@@ -26,7 +28,7 @@ export const ExtensionEvidenceSchema = z.object({
     sourceUrl: z.string().max(4096).nullable().optional(),
     addedAt: z.string().max(80).optional(),
     evidenceStatus: z.string().max(100).optional(),
-    keyword: z.string().max(4200).optional(),
+    keyword: z.string().max(21000).optional(),
   }).optional(),
   reviewVideos: z.object({
     source: z.literal('mercado_livre_product_page'),
