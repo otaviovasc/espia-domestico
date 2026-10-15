@@ -2,7 +2,9 @@
  * Sequelize CLI configuration (migrations).
  * Reads DATABASE_URL from the environment to avoid coupling to the app config.
  */
-require('dotenv').config({ override: true })
+// Railway/container variables take precedence over a stale packaged .env,
+// matching the application's environment loader in src/config/env.ts.
+require('dotenv').config()
 
 const DATABASE_URL = process.env.DATABASE_URL
 

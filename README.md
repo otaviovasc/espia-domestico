@@ -51,6 +51,14 @@ estiverem definidos e a tabela de usuários estiver vazia, um usuário **ADMIN**
 criado automaticamente. Alternativamente, o **primeiro** cadastro via
 `POST /auth/register` (quando não há nenhum usuário) vira ADMIN.
 
+A senha de bootstrap deve ter pelo menos 8 caracteres, inclusive quando o banco
+já contém usuários: a configuração é validada antes de consultar o banco.
+Depois da configuração inicial, remova as duas variáveis de bootstrap; elas não
+alteram a senha de usuários existentes. No Railway, ajuste as variáveis do serviço
+backend e faça um novo deploy. O arquivo local `.env` é ignorado pelo Git e suas
+alterações não atualizam automaticamente as variáveis do Railway. As variáveis
+injetadas pelo ambiente têm prioridade sobre `.env` na aplicação e nas migrações.
+
 ### Configuração UAZAPI
 
 - `UAZAPI_ADMIN_TOKEN` — token de administração do servidor UAZAPI (fica **só no backend**).
