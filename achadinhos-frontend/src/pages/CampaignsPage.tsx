@@ -5,9 +5,21 @@ import { ArrowRight, Plus, Search, Package, RefreshCw } from 'lucide-react'
 import { apiErrorMessage, campaignApi, type Campaign } from '@/lib/api'
 import { Button, Spinner } from '@/components/ui'
 import { CampaignStatus } from '@/components/CampaignStatus'
+import { smartCampaignApi, planStatusLabel, type SmartPlan } from '@/lib/smartCampaignApi'
+
+function smartPlanDate(plan: SmartPlan) {
+  const startTime = plan.settings?.global?.campaignStartTime
+  if (startTime && /^\d{2}:\d{2}$/.test(startTime)) return `${startTime} · ${new Date(`${plan.startDate}T12:00:00`).toLocaleDateString('pt-BR')}`
+  return new Date(`${plan.startDate}T12:00:00`).toLocaleDateString('pt-BR')
+}
+
+const smartAudienceNames: Record<string, string> = {
+  DOMESTICA: 'Casa e autocuidado', MASCULINO: 'Masculino', NATAL: 'Natal', PESCA: 'Pesca', PET: 'Pets',
+}
 
 export default function CampaignsPage() {
   const query = useQuery({ queryKey: ['campaigns'], queryFn: campaignApi.list })
+  const smartPlansQuery = useQuery({ queryKey: ['smart-plans'], queryFn: smartCampaignApi.plans, refetchInterval: 30_000 })
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('all')
   const campaigns = query.data?.items ?? []
@@ -22,7 +34,8 @@ export default function CampaignsPage() {
 
       {query.isLoading && <div role="status" className="surface-panel flex items-center gap-3 p-6 text-sm text-muted"><Spinner />Carregando campanhas…</div>}
       {query.isError && <div role="alert" className="mb-4 rounded-xl border border-danger/30 bg-danger-soft p-4 text-sm text-danger"><p className="font-semibold">Não foi possível carregar as campanhas.</p><p className="mt-1">{apiErrorMessage(query.error)}</p><Button variant="secondary" className="mt-3" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshCw size={16} />Tentar novamente</Button></div>}
-      {query.data && campaigns.length === 0 && <div className="surface-panel flex flex-col items-start gap-3 p-6"><Package className="text-muted" size={28} /><h2 className="section-heading">Sua primeira campanha começa com os produtos</h2><p className="max-w-lg text-sm text-muted">Selecione os produtos, revise a mensagem e escolha os grupos que receberão as ofertas.</p><Link to="/compose" className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-accent underline underline-offset-4">Criar campanha<ArrowRight size={16} /></Link></div>}
+      {smartPlansQuery.isError && <div role="alert" className="mb-4 rounded-xl border border-danger/30 bg-danger-soft p-4 text-sm text-danger"><p className="font-semibold">Não foi possível carregar os planos inteligentes.</p><p className="mt-1">{apiErrorMessage(smartPlansQuery.error)}</p><Button variant="secondary" className="mt-3" disabled={smartPlansQuery.isFetching} onClick={() => void smartPlansQuery.refetch()}><RefreshCw size={16} />Tentar novamente</Button></div>}
+      {query.data && campaigns.length === 0 && smartPlansQuery.data?.length === 0 && <div className="surface-panel flex flex-col items-start gap-3 p-6"><Package className="text-muted" size={28} /><h2 className="section-heading">Sua primeira campanha começa com os produtos</h2><p className="max-w-lg text-sm text-muted">Selecione os produtos, revise a mensagem e escolha os grupos que receberão as ofertas.</p><Link to="/compose" className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-accent underline underline-offset-4">Criar campanha<ArrowRight size={16} /></Link></div>}
       {campaigns.length > 0 && <>
         <div className="workspace-toolbar mb-4 grid items-end gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
           <div className="min-w-0 flex-1"><label htmlFor="campaign-search" className="field-label">Buscar campanha</label><div className="relative"><Search size={16} className="pointer-events-none absolute left-3 top-3 text-subtle" /><input id="campaign-search" className="field-control w-full pl-9" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Nome da campanha" /></div></div>
@@ -40,6 +53,14 @@ export default function CampaignsPage() {
           {filtered.length === 0 && <p className="p-6 text-sm text-muted">Nenhuma campanha corresponde à busca. Altere o nome ou a situação.</p>}
         </div>
       </>}
+      {smartPlansQuery.data && smartPlansQuery.data.length > 0 && <section className="mt-8" aria-labelledby="smart-campaigns-title">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-3"><div><h2 id="smart-campaigns-title" className="section-heading">Campanhas inteligentes</h2><p className="text-sm text-muted">Planos e horários de envio definidos por público.</p></div><Link className="text-sm font-semibold text-accent underline underline-offset-4" to="/smart-campaigns">Ver planos e envios</Link></div>
+        <div className="surface-panel overflow-hidden divide-y divide-line">
+          {smartPlansQuery.data.map((plan) => <Link key={plan.id} to={`/smart-campaigns?plan=${encodeURIComponent(plan.id)}`} className="group flex min-w-0 items-center justify-between gap-4 p-4 outline-offset-[-3px] transition-colors hover:bg-surface-muted focus-visible:outline-2 focus-visible:outline-accent">
+            <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-ink group-hover:text-accent">Plano de {smartPlanDate(plan)}</h3><span className="rounded bg-info-soft px-2 py-1 text-xs font-medium text-info">{planStatusLabel(plan.status)}</span></div><p className="mt-1 text-sm text-muted">{plan.items.filter((item) => item.state === 'SELECTED').length} produtos · {plan.audienceSlugs.map((slug) => smartAudienceNames[slug] ?? slug).join(', ')}</p></div><ArrowRight size={18} className="shrink-0 text-subtle group-hover:text-accent" aria-hidden="true" />
+          </Link>)}
+        </div>
+      </section>}
     </div>
   )
 }

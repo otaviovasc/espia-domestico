@@ -1,6 +1,7 @@
 import { buildSmartSearchPreset } from '@/lib/smartSearchPreset'
 import { useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 import {
   AlertCircle,
   BrainCircuit,
@@ -916,6 +917,7 @@ function PlanHistory({ plans, selectedId, onSelect }: { plans: SmartPlan[]; sele
 }
 
 export default function SmartCampaignsPage() {
+  const [searchParams] = useSearchParams()
   const [stage, setStage] = useState<Stage>('audiences')
   const stagesRef = useRef<HTMLElement>(null)
   useEffect(() => { stagesRef.current?.querySelector('[aria-current=step]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }, [stage])
@@ -923,6 +925,10 @@ export default function SmartCampaignsPage() {
   const [selectedAudiences, setSelectedAudiences] = useState<Set<SmartAudienceSlug>>(new Set())
   const [selectionInitialized, setSelectionInitialized] = useState(false)
   const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
+  useEffect(() => {
+    const planId = searchParams.get('plan')
+    if (planId) { setSelectedPlanId(planId); setStage('review') }
+  }, [searchParams])
   const [nextPlanId, setNextPlanId] = useState<string | null>(null)
   const [dirtyParts, setDirtyParts] = useState<Record<string, boolean>>({})
   const reportDirty = useCallback<DirtyChange>((key, dirty) => setDirtyParts((current) => current[key] === dirty ? current : { ...current, [key]: dirty }), [])
