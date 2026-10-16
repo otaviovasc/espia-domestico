@@ -48,7 +48,7 @@ export const SmartAudienceProfileSchema = z.object({
 export const SmartAudiencePolicySchema = z
   .object({
     dailyCap: z.number().int().min(1).max(50).default(50),
-    startTime: z.literal('09:00').default('09:00'),
+    startTime: TimeSchema.default('09:00'),
     endTime: TimeSchema.default('21:00'),
     minGapSeconds: z.number().int().min(720).max(960).default(720),
     maxGapSeconds: z.number().int().min(720).max(960).default(960),
@@ -94,7 +94,7 @@ export const UpdateSmartAudienceSchema = z
     policy: SmartAudiencePolicySchema.innerType().partial().optional(),
     description: z.string().trim().min(10).max(1000).optional(),
     dailyCap: z.number().int().min(1).max(50).optional(),
-    startTime: z.literal('09:00').optional(),
+    startTime: TimeSchema.optional(),
     endTime: TimeSchema.optional(),
     minIntervalMinutes: z.number().int().min(12).max(16).optional(),
     maxIntervalMinutes: z.number().int().min(12).max(16).optional(),
@@ -133,6 +133,7 @@ export const CreateSmartPlanSchema = z
       .max(50)
       .optional(),
     settings: SmartAudiencePolicySchema.innerType().partial().optional(),
+    campaignStartTime: TimeSchema.optional(),
   })
   .refine((value) => (value.rawJson === undefined) !== (value.payloads === undefined), {
     message: 'Informe rawJson ou payloads, exclusivamente',
@@ -165,6 +166,7 @@ export type SmartPlanItem = z.infer<typeof SmartPlanItemSchema>
 
 export const UpdateSmartPlanSchema = z.object({
   revision: z.number().int().positive(),
+  campaignStartTime: TimeSchema.optional(),
   items: z
     .array(
       z
@@ -172,15 +174,14 @@ export const UpdateSmartPlanSchema = z.object({
           id: z.string().min(1).max(160),
           state: SmartPlanItemStateSchema.optional(),
           date: IsoDateSchema.optional(),
-          scheduledAt: z.string().datetime().nullable().optional(),
           standout: z.boolean().optional(),
           customMessage: z.string().trim().max(800).nullable().optional(),
           pinned: z.boolean().optional(),
         })
         .strict(),
     )
-    .min(1)
-    .max(5000),
+    .max(5000)
+    .default([]),
 })
 
 export const SmartPlanActionSchema = z.object({ revision: z.number().int().positive() }).strict()

@@ -47,4 +47,4 @@ export const SmartAnalysisResponseSchema = SmartProductAnalysisSchema.omit({ ind
 export const SmartKeywordResponseSchema = z
   .object({ packs: z.array(KeywordPackSchema).min(1).max(5) })
   .strict()
-export const SmartStandoutCopySchema = z.object({ intro: z.string().trim().max(220) }).strict()
+export const SmartStandoutCopySchema = z.object({ intro: z.string().trim().max(80) }).strict()

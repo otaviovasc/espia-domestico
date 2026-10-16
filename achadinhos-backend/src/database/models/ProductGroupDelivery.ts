@@ -32,6 +32,7 @@ export class ProductGroupDelivery extends Model<
   declare groupId: string
   declare groupName: string
   declare campaignId: CreationOptional<number | null>
+  declare planUuid: CreationOptional<string | null>
   declare status: PRODUCT_GROUP_DELIVERY_STATUS
   declare claimToken: CreationOptional<string>
   declare heartbeatAt: CreationOptional<Date>
@@ -54,6 +55,7 @@ ProductGroupDelivery.init(
     groupId: { type: DataTypes.STRING, allowNull: false, field: 'group_id' },
     groupName: { type: DataTypes.STRING, allowNull: false, field: 'group_name' },
     campaignId: { type: DataTypes.INTEGER, allowNull: true, field: 'campaign_id' },
+    planUuid: { type: DataTypes.UUID, allowNull: true, field: 'plan_uuid' },
     status: {
       type: DataTypes.ENUM(...Object.values(PRODUCT_GROUP_DELIVERY_STATUS)),
       allowNull: false,

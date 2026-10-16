@@ -710,7 +710,10 @@ export class SmartCampaignService {
           }),
         ]),
       ),
-      global: { timezone: audiences[0]?.policy.timezone ?? DEFAULT_POLICY.timezone },
+      global: {
+        timezone: audiences[0]?.policy.timezone ?? DEFAULT_POLICY.timezone,
+        campaignStartTime: input.campaignStartTime ?? '09:00',
+      },
       audienceProfiles: audienceSnapshot(audiences),
     }
     const plan = await sequelize.transaction(async (transaction) => {
@@ -727,6 +730,7 @@ export class SmartCampaignService {
             offers: parsed.offers,
             offerAudienceSlugs,
             settings: input.settings ?? {},
+            campaignStartTime: input.campaignStartTime ?? '09:00',
           }),
         )
         .digest('hex')
@@ -1165,6 +1169,7 @@ export class SmartCampaignService {
     const settings = plan.settings as {
       audiences: Record<string, SmartAudiencePolicy>
       audienceProfiles?: NicheIntelligenceOverrides
+      global?: { campaignStartTime?: string }
     }
     const allowedRoutes = new Map<number, Set<string>>()
     offers.forEach((offer, index) => {
@@ -1194,7 +1199,10 @@ export class SmartCampaignService {
     })
     const globallySelected = new Set<string>()
     for (const audience of audiences) {
-      const policy = settings.audiences[audience.slug]
+      const policy = {
+        ...settings.audiences[audience.slug],
+        startTime: settings.global?.campaignStartTime ?? settings.audiences[audience.slug].startTime,
+      }
       const audienceCategoryCounts = new Map<string, number>()
       const candidates: SmartPlanItem[] = []
       offers.forEach((offer, index) => {
@@ -1436,6 +1444,19 @@ export class SmartCampaignService {
         throw ConflictError('Somente planos em revisão podem ser editados')
       if (plan.revision !== input.revision)
         throw ConflictError('O plano foi alterado; atualize a tela')
+      const settings = plan.settings as {
+        audiences: Record<string, SmartAudiencePolicy>
+        global?: { timezone?: string; campaignStartTime?: string }
+      }
+      if (input.campaignStartTime) {
+        const latestEnd = plan.audienceSlugs
+          .map((slug) => settings.audiences[slug]?.endTime ?? '21:00')
+          .sort()[0]
+        if (input.campaignStartTime < '09:00' || input.campaignStartTime >= latestEnd)
+          throw BadRequestError(`O início da campanha deve ficar entre 09:00 e ${latestEnd}.`)
+        settings.global = { ...settings.global, campaignStartTime: input.campaignStartTime }
+        plan.settings = settings
+      }
       const updates = new Map(input.items.map((item) => [item.id, item]))
       const start = plan.startDate
       const end = addDays(start, plan.days - 1)
@@ -1466,12 +1487,31 @@ export class SmartCampaignService {
             throw BadRequestError(`O item não pode ser selecionado: ${gateFailures.join(', ')}`)
           }
         }
-        if (patch.scheduledAt === null) delete next.scheduledAt
         return SmartPlanItemSchema.parse(next)
       })
       const known = new Set((plan.items as SmartPlanItem[]).map((item) => item.id))
       if ([...updates.keys()].some((id) => !known.has(id)))
         throw BadRequestError('Item do plano não encontrado')
+      if (input.campaignStartTime) {
+        for (const slug of plan.audienceSlugs) {
+          const basePolicy = settings.audiences[slug]
+          if (!basePolicy) continue
+          const policy = { ...basePolicy, startTime: input.campaignStartTime }
+          const dates = [...new Set(items
+            .filter((item) => item.audienceSlug === slug && item.state === 'SELECTED')
+            .map((item) => item.date))]
+          for (const date of dates) {
+            const dayItems = items
+              .filter((item) => item.audienceSlug === slug && item.state === 'SELECTED' && item.date === date)
+              .sort((left, right) => right.score - left.score)
+            const earliest = date === getSmartLocalDate(new Date(), policy.timezone)
+              ? new Date(Date.now() + policy.minGapSeconds * 1000)
+              : undefined
+            const slots = buildSmartSchedule(date, dayItems.length, policy, `${plan.uuid}:${slug}:${date}:review`, earliest)
+            dayItems.forEach((item, index) => { item.scheduledAt = slots[index].toISOString() })
+          }
+        }
+      }
       plan.items = items
       plan.revision += 1
       await plan.save({ transaction })
@@ -1582,7 +1622,10 @@ export class SmartCampaignService {
           `Pause as campanhas manuais ativas: ${conflicting.map((item) => item.name).join(', ')}`,
         )
       }
-      const settings = plan.settings as { audiences: Record<string, SmartAudiencePolicy> }
+      const settings = plan.settings as {
+        audiences: Record<string, SmartAudiencePolicy>
+        global?: { campaignStartTime?: string }
+      }
       const selected = (plan.items as SmartPlanItem[]).filter((item) => item.state === 'SELECTED')
       if (!selected.length) throw BadRequestError('Selecione ao menos um produto antes de aprovar')
       const today = getSmartLocalDate(new Date(), plan.timezone)
@@ -1593,7 +1636,10 @@ export class SmartCampaignService {
       validateAudienceDailyCaps(selected, settings.audiences)
       for (const slug of usedSlugs) {
         const audience = selectedAudiences.get(slug)!
-        const policy = settings.audiences[slug] ?? audience.policy
+        const policy = {
+          ...(settings.audiences[slug] ?? audience.policy),
+          startTime: settings.global?.campaignStartTime ?? settings.audiences[slug]?.startTime ?? audience.policy.startTime,
+        }
         for (const date of [
           ...new Set(
             selected.filter((item) => item.audienceSlug === slug).map((item) => item.date),
@@ -1669,6 +1715,27 @@ export class SmartCampaignService {
           }
         }
       }
+      const rowsByGroup = new Map<string, Set<string>>()
+      const uniqueRows = rows.filter((row) => {
+        const aliases = offerIdentityAliases(row.offer)
+        const sentInPlan = rowsByGroup.get(row.groupId) ?? new Set<string>()
+        if (aliases.some((identity) => sentInPlan.has(identity))) {
+          const item = selected.find(
+            (candidate) =>
+              candidate.audienceSlug === row.audienceSlug &&
+              offerIdentityAliases(candidate.product).some((identity) => aliases.includes(identity)),
+          )
+          if (item) {
+            const warning = `Produto duplicado no plano; removido do grupo ${row.groupName}.`
+            item.warnings = [...new Set([...(item.warnings ?? []), warning])]
+          }
+          return false
+        }
+        for (const identity of aliases) sentInPlan.add(identity)
+        rowsByGroup.set(row.groupId, sentInPlan)
+        return true
+      })
+      rows.splice(0, rows.length, ...uniqueRows)
       for (const groupId of requestedGroups) {
         const groupRows = rows.filter((row) => row.groupId === groupId)
         for (const date of [...new Set(groupRows.map((row) => row.localDate))]) {
@@ -1716,25 +1783,6 @@ export class SmartCampaignService {
               `O grupo ${currentGroups.get(groupId)?.name ?? groupId} excederia o limite de ${policy.dailyCap} envios em ${date}`,
             )
           }
-        }
-      }
-      const aliasesByPair = new Map<string, Set<string>>()
-      for (const row of rows) {
-        const key = row.groupId
-        const aliases = aliasesByPair.get(key) ?? new Set<string>()
-        for (const alias of offerIdentityAliases(row.offer)) aliases.add(alias)
-        aliasesByPair.set(key, aliases)
-      }
-      const identities = [...new Set([...aliasesByPair.values()].flatMap((set) => [...set]))]
-      if (identities.length) {
-        const delivered = await ProductGroupDelivery.findAll({
-          where: { userId, connectionScope, groupId: requestedGroups, offerIdentity: identities },
-          transaction,
-        })
-        if (delivered.some((entry) => aliasesByPair.get(entry.groupId)?.has(entry.offerIdentity))) {
-          throw ConflictError(
-            'Um produto selecionado já foi enviado ou está reservado para este grupo',
-          )
         }
       }
       await SmartSend.bulkCreate(rows, { transaction })
@@ -1870,8 +1918,12 @@ export class SmartCampaignService {
         lock: transaction.LOCK.UPDATE,
       })
       if (!plan) throw NotFoundError('Plano inteligente não encontrado')
-      const settings = plan.settings as { audiences?: Record<string, SmartAudiencePolicy> }
-      const policy = settings.audiences?.[send.audienceSlug] ?? DEFAULT_POLICY
+      const settings = plan.settings as {
+        audiences?: Record<string, SmartAudiencePolicy>
+        global?: { campaignStartTime?: string }
+      }
+      const basePolicy = settings.audiences?.[send.audienceSlug] ?? DEFAULT_POLICY
+      const policy = { ...basePolicy, startTime: settings.global?.campaignStartTime ?? basePolicy.startTime }
       const aliases = offerIdentityAliases(send.offer)
       const ledgerWhere = {
         userId,
@@ -1879,6 +1931,7 @@ export class SmartCampaignService {
         groupId: send.groupId,
         offerIdentity: { [Op.in]: aliases },
         campaignId: null,
+        planUuid: plan.uuid,
         status: PRODUCT_GROUP_DELIVERY_STATUS.SENDING,
       }
       const pendingLedger = await ProductGroupDelivery.findAll({
@@ -1923,6 +1976,7 @@ export class SmartCampaignService {
               groupId: send.groupId,
               groupName: send.groupName,
               campaignId: null,
+              planUuid: plan.uuid,
               status: PRODUCT_GROUP_DELIVERY_STATUS.SENT,
               messageId: send.providerMessageId,
               sentAt: send.sentAt,

@@ -205,6 +205,7 @@ export interface SmartPlan {
   date?: string
   days: number
   timezone?: string
+  settings?: { global?: { campaignStartTime?: string }; audiences?: Record<string, unknown> }
   audienceSlugs: SmartAudienceSlug[]
   progress?: SmartPlanProgress | null
   inputSummary?: { total?: number; valid?: number; duplicates?: number; warnings?: number }
@@ -337,8 +338,8 @@ export const smartCampaignApi = {
   async plan(id: string): Promise<SmartPlan> {
     return normalizePlan(unwrap<SmartPlan>(await api.get(`/smart-campaigns/plans/${id}`)))
   },
-  async updatePlan(id: string, revision: number, items: SmartPlanItemPatch[]): Promise<SmartPlan> {
-    return normalizePlan(unwrap<SmartPlan>(await api.patch(`/smart-campaigns/plans/${id}`, { revision, items })))
+  async updatePlan(id: string, revision: number, items: SmartPlanItemPatch[], campaignStartTime?: string): Promise<SmartPlan> {
+    return normalizePlan(unwrap<SmartPlan>(await api.patch(`/smart-campaigns/plans/${id}`, { revision, items, campaignStartTime })))
   },
   async action(id: string, action: 'approve' | 'pause' | 'resume' | 'cancel' | 'retry', revision?: number, requestId?: string): Promise<SmartPlan> {
     return normalizePlan(unwrap<SmartPlan>(await api.post(`/smart-campaigns/plans/${id}/${action}`, { revision, requestId })))

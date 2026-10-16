@@ -111,9 +111,9 @@ function addLocalDays(value: string, days: number): string {
   return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
 }
 
-function formatDateTime(value?: string | null): string {
+function formatDateTime(value?: string | null, timeZone?: string): string {
   if (!value) return '—'
-  return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
+  return new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short', ...(timeZone ? { timeZone } : {}) }).format(new Date(value))
 }
 
 function formatMoney(value?: number): string {
@@ -536,8 +536,9 @@ function ItemStateSelect({ item, onChange, disabled }: { item: SmartPlanItem; on
   )
 }
 
-function PlanItemCard({ item, editable, saving, onPatch, message, onMessageChange, onSaveMessage, onCancelMessage }: {
+function PlanItemCard({ item, editable, saving, timeZone, onPatch, message, onMessageChange, onSaveMessage, onCancelMessage }: {
   item: SmartPlanItem; editable: boolean; saving: boolean; onPatch: (patch: Partial<SmartPlanItem>) => void;
+  timeZone: string;
   message?: string; onMessageChange: (text: string) => void; onSaveMessage: () => void; onCancelMessage: () => void
 }) {
   const editingMessage = message !== undefined
@@ -578,7 +579,7 @@ function PlanItemCard({ item, editable, saving, onPatch, message, onMessageChang
           {item.product.extensionEvidence?.visibleSignals && <p className="mt-2 text-xs text-muted">Sinais observados no Mercado Livre: {item.product.extensionEvidence.visibleSignals.rating !== undefined && `nota ${item.product.extensionEvidence.visibleSignals.rating.toLocaleString('pt-BR')}/5`}{item.product.extensionEvidence.visibleSignals.rating !== undefined && item.product.extensionEvidence.visibleSignals.soldCount !== undefined && ' · '}{item.product.extensionEvidence.visibleSignals.soldCount !== undefined && `${item.product.extensionEvidence.visibleSignals.soldCountIsLowerBound ? 'mais de ' : ''}${item.product.extensionEvidence.visibleSignals.soldCount.toLocaleString('pt-BR')} vendidos`}. Influenciam levemente a variedade/atratividade, não o encaixe no público.</p>}
           {item.warnings && item.warnings.length > 0 && <div className="mt-3 rounded-lg border border-warning/30 bg-warning-soft p-2 text-xs text-warning">{item.warnings.join(' · ')}</div>}
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
-            <Clock3 size={14} /> {item.scheduledAt ? formatDateTime(item.scheduledAt) : item.state === 'SELECTED' ? 'Horário será calculado na aprovação' : 'Sem horário'}
+            <Clock3 size={14} /> {item.scheduledAt ? formatDateTime(item.scheduledAt, timeZone) : item.state === 'SELECTED' ? 'Horário será calculado na aprovação' : 'Sem horário'}
             {editable && item.state === 'SELECTED' && <label className="ml-auto flex cursor-pointer items-center gap-1.5"><input type="checkbox" className="accent-accent" checked={Boolean(item.standout)} onChange={(e) => onPatch({ standout: e.target.checked })} disabled={saving} /> Mensagem especial</label>}
           </div>
           {(item.standout || item.customMessage || editingMessage) && (
@@ -697,9 +698,11 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
   const [audience, setAudience] = useState<SmartAudienceSlug | 'ALL'>('ALL')
   const [date, setDate] = useState('ALL')
   const [state, setState] = useState<SmartPlanItemState>('SELECTED')
+  const [campaignStartTime, setCampaignStartTime] = useState(plan.settings?.global?.campaignStartTime ?? '09:00')
+  const savedCampaignStartTime = plan.settings?.global?.campaignStartTime ?? '09:00'
   const mutation = useMutation({
     mutationFn: ({ item, patch }: { item: SmartPlanItem; patch: Partial<SmartPlanItem> }) => smartCampaignApi.updatePlan(plan.id, plan.revision, [{
-      id: item.id, state: patch.state, standout: patch.standout, customMessage: patch.customMessage, audienceSlug: patch.audienceSlug, date: patch.date, scheduledAt: patch.scheduledAt,
+      id: item.id, state: patch.state, standout: patch.standout, customMessage: patch.customMessage, audienceSlug: patch.audienceSlug, date: patch.date,
     }]),
     onSettled: () => { submitting.current = false },
     onSuccess: (updated, { item, patch }) => {
@@ -708,7 +711,16 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
       void queryClient.invalidateQueries({ queryKey: ['smart-plans'] })
     },
   })
-  useEffect(() => { onDirtyChange('review', changedMessages || mutation.isPending) }, [changedMessages, mutation.isPending, onDirtyChange])
+  const startTimeMutation = useMutation({
+    mutationFn: (time: string) => smartCampaignApi.updatePlan(plan.id, plan.revision, [], time),
+    onSuccess: (updated) => {
+      onPlanChange(updated)
+      void queryClient.invalidateQueries({ queryKey: ['smart-plans'] })
+    },
+  })
+  const changedStartTime = campaignStartTime !== savedCampaignStartTime
+  useEffect(() => { setCampaignStartTime(savedCampaignStartTime) }, [savedCampaignStartTime])
+  useEffect(() => { onDirtyChange('review', changedMessages || changedStartTime || mutation.isPending || startTimeMutation.isPending) }, [changedMessages, changedStartTime, mutation.isPending, startTimeMutation.isPending, onDirtyChange])
   useEffect(() => () => onDirtyChange('review', false), [onDirtyChange])
   const patchItem = (item: SmartPlanItem, patch: Partial<SmartPlanItem>) => {
     if (submitting.current) return
@@ -729,7 +741,7 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
     return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date) || a.audienceSlug.localeCompare(b.audienceSlug))
   }, [plan.items])
   const visible = plan.items.filter((item) => (audience === 'ALL' || item.audienceSlug === audience) && (date === 'ALL' || item.date === date) && item.state === state)
-  const editable = plan.status === 'REVIEW' || plan.status === 'READY' || plan.status === 'DRAFT'
+  const editable = plan.status === 'REVIEW'
   const analysisFailure = isAnalysisFailure(plan)
 
   if (plan.status === 'ANALYZING') {
@@ -756,6 +768,11 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
       {plan.warnings && plan.warnings.length > 0 && <div className="mt-4 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm text-warning">{plan.warnings.join(' · ')}</div>}
       <Card className="mt-4 border-accent/20">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-semibold">Resumo da campanha</h3><p className="text-sm text-muted">{counts.SELECTED} selecionados · {counts.RESERVE} na reserva · {counts.REJECTED} rejeitados</p></div>
+        {editable && <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg bg-surface-muted p-3">
+          <div><Label htmlFor={`${prefix}-campaign-start`}>Horário de início da campanha</Label><input id={`${prefix}-campaign-start`} className="block rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink" type="time" min="09:00" max={audiences.filter((entry) => plan.audienceSlugs.includes(entry.slug)).map((entry) => entry.policy.endTime).sort()[0] ?? '21:00'} value={campaignStartTime} disabled={startTimeMutation.isPending} onChange={(event) => setCampaignStartTime(event.target.value)} /></div>
+          <Button type="button" disabled={!changedStartTime || startTimeMutation.isPending} onClick={() => startTimeMutation.mutate(campaignStartTime)}>{startTimeMutation.isPending ? <Spinner /> : <Save size={15} />} Salvar início da campanha</Button>
+          <p className="w-full text-xs text-muted">Os horários de cada produto serão distribuídos automaticamente a partir desse início, respeitando os intervalos e limites dos públicos.</p>
+        </div>}
         {agenda.length ? <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[28rem] text-left text-sm"><thead><tr className="border-b border-line text-xs text-muted"><th className="px-2 py-2 font-medium">Dia</th><th className="px-2 py-2 font-medium">Público</th><th className="px-2 py-2 font-medium">Grupo(s)</th><th className="px-2 py-2 text-right font-medium">Ofertas</th></tr></thead><tbody>{agenda.map((row) => {
           const audienceRow = audiences.find((entry) => entry.slug === row.audienceSlug)
           const groups = audienceRow
@@ -788,15 +805,18 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
         <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-audience`}>Público</Label><select id={`${prefix}-audience`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as SmartAudienceSlug | 'ALL')}><option value="ALL">Todos os públicos</option>{plan.audienceSlugs.map((slug) => <option key={slug} value={slug}>{NICHE_STYLES[slug].label}</option>)}</select></div>
         <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-date`}>Dia</Label><select id={`${prefix}-date`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={date} onChange={(e) => setDate(e.target.value)}><option value="ALL">Todos os dias</option>{dates.map((value) => <option key={value} value={value}>{formatDate(value)}</option>)}</select></div>
       </div>
-      {mutation.isError && <div className="mt-4"><ErrorState message={apiErrorMessage(mutation.error)} /></div>}
+      {(mutation.isError || startTimeMutation.isError) && <div className="mt-4"><ErrorState message={apiErrorMessage(mutation.error ?? startTimeMutation.error)} /></div>}
       {changedMessages && <p role="status" className="mt-4 rounded-lg bg-warning-soft p-3 text-sm text-warning">Há introduções especiais não salvas. Elas permanecem ao mudar os filtros. Salve ou descarte as edições antes de aprovar ou retomar.</p>}
       <div className="mt-4 space-y-3">
-        {visible.length === 0 ? <EmptyState title="Nada neste filtro">Escolha outro público, dia ou situação para revisar os produtos.</EmptyState> : visible.map((item) => <PlanItemCard key={item.id} item={item} editable={editable} saving={mutation.isPending}
+        {visible.length === 0 ? <EmptyState title="Nada neste filtro">Escolha outro público, dia ou situação para revisar os produtos.</EmptyState> : visible.map((item) => {
+          const policy = audiences.find((entry) => entry.slug === item.audienceSlug)?.policy
+          return <PlanItemCard key={item.id} item={item} editable={editable} saving={mutation.isPending} timeZone={policy?.timezone ?? plan.timezone ?? 'America/Sao_Paulo'}
           message={messages[item.id]}
           onMessageChange={(text) => setMessages((current) => ({ ...current, [item.id]: text }))}
           onCancelMessage={() => setMessages((current) => { const next = { ...current }; delete next[item.id]; return next })}
           onSaveMessage={() => patchItem(item, { customMessage: messages[item.id] })}
-          onPatch={(patch) => patchItem(item, patch)} />)}
+          onPatch={(patch) => patchItem(item, patch)} />
+        })}
       </div>
     </section>
   )
@@ -833,6 +853,18 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, 
     .flatMap((audience) => audience.destinations.length
       ? audience.destinations.map((destination) => destination.groupName)
       : audience.destinationGroupIds))]
+  const campaignStartTime = plan.settings?.global?.campaignStartTime ?? '09:00'
+  const scheduleLines = selectedSlugs.flatMap((slug) => {
+    const audience = audiences.find((entry) => entry.slug === slug)
+    const zone = audience?.policy.timezone ?? plan.timezone ?? 'America/Sao_Paulo'
+    const audienceItems = plan.items.filter((item) => item.state === 'SELECTED' && item.audienceSlug === slug)
+    return [...new Set(audienceItems.map((item) => item.date))].sort().map((date) => {
+      const dated = audienceItems.filter((item) => item.date === date)
+      const groups = audience?.destinations.map((destination) => destination.groupName).join(', ') || 'sem grupo vinculado'
+      return `${NICHE_STYLES[slug].label} · ${groups} · ${formatDate(date)} · início ${campaignStartTime} (${zone}; ${dated.length} produtos)`
+    })
+  })
+  const approvalDescription = `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início da campanha em ${formatDate(plan.startDate)} às ${campaignStartTime}.\n\nAgenda por público e grupo:\n${scheduleLines.map((line) => `• ${line}`).join('\n')}\n\nDestinos: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\nOs horários de cada produto serão distribuídos automaticamente a partir do horário de início, respeitando os intervalos e limites diários de cada público. Um produto só será enviado uma vez por grupo dentro desta campanha; campanhas diferentes podem enviar o mesmo produto. Ao confirmar, os envios pelo WhatsApp começam conforme a agenda.`
   return (
     <Card className="smart-plan-actions mt-5 border-accent/30">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
@@ -853,7 +885,7 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, 
       </div>}
       {confirming && <CampaignConfirmDialog
         title={confirming === 'approve' ? 'Confirmar agenda e envios?' : confirming === 'resume' ? 'Retomar os envios deste plano?' : 'Cancelar este plano?'}
-        description={`${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início em ${formatDate(plan.startDate)}.\n\nDestinos dos públicos selecionados: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\n${confirming === 'cancel' ? 'Os próximos envios serão cancelados. Mensagens já enviadas ou iniciadas não podem ser desfeitas.' : 'Esta confirmação inicia os envios pelo WhatsApp nos horários e limites diários de cada público. Até confirmar aqui, o plano não inicia. Confira o resumo da agenda e os destinos.'}`}
+        description={confirming === 'approve' ? approvalDescription : `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início em ${formatDate(plan.startDate)}.\n\nDestinos dos públicos selecionados: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\n${confirming === 'cancel' ? 'Os próximos envios serão cancelados. Mensagens já enviadas ou iniciadas não podem ser desfeitas.' : 'Esta confirmação inicia os envios pelo WhatsApp nos horários e limites diários de cada público. Até confirmar aqui, o plano não inicia. Confira o resumo da agenda e os destinos.'}`}
         confirmLabel={confirming === 'approve' ? 'Confirmar e agendar' : confirming === 'resume' ? 'Retomar envios' : 'Cancelar plano'}
         danger={confirming === 'cancel'}
         onCancel={() => setConfirming(null)}
