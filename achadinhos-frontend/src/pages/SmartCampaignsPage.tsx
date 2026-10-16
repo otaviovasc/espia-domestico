@@ -737,7 +737,15 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
     return <Card className="py-12 text-center"><LoaderCircle className="mx-auto animate-spin text-accent" size={36} /><h2 className="mt-4 text-lg font-bold">Análise em andamento</h2><p className="mt-1 text-sm text-muted">{plan.progress?.message || 'O servidor está avaliando os produtos e montando as agendas.'}</p>{percent !== null && <div className="mx-auto mt-4 max-w-sm"><div className="h-2 overflow-hidden rounded-full bg-surface-muted"><div className="h-full bg-accent transition-all" style={{ width: `${percent}%` }} /></div><p className="mt-1 text-xs text-muted">{plan.progress?.completed} de {plan.progress?.total} · {percent}%</p></div>}</Card>
   }
 
-  if (analysisFailure) return <ErrorState message={plan.error || 'A análise dos produtos falhou. Você pode tentar esta análise novamente.'} />
+  if (analysisFailure)
+    return (
+      <>
+        <ErrorState
+          message={plan.error || 'A análise dos produtos falhou. Você pode tentar esta análise novamente.'}
+        />
+        {actions}
+      </>
+    )
 
   return (
     <section aria-labelledby="review-title">

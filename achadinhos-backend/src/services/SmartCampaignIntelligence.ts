@@ -545,11 +545,12 @@ export class SmartCampaignIntelligence {
           ['AI_INPUT_TOO_LARGE', 'AI_OUTPUT_TOO_LARGE', 'AI_REQUEST_COST_EXCEEDED'].includes(
             error.code ?? '',
           )
-        // A four-product structured response can fail even when its input fits. One split to
-        // two-product calls bounds the recovery spend; guard rejections split recursively because
-        // they happen before a provider request or spend reservation.
+        // Some providers accept the batch schema but return malformed structured output even for
+        // two products. Keep splitting failed batches down to single-product schemas so one bad
+        // batch response does not fail the entire campaign. A batch of four can create at most
+        // four recovery calls; the single-product request uses the simpler response schema.
         const invalidBatchResponse =
-          batch.length > 2 && error instanceof AppError && error.code === 'SMART_AI_INVALID_RESPONSE'
+          batch.length > 1 && error instanceof AppError && error.code === 'SMART_AI_INVALID_RESPONSE'
         if (batch.length > 1 && (preflightLimit || invalidBatchResponse)) {
           this.semanticCache.delete(key)
           const middle = Math.ceil(batch.length / 2)
