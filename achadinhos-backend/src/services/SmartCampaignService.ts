@@ -1203,6 +1203,17 @@ export class SmartCampaignService {
         ...settings.audiences[audience.slug],
         startTime: settings.global?.campaignStartTime ?? settings.audiences[audience.slug].startTime,
       }
+      const planningNow = new Date()
+      const planningLocalDate = getSmartLocalDate(planningNow, policy.timezone)
+      const configuredStart = smartZonedInstant(plan.startDate, policy.startTime, policy.timezone)
+      // A same-day plan may be created after its configured start time. Offers
+      // collected now must be judged against a send time that is still ahead,
+      // otherwise fresh evidence appears to come from the future and every item
+      // is rejected. Keep the audience's configured window and freshness rule.
+      const firstSendAt =
+        plan.startDate === planningLocalDate && planningNow > configuredStart
+          ? planningNow
+          : configuredStart
       const audienceCategoryCounts = new Map<string, number>()
       const candidates: SmartPlanItem[] = []
       offers.forEach((offer, index) => {
@@ -1225,7 +1236,7 @@ export class SmartCampaignService {
           observations[index] &&
           !isEvidenceFresh(
             observations[index],
-            smartZonedInstant(plan.startDate, policy.startTime, policy.timezone),
+            firstSendAt,
             policy.freshnessHours,
           )
         ) {
@@ -1273,6 +1284,12 @@ export class SmartCampaignService {
         const maximum = capacity
         const categoryLimit = Math.max(1, Math.ceil(maximum * 0.25))
         const chosen: SmartPlanItem[] = []
+        const configuredDayStart = smartZonedInstant(date, policy.startTime, policy.timezone)
+        const earliestSendAt =
+          date === planningLocalDate && planningNow > configuredDayStart
+            ? planningNow
+            : undefined
+        const firstSlot = earliestSendAt ?? configuredDayStart
         const dayCandidates = eligible.filter((item) => !globallySelected.has(item.id))
         // Evenly distribute this audience's best remaining offers across the selected dates.
         const remainingDays = plan.days - dayOffset
@@ -1287,8 +1304,7 @@ export class SmartCampaignService {
           const categoryKey = `${date}:${category}`
           const count = audienceCategoryCounts.get(categoryKey) ?? 0
           if (count >= categoryLimit) continue
-          const sendAt = smartZonedInstant(date, policy.startTime, policy.timezone)
-          if (!isEvidenceFresh(item.observedAt, sendAt, policy.freshnessHours)) continue
+          if (!isEvidenceFresh(item.observedAt, firstSlot, policy.freshnessHours)) continue
           chosen.push(item)
           audienceCategoryCounts.set(categoryKey, count + 1)
         }
@@ -1297,6 +1313,7 @@ export class SmartCampaignService {
           chosen.length,
           policy,
           `${plan.uuid}:${audience.slug}:${date}`,
+          earliestSendAt,
         )
         chosen.forEach((item, index) => {
           item.state = 'SELECTED'
