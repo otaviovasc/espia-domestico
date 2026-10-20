@@ -5,6 +5,7 @@
     { "source": "/", "destination": "/index.html" },
     { "source": "/masculino", "destination": "/masculino/index.html" },
     { "source": "/bio", "destination": "/bio/index.html" },
+    { "source": "/short-promo", "destination": "/short-promo/index.html" },
     { "source": "/painel", "destination": "/painel/index.html" },
     { "source": "/painel/connection", "destination": "/painel/index.html" },
     { "source": "/painel/compose", "destination": "/painel/index.html" },
@@ -27,6 +28,10 @@
     },
     {
       "source": "/bio/assets/**",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    },
+    {
+      "source": "/short-promo/assets/**",
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
     },
     {

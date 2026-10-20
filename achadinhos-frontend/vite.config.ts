@@ -20,6 +20,7 @@ const APP_BASE = '/painel/'
 const EXTRA_LANDINGS: { route: string; dir: string }[] = [
   { route: 'masculino', dir: 'landing/masculino' },
   { route: 'bio', dir: 'landing/bio' },
+  { route: 'short-promo', dir: 'landing/short-promo' },
 ]
 
 const MIME: Record<string, string> = {
