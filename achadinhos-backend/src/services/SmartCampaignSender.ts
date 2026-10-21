@@ -90,7 +90,7 @@ function earlierTime(a: string, b: string): string {
   return a <= b ? a : b
 }
 
-export function resolveSmartSendPolicy(plan: SmartPlan, send: SmartSend): SmartAudiencePolicy {
+export function resolveSmartSendPolicy(plan: SmartPlan, send: SmartSend, executionAt?: Date): SmartAudiencePolicy {
   const settings = plan.settings as {
     audiences?: Record<string, Partial<SmartAudiencePolicy>>
     global?: SmartCampaignTiming
@@ -98,7 +98,8 @@ export function resolveSmartSendPolicy(plan: SmartPlan, send: SmartSend): SmartA
   const raw =
     settings?.audiences?.[send.audienceSlug] ?? (plan.settings as Partial<SmartAudiencePolicy>)
   const timezone = validTimezone(raw?.timezone, validTimezone(send.timezone, plan.timezone))
-  const startTime = explicitSmartStart(settings.global, send.localDate, laterTime(
+  const localDate = executionAt ? getSmartLocalParts(executionAt, timezone).date : send.localDate
+  const startTime = explicitSmartStart(settings.global, localDate, laterTime(
     typeof raw?.startTime === 'string' && /^\d{2}:\d{2}$/.test(raw.startTime)
       ? raw.startTime
       : HARD_START_TIME,
@@ -345,8 +346,8 @@ export class SmartCampaignSender {
     claimed: ClaimedSend,
   ): Promise<'sent' | 'unknown' | 'skipped' | 'rescheduled' | 'blocked'> {
     const { send, plan } = claimed
-    const policy = resolveSmartSendPolicy(plan, send)
     const now = this.now()
+    const policy = resolveSmartSendPolicy(plan, send, now)
     const audienceState = await this.enforceCurrentAudience(plan, send, now)
     if (audienceState) return audienceState
     if (!isEvidenceFresh(send.evidenceObservedAt, now, policy.freshnessHours)) {
@@ -358,7 +359,7 @@ export class SmartCampaignSender {
       return 'skipped'
     }
 
-    const windowResult = await this.enforceWindow(send, policy, now)
+    const windowResult = await this.enforceWindow(send, plan, policy, now)
     if (windowResult) return windowResult
     await this.normalizeCatchupDate(send, policy, now)
 
@@ -455,7 +456,7 @@ export class SmartCampaignSender {
       return 'blocked'
     }
     const eligibility = evaluateSmartProductEligibility(
-      send.offer, resolveSmartSendPolicy(plan, send), audience.policy ?? {},
+      send.offer, resolveSmartSendPolicy(plan, send, now), audience.policy ?? {},
     )
     if (!eligibility.eligible) {
       const reason = `Produto excluído pelos filtros: ${eligibility.reasons.join('; ')}`
@@ -494,6 +495,7 @@ export class SmartCampaignSender {
 
   private async enforceWindow(
     send: SmartSend,
+    plan: SmartPlan,
     policy: SmartAudiencePolicy,
     now: Date,
   ): Promise<'rescheduled' | 'skipped' | null> {
@@ -504,7 +506,8 @@ export class SmartCampaignSender {
       next = smartLocalDateTime(local.date, policy.startTime, policy.timezone)
     } else if (local.time >= policy.endTime) {
       nextLocalDate = addLocalDays(local.date, 1)
-      next = smartLocalDateTime(nextLocalDate, policy.startTime, policy.timezone)
+      const targetPolicy = resolveSmartSendPolicy(plan, { ...send, localDate: nextLocalDate } as SmartSend)
+      next = smartLocalDateTime(nextLocalDate, targetPolicy.startTime, targetPolicy.timezone)
     }
     if (!next) return null
     if (!isEvidenceFresh(send.evidenceObservedAt, next, policy.freshnessHours)) {
@@ -591,12 +594,14 @@ export class SmartCampaignSender {
         .sort((a, b) => b.getTime() - a.getTime())[0]
       if (readyAt) {
         const localReady = getSmartLocalParts(readyAt, policy.timezone)
+        const tomorrow = addLocalDays(localReady.date, 1)
+        const targetPolicy = resolveSmartSendPolicy(plan, { ...send, localDate: tomorrow } as SmartSend)
         const target =
           localReady.time >= policy.endTime
             ? smartLocalDateTime(
-                addLocalDays(localReady.date, 1),
-                policy.startTime,
-                policy.timezone,
+                tomorrow,
+                targetPolicy.startTime,
+                targetPolicy.timezone,
               )
             : readyAt
         const localDate = getSmartLocalParts(target, policy.timezone).date
@@ -622,7 +627,8 @@ export class SmartCampaignSender {
       const dailyCount = await this.dailyDeliveryCount(send, policy, now, transaction)
       if (dailyCount >= policy.dailyCap) {
         const tomorrow = addLocalDays(getSmartLocalParts(now, policy.timezone).date, 1)
-        const next = smartLocalDateTime(tomorrow, policy.startTime, policy.timezone)
+        const targetPolicy = resolveSmartSendPolicy(plan, { ...send, localDate: tomorrow } as SmartSend)
+        const next = smartLocalDateTime(tomorrow, targetPolicy.startTime, targetPolicy.timezone)
         if (!isEvidenceFresh(send.evidenceObservedAt, next, policy.freshnessHours)) {
           await this.finishInTransaction(
             freshSend,
@@ -908,6 +914,9 @@ export class SmartCampaignSender {
     reason: string,
   ): Promise<void> {
     await sequelize.transaction(async (transaction) => {
+      const keys = deliveryKeys(send)
+      await advisoryLock(transaction, keys.account)
+      await advisoryLock(transaction, keys.destination)
       const [released] = await SmartSend.update(
         {
           status: SMART_SEND_STATUS.PENDING,
@@ -1059,13 +1068,9 @@ export class SmartCampaignSender {
 
   private async pauseForBlock(plan: SmartPlan, send: SmartSend, reason: string): Promise<void> {
     await sequelize.transaction(async (transaction) => {
-      await SmartPlan.update(
-        { status: SMART_PLAN_STATUS.PAUSED },
-        {
-          where: { id: plan.id, userId: send.userId, status: SMART_PLAN_STATUS.SCHEDULED },
-          transaction,
-        },
-      )
+      const keys = deliveryKeys(send)
+      await advisoryLock(transaction, keys.account)
+      await advisoryLock(transaction, keys.destination)
       await SmartSend.update(
         { leaseOwner: null, leaseExpiresAt: null, lastError: reason },
         {
@@ -1075,6 +1080,13 @@ export class SmartCampaignSender {
             leaseOwner: this.ownerId,
             status: SMART_SEND_STATUS.PENDING,
           },
+          transaction,
+        },
+      )
+      await SmartPlan.update(
+        { status: SMART_PLAN_STATUS.PAUSED },
+        {
+          where: { id: plan.id, userId: send.userId, status: SMART_PLAN_STATUS.SCHEDULED },
           transaction,
         },
       )
