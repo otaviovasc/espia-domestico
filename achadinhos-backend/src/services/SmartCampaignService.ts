@@ -45,7 +45,7 @@ import { logger } from '@/utils/logger'
 import { recordSmartOperation } from '@/utils/smartOperationAudit'
 import { env } from '@/config/env'
 import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
-import { evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
+import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 
 const MIN_SMART_FIT = 70
 
@@ -677,6 +677,9 @@ export class SmartCampaignService {
           keywords: pack.keywords,
           reason: pack.reason,
           mode: 'ANY' as const,
+          excludePolitical: audience.policy.excludePolitical ?? false,
+          minPrice: audience.policy.minPrice,
+          maxPrice: audience.policy.maxPrice,
           minCommissionPercent: audience.policy.minCommissionPercent,
           minEstimatedCommission: audience.policy.minEstimatedCommission,
           batches,
@@ -997,6 +1000,7 @@ export class SmartCampaignService {
       const audiences = await this.audienceRows(plan.userId, plan.audienceSlugs)
       const planSettings = plan.settings as {
         audienceProfiles?: NicheIntelligenceOverrides
+        audiences: Record<string, SmartAudiencePolicy>
       }
       const frozenProfiles = planSettings.audienceProfiles
       if (
@@ -1015,6 +1019,12 @@ export class SmartCampaignService {
       // pasted/mixed files are analyzed across every group the operator selected.
       const scopedIndexes = new Map<string, { slugs: NicheSlug[]; indexes: number[] }>()
       for (const index of missing) {
+        // Do not spend an AI request on an offer that no selected audience can use.
+        // buildItems retains these offers as deterministic REJECTED rows, without
+        // inventing an AI fit or converting missing commission evidence to zero.
+        if (audiences.every((audience) => !evaluateSmartProductEligibility(
+          input.offers[index], planSettings.audiences[audience.slug] ?? {}, audience.policy,
+        ).eligible)) continue
         const scopedSlugs = input.offerAudienceSlugs?.[index]?.length
         ? input.offerAudienceSlugs[index]!
           : likelyAudienceSlugs(input.offers[index], plan.audienceSlugs as NicheSlug[])
@@ -1239,16 +1249,17 @@ export class SmartCampaignService {
       const candidates: SmartPlanItem[] = []
       offers.forEach((offer, index) => {
         const analysis = analyses[String(index)]
-        const fit = analysis?.fits.find((entry) => entry.slug === audience.slug)
-        if (!fit) return
+          const fit = analysis?.fits.find((entry) => entry.slug === audience.slug)
+          const hardReasons = evaluateSmartProductEligibility(offer, policy, audience.policy).reasons
+          if (!fit && !hardReasons.length) return
         const scored = this.commercialScore(
           offer,
-          fit.score,
-          fit.seasonalScore,
+            fit?.score ?? 0,
+            fit?.seasonalScore ?? 0,
           observations[index],
         )
-        const warnings = [...(analysis.warnings ?? [])]
-          const hardReasons = evaluateSmartProductEligibility(offer, policy, audience.policy).reasons
+          const warnings = [...(analysis?.warnings ?? [])]
+          if (!analysis) warnings.push('Não avaliado pela IA: excluído pelos filtros de todos os públicos.')
         if (!isVerifiedOffer(offer)) hardReasons.push('Atribuição afiliada não verificada')
         if (!hasCommissionEvidence(offer)) hardReasons.push('Comissão não informada na coleta')
         if (!observations[index]) hardReasons.push('Horário de observação ausente')
@@ -1262,8 +1273,8 @@ export class SmartCampaignService {
         ) {
           hardReasons.push('Evidência da oferta está antiga; atualize o produto')
         }
-        if (fit.score < MIN_SMART_FIT) hardReasons.push('Baixa afinidade com o público')
-        if (!allowedRoutes.get(index)?.has(audience.slug)) {
+          if (fit && fit.score < MIN_SMART_FIT) hardReasons.push('Baixa afinidade com o público')
+          if (fit && !allowedRoutes.get(index)?.has(audience.slug)) {
           hardReasons.push('Priorizado para outro público para evitar repetição')
         }
         candidates.push(
@@ -1274,11 +1285,11 @@ export class SmartCampaignService {
             state: hardReasons.length ? 'REJECTED' : 'RESERVE',
             product: offer,
             score: scored.total,
-            fitScore: fit.score,
-            estimatedCommission: scored.estimatedCommission,
+              fitScore: fit?.score,
+              estimatedCommission: collectedSmartCommissionRate(offer) === null ? undefined : scored.estimatedCommission,
             freshnessHours: scored.freshnessHours,
-            reason: hardReasons.length ? hardReasons.join('; ') : fit.reason,
-            category: fit.category,
+              reason: hardReasons.length ? hardReasons.join('; ') : fit!.reason,
+              category: fit?.category,
             warnings,
             standout: false,
             observedAt: observations[index] ?? new Date(0).toISOString(),
@@ -1306,7 +1317,6 @@ export class SmartCampaignService {
           date === planningLocalDate && planningNow > configuredDayStart
             ? planningNow
             : undefined
-        const firstSlot = earliestSendAt ?? configuredDayStart
         const dayCandidates = eligible.filter((item) => !globallySelected.has(item.id))
         // Evenly distribute this audience's best remaining offers across the selected dates.
         const remainingDays = plan.days - dayOffset
@@ -1321,7 +1331,20 @@ export class SmartCampaignService {
           const categoryKey = `${date}:${category}`
           const count = audienceCategoryCounts.get(categoryKey) ?? 0
           if (count >= categoryLimit) continue
-          if (!isEvidenceFresh(item.observedAt, firstSlot, policy.freshnessHours)) continue
+          // Adding a row can change all gaps when the window is nearly full.
+          // Recheck the exact deterministic schedule for every chosen offer.
+          const tentative = [...chosen, item]
+          let tentativeSlots: Date[]
+          try {
+            tentativeSlots = buildSmartSchedule(
+              date, tentative.length, policy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt,
+            )
+          } catch (error) {
+            if (!(error instanceof AppError) || error.statusCode !== 409) throw error
+            break
+          }
+          if (tentative.some((candidate, index) =>
+            !isEvidenceFresh(candidate.observedAt, tentativeSlots[index], policy.freshnessHours))) continue
           chosen.push(item)
           audienceCategoryCounts.set(categoryKey, count + 1)
         }
@@ -1396,7 +1419,7 @@ export class SmartCampaignService {
           category: categoryForScore(relevanceScore),
           relevanceScore,
           discountPercent: discount(offer),
-          commissionRate: commissionRate(offer),
+          commissionRate: collectedSmartCommissionRate(offer) ?? undefined,
           classificationProfileId: audience.classificationProfileId!,
           classificationProfileName: audience.name,
         }
@@ -1409,7 +1432,7 @@ export class SmartCampaignService {
         catalogOffers[index] = {
           ...catalogOffers[index],
           savedProductId: product.id ?? catalogOffers[index].savedProductId,
-          commissionRate: commissionRate(catalogOffers[index]),
+          commissionRate: collectedSmartCommissionRate(catalogOffers[index]) ?? undefined,
           discountPercent: discount(catalogOffers[index]),
         }
       })
@@ -1514,9 +1537,9 @@ export class SmartCampaignService {
         if (next.state === 'SELECTED') {
           const settings = plan.settings as { audiences: Record<string, SmartAudiencePolicy> }
           const policy = settings.audiences[next.audienceSlug]
-            const currentPolicy = currentPolicies.get(next.audienceSlug)
-            if (!currentPolicy) throw BadRequestError('Público não encontrado')
-            const gateFailures = evaluateSmartProductEligibility(next.product, policy ?? {}, currentPolicy).reasons
+          const currentPolicy = currentPolicies.get(next.audienceSlug)
+          if (!currentPolicy) throw BadRequestError('Público não encontrado')
+          const gateFailures = evaluateSmartProductEligibility(next.product, policy ?? {}, currentPolicy).reasons
           if (!isVerifiedOffer(next.product))
             gateFailures.push('atribuição afiliada não verificada')
           if (!hasCommissionEvidence(next.product)) gateFailures.push('comissão não informada')

@@ -23,6 +23,11 @@ export interface SmartAudiencePolicy {
   maxStandouts: number
   freshnessHours: number
   timezone: string
+  excludePolitical?: boolean
+  minPrice?: number
+  maxPrice?: number
+  minCommissionPercent?: number
+  minEstimatedCommission?: number
 }
 
 export interface SmartAudience {
@@ -42,6 +47,9 @@ export interface SmartAudience {
   endTime: string
   minIntervalMinutes: number
   maxIntervalMinutes: number
+  excludePolitical?: boolean
+  minPrice?: number | null
+  maxPrice?: number | null
   minCommissionPercent?: number | null
   minEstimatedCommission?: number | null
   maxStandoutMessages: number
@@ -61,6 +69,9 @@ export interface SmartKeywordPack {
   keywords: string[]
   reason?: string
   mode?: 'ANY' | 'ALL'
+  excludePolitical?: boolean
+  minPrice?: number
+  maxPrice?: number
   minCommissionPercent?: number
   minEstimatedCommission?: number
   phrases?: KeywordPhrase[]
@@ -181,6 +192,8 @@ export interface SmartPlanSend {
   offerTitle?: string
   status: 'PENDING' | 'SENDING' | 'SENT' | 'SKIPPED' | 'FAILED' | 'UNKNOWN'
   scheduledAt: string
+  localDate?: string
+  timezone?: string
   sentAt?: string | null
   attempts: number
   lastError?: string | null
@@ -206,7 +219,11 @@ export interface SmartPlan {
   date?: string
   days: number
   timezone?: string
-  settings?: { global?: { campaignStartTime?: string; startNow?: boolean; earlyStart?: { date: string; time: string } }; audiences?: Record<string, unknown> }
+  settings?: {
+    global?: { campaignStartTime?: string; startNow?: boolean; earlyStart?: { date: string; time: string } }
+    audiences?: Partial<Record<SmartAudienceSlug, SmartAudiencePolicy>>
+    audiencePolicies?: Partial<Record<SmartAudienceSlug, SmartAudiencePolicy>>
+  }
   audienceSlugs: SmartAudienceSlug[]
   progress?: SmartPlanProgress | null
   inputSummary?: { total?: number; valid?: number; duplicates?: number; warnings?: number }
@@ -279,6 +296,11 @@ function normalizeAudience(audience: SmartAudience): SmartAudience {
     endTime: audience.endTime ?? policy.endTime ?? '21:00',
     minIntervalMinutes: audience.minIntervalMinutes ?? Math.round((policy.minGapSeconds ?? 720) / 60),
     maxIntervalMinutes: audience.maxIntervalMinutes ?? Math.round((policy.maxGapSeconds ?? 960) / 60),
+    excludePolitical: audience.excludePolitical ?? policy.excludePolitical ?? false,
+    minPrice: audience.minPrice !== undefined ? audience.minPrice : policy.minPrice,
+    maxPrice: audience.maxPrice !== undefined ? audience.maxPrice : policy.maxPrice,
+    minCommissionPercent: audience.minCommissionPercent !== undefined ? audience.minCommissionPercent : policy.minCommissionPercent,
+    minEstimatedCommission: audience.minEstimatedCommission !== undefined ? audience.minEstimatedCommission : policy.minEstimatedCommission,
     maxStandoutMessages: audience.maxStandoutMessages ?? policy.maxStandouts ?? 3,
   }
 }

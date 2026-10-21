@@ -1,6 +1,9 @@
 interface SearchPack {
   audienceSlug: string
   keywords: string[]
+  excludePolitical?: boolean
+  minPrice?: number
+  maxPrice?: number
   minCommissionPercent?: number
   minEstimatedCommission?: number
 }
@@ -18,6 +21,11 @@ export function buildSmartSearchPreset(pack: SearchPack, date: string) {
     return true
   }).slice(0, 20)
   if (!keywords.length) throw new Error('Gere palavras-chave antes de copiar o preset.')
+  if ([pack.minPrice, pack.maxPrice, pack.minCommissionPercent, pack.minEstimatedCommission].some((value) => value !== undefined && (!Number.isFinite(value) || value < 0))
+    || (pack.minCommissionPercent !== undefined && pack.minCommissionPercent > 100)
+    || (pack.minPrice !== undefined && pack.maxPrice !== undefined && pack.minPrice > pack.maxPrice)) {
+    throw new Error('Revise os filtros de preço e comissão antes de copiar o preset.')
+  }
   return {
     version: 1 as const,
     type: 'achadinhos-smart-search' as const,
@@ -26,6 +34,9 @@ export function buildSmartSearchPreset(pack: SearchPack, date: string) {
     keywords,
     matchMode: 'any' as const,
     matchStyle: 'word' as const,
+    excludePolitical: pack.excludePolitical ?? false,
+    ...(pack.minPrice !== undefined ? { minPrice: pack.minPrice } : {}),
+    ...(pack.maxPrice !== undefined ? { maxPrice: pack.maxPrice } : {}),
     commission: {
       ...(typeof pack.minCommissionPercent === 'number' ? { minPercent: pack.minCommissionPercent } : {}),
       ...(typeof pack.minEstimatedCommission === 'number' ? { minEstimatedBrl: pack.minEstimatedCommission } : {}),

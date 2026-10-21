@@ -14,7 +14,7 @@
     "start": "serve dist -l ${PORT:-5273}",
     "lint": "eslint .",
     "test:ui": "node --experimental-strip-types --test test/theme.test.mjs test/api-error-message.test.mjs test/catalog-import-state.test.mjs",
-    "test:smart": "node --experimental-strip-types --test test/smart-search-preset.test.mjs test/smart-ai-safety.test.mjs",
+    "test:smart": "node --experimental-strip-types --test test/smart-search-preset.test.mjs test/smart-ai-safety.test.mjs test/smart-campaign-ui.test.mjs",
     "build:landings": "node --experimental-strip-types landing/build.ts"
   },
   "engines": {

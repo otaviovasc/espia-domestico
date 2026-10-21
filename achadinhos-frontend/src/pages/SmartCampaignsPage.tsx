@@ -10,6 +10,8 @@ import {
   Clipboard,
   Clock3,
   FileJson,
+  Download,
+  ExternalLink,
   History,
   LoaderCircle,
   PackageCheck,
@@ -53,7 +55,7 @@ import { CampaignConfirmDialog } from '@/components/CampaignConfirmDialog'
 import { GroupCombobox } from '@/components/GroupCombobox'
 import { useDraftBaseline } from '@/hooks/useDraftBaseline'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
-import { audienceInput, audienceValidation, validPlanDate, inferFileAudience, countFileOffers } from '@/lib/smartCampaignUi'
+import { audienceInput, audienceValidation, validPlanDate, inferFileAudience, countFileOffers, optionalNumber, smartLocalDate, campaignTimingValidation, canAdvanceSmartPlan, nextSmartDelivery, smartCampaignStart, reservedSmartStart, planAudienceContext, safeAffiliateUrl, smartDeliveriesCsv } from '@/lib/smartCampaignUi'
 import './smart-campaigns.css'
 import { createSmartAIRequestId } from '@/lib/smartAiSafety'
 
@@ -100,7 +102,7 @@ function planPollInterval(status?: SmartPlanStatus): number | false {
 }
 
 function today(): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date())
+  return smartLocalDate()
 }
 
 function formatDate(value: string): string {
@@ -194,6 +196,7 @@ function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudi
   const { dirty, markClean } = useDraftBaseline(snapshot)
   const validation = audienceValidation(input)
   const prefix = useId()
+  const saving = useRef(false)
   const mutation = useMutation({
     mutationFn: () => smartCampaignApi.updateAudience(audience.slug, input),
     onSuccess: (updated) => {
@@ -203,6 +206,7 @@ function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudi
       markClean(JSON.stringify(audienceInput(updated, updated.profile.keywords.join(', '), updated.profile.negativeKeywords.join(', '))))
       void queryClient.invalidateQueries({ queryKey: ['smart-audiences'] })
     },
+    onSettled: () => { saving.current = false },
   })
   useEffect(() => { reportDirty(dirty || mutation.isPending) }, [dirty, mutation.isPending, reportDirty])
   useEffect(() => () => reportDirty(false), [reportDirty])
@@ -227,6 +231,17 @@ function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudi
       <div className="grid gap-2 text-xs text-muted sm:grid-cols-3"><p><strong className="block text-base tabular-nums text-ink">{draft.dailyCap}</strong>produtos por dia</p><p><strong className="block text-base tabular-nums text-ink">{draft.startTime}–{draft.endTime}</strong>horário de Brasília</p><p><strong className="block text-base tabular-nums text-ink">{draft.minIntervalMinutes}–{draft.maxIntervalMinutes} min</strong>entre envios</p></div>
       {groups.length === 0 && <p className="rounded-lg bg-warning-soft p-3 text-sm text-warning">Conecte o WhatsApp para carregar os grupos. Os vínculos salvos continuam disponíveis abaixo.</p>}
       <GroupCombobox label={`Grupos de ${audienceLabel(audience)}`} description="Busque e vincule os destinos deste público. As alterações só valem depois de salvar." items={groups} value={selectedGroups} onChange={(next) => setDraft({ ...draft, destinationGroupIds: next.map((group) => group.id) })} disabled={mutation.isPending} />
+      <fieldset className="min-w-0 border-t border-line pt-4" aria-describedby={`${prefix}-filters-help`}>
+        <legend className="text-sm font-semibold text-ink">Filtros de ofertas</legend>
+        <label className="flex min-h-11 cursor-pointer items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={input.excludePolitical} onChange={(e) => setDraft({ ...draft, excludePolitical: e.target.checked })} />Excluir produtos políticos</label>
+        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+          <div><Label htmlFor={`${prefix}-min-price`}>Preço mínimo (R$)</Label><Input id={`${prefix}-min-price`} type="number" min={0} step="0.01" value={draft.minPrice ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minPrice: optionalNumber(e.target.value) })} /></div>
+          <div><Label htmlFor={`${prefix}-max-price`}>Preço máximo (R$)</Label><Input id={`${prefix}-max-price`} type="number" min={0} step="0.01" value={draft.maxPrice ?? ''} placeholder="Sem máximo" onChange={(e) => setDraft({ ...draft, maxPrice: optionalNumber(e.target.value) })} /></div>
+          <div><Label htmlFor={`${prefix}-commission`}>Comissão mínima (%)</Label><Input id={`${prefix}-commission`} type="number" min={0} max={100} step="0.1" value={draft.minCommissionPercent ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minCommissionPercent: optionalNumber(e.target.value) })} /></div>
+          <div><Label htmlFor={`${prefix}-estimated`}>Comissão mínima por venda (R$)</Label><Input id={`${prefix}-estimated`} type="number" min={0} max={1000000} step="0.01" value={draft.minEstimatedCommission ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minEstimatedCommission: optionalNumber(e.target.value) })} /></div>
+        </div>
+        <p id={`${prefix}-filters-help`} className="mt-2 text-xs text-muted">Valores em reais. Campos vazios não aplicam limite; zero é um valor válido.</p>
+      </fieldset>
       <button type="button" className="flex min-h-11 items-center gap-2 rounded-lg text-sm font-semibold text-accent" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} aria-controls={`${prefix}-rules`}><Settings2 size={16} />{expanded ? 'Ocultar regras e limites' : 'Ajustar regras e limites'}</button>
       <div id={`${prefix}-rules`} hidden={!expanded} className="space-y-4 border-t border-line pt-4">
         <div className="grid gap-4 sm:grid-cols-2">
@@ -235,8 +250,6 @@ function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudi
           {numberField('minIntervalMinutes', 'Intervalo mínimo (min)', 12, 16)}
           {numberField('maxIntervalMinutes', 'Intervalo máximo (min)', 12, 16)}
           {numberField('maxStandoutMessages', 'Destaques por dia', 0, 10)}
-          <div><Label htmlFor={`${prefix}-commission`}>Comissão mínima (%)</Label><Input id={`${prefix}-commission`} type="number" min={0} max={100} step="0.1" value={draft.minCommissionPercent ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minCommissionPercent: e.target.value === '' ? null : Number(e.target.value) })} /></div>
-          <div className="sm:col-span-2"><Label htmlFor={`${prefix}-estimated`}>Comissão estimada mínima por venda (R$)</Label><Input id={`${prefix}-estimated`} type="number" min={0} max={1000000} step="0.01" value={draft.minEstimatedCommission ?? ''} placeholder="Sem mínimo" onChange={(e) => setDraft({ ...draft, minEstimatedCommission: e.target.value === '' ? null : Number(e.target.value) })} /></div>
         </div>
         <div><Label htmlFor={`${prefix}-instructions`}>O que combina com este público</Label><textarea id={`${prefix}-instructions`} className="field-control min-h-28 w-full" maxLength={2000} value={draft.profile.instructions} onChange={(e) => setDraft({ ...draft, profile: { ...draft.profile, instructions: e.target.value } })} /></div>
         <div><Label htmlFor={`${prefix}-keywords`}>Termos-base, separados por vírgula</Label><Input id={`${prefix}-keywords`} value={keywords} onChange={(e) => setKeywords(e.target.value)} /></div>
@@ -245,7 +258,7 @@ function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudi
     </fieldset>
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line bg-surface-muted px-5 py-3">
       <ActionStatus state={mutation.isPending ? 'saving' : mutation.isError ? 'error' : dirty ? 'unsaved' : 'saved'} label={mutation.isPending ? 'Salvando público…' : mutation.isError ? 'Falha ao salvar' : dirty ? 'Alterações pendentes' : 'Configuração salva'} />
-      <div className="flex flex-wrap gap-2"><Button variant="ghost" disabled={!dirty || mutation.isPending} onClick={reset}>Restaurar salvo</Button><Button loading={mutation.isPending} loadingText="Salvando…" disabled={!dirty || !!validation} onClick={() => mutation.mutate()}><Save size={15} />Salvar público</Button></div>
+      <div className="flex flex-wrap gap-2"><Button variant="ghost" disabled={!dirty || mutation.isPending} onClick={reset}>Restaurar salvo</Button><Button loading={mutation.isPending} loadingText="Salvando…" disabled={!dirty || !!validation} onClick={() => { if (saving.current || !dirty || validation) return; saving.current = true; mutation.mutate() }}><Save size={15} />Salvar público</Button></div>
     </div>
     {dirty && validation && <p role="status" className="px-5 py-3 text-sm text-warning">{validation}</p>}
     {mutation.isError && <p role="alert" className="px-5 py-3 text-sm text-danger">{apiErrorMessage(mutation.error)}</p>}
@@ -311,6 +324,9 @@ function KeywordPackCard({ pack, date }: { pack: SmartKeywordPack; date: string 
           <span className="text-xs text-muted">
             {pack.minCommissionPercent !== undefined ? `Comissão ≥ ${pack.minCommissionPercent}%` : 'Sem comissão mínima'}
             {pack.minEstimatedCommission !== undefined ? ` · estimada ≥ ${formatMoney(pack.minEstimatedCommission)}` : ''}
+            {pack.minPrice !== undefined ? ` · preço mínimo ${formatMoney(pack.minPrice)}` : ''}
+            {pack.maxPrice !== undefined ? ` · preço máximo ${formatMoney(pack.maxPrice)}` : ''}
+            {pack.excludePolitical ? ' · políticos excluídos' : ''}
           </span>
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="secondary" onClick={copy}>{copied ? <Check size={15} /> : <Clipboard size={15} />}{copied ? 'Copiado' : 'Copiar lista'}</Button>
@@ -382,6 +398,8 @@ function ImportPlanner({ audiences, selected, setSelected, planDate, setPlanDate
   const [startNow, setStartNow] = useState(false)
   const [campaignStartTime, setCampaignStartTime] = useState('09:00')
   const immediateStart = startNow && planDate === today()
+  const endTime = audiences.filter((entry) => selected.has(entry.slug)).map((entry) => entry.policy.endTime).sort()[0] ?? '21:00'
+  const timingError = campaignTimingValidation(campaignStartTime, immediateStart, planDate, today(), endTime)
   const [filePayloads, setFilePayloads] = useState<SmartImportPayload[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
   const submitting = useRef(false)
@@ -413,7 +431,7 @@ function ImportPlanner({ audiences, selected, setSelected, planDate, setPlanDate
     && (previousRequest.payloads ? previousRequest.payloads === filePayloads : previousRequest.rawJson === rawJson)
   const submit = (retryInput?: SmartCreatePlanInput) => {
     if (retryInput && !requestIsCurrent) return
-    if (submitting.current || mutation.isPending || aiBlocked || !validPlanDate(planDate, today()) || selected.size === 0 || reading || !!fileError || invalidTargets) return
+    if (submitting.current || mutation.isPending || aiBlocked || !validPlanDate(planDate, today()) || selected.size === 0 || reading || !!fileError || invalidTargets || timingError || !(filePayloads.length || (rawJson.trim() && jsonValid))) return
     submitting.current = true
     mutation.mutate(retryInput ?? (filePayloads.length
       ? { requestId: createSmartAIRequestId(), date: planDate, days, audienceSlugs: [...selected], payloads: filePayloads, startNow: immediateStart, campaignStartTime }
@@ -474,7 +492,7 @@ function ImportPlanner({ audiences, selected, setSelected, planDate, setPlanDate
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div><h3 className="font-semibold">JSON da extensão</h3><p className="text-xs text-muted">Você pode importar coletas separadas ou classificar um lote misto.</p></div>
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-lg bg-surface-muted px-4 py-2 text-sm font-medium text-ink hover:bg-surface">
+            <label className="smart-file-control inline-flex cursor-pointer items-center gap-2 rounded-lg bg-surface-muted px-4 py-2 text-sm font-medium text-ink hover:bg-surface">
               <Upload size={16} /> Carregar ou substituir arquivos
               <input className="sr-only" type="file" accept="application/json,.json" multiple onChange={loadFiles} />
             </label>
@@ -519,12 +537,14 @@ function ImportPlanner({ audiences, selected, setSelected, planDate, setPlanDate
               <div className="flex justify-between gap-2"><dt className="text-muted">Início</dt><dd className="font-medium">{formatDate(planDate)}</dd></div>
               <div className="flex justify-between gap-2"><dt className="text-muted">Públicos</dt><dd className="font-medium">{selected.size}</dd></div>
             </dl>
-            <div className="mt-4"><Label htmlFor={`${daysId}-start`}>Horário de início</Label><input id={`${daysId}-start`} className="field-control w-full" type="time" min="09:00" max="20:59" value={campaignStartTime} disabled={immediateStart} onChange={(event) => setCampaignStartTime(event.target.value)} /></div>
-            <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={immediateStart} disabled={planDate !== today()} onChange={(event) => setStartNow(event.target.checked)} />Iniciar ao aprovar hoje</label>
+            <div className="mt-4"><Label htmlFor={`${daysId}-start`}>Horário de início (Brasília)</Label><input id={`${daysId}-start`} className="field-control w-full" type="time" min="09:00" max={endTime} value={campaignStartTime} aria-invalid={!!timingError} disabled={immediateStart} onChange={(event) => setCampaignStartTime(event.target.value)} /></div>
+            <label className="mt-3 flex min-h-11 items-center gap-2 text-sm"><input type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={immediateStart} disabled={planDate !== today()} onChange={(event) => setStartNow(event.target.checked)} />Iniciar ao aprovar hoje</label>
+            {timingError && <p role="status" className="mt-2 text-xs text-danger">{timingError}</p>}
+            {immediateStart && <p className="mt-2 text-xs text-warning">A aprovação poderá iniciar envios antes das 09:00. A análise não envia mensagens.</p>}
             <div className="mt-4"><Label htmlFor={daysId}>Espalhar a campanha por</Label><select id={daysId} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={days} onChange={(e) => setDays(Number(e.target.value))}><option value={1}>1 dia · {formatDate(planDate)}</option><option value={2}>2 dias · até {formatDate(addLocalDays(planDate, 1))}</option><option value={3}>3 dias · até {formatDate(addLocalDays(planDate, 2))}</option></select>
               <p className="mt-2 rounded-lg bg-surface-muted p-3 text-xs leading-relaxed text-muted">Define por quantas datas a proposta pode se estender. Cada público pode receber até <strong>50 produtos por dia</strong>, respeitando também o limite do grupo de WhatsApp vinculado. Ex.: dois públicos com grupos diferentes podem receber até 50 ofertas cada no mesmo dia. Ofertas que perderem o frescor antes do envio ficam de fora.</p></div>
             <div className="mt-4 rounded-lg border border-accent/30 bg-accent-soft p-3 text-xs leading-relaxed text-accent">A proposta considera encaixe no público, valor, comissão, sazonalidade, frescor e variedade. Usa IA para até {aiStatus?.limits.batchSize ?? 'o limite configurado de'} produtos por lote. Você revisa a proposta antes de confirmar os envios.</div>
-            <Button className="mt-4 w-full" loading={mutation.isPending || reading} loadingText={reading ? "Lendo arquivos…" : "Criando plano…"} type="button" disabled={mutation.isPending || reading || !!fileError || !validPlanDate(planDate, today()) || !(filePayloads.length > 0 || (rawJson.trim() && jsonValid)) || selected.size === 0 || invalidTargets || aiBlocked} onClick={() => submit()}>
+            <Button className="mt-4 w-full" loading={mutation.isPending || reading} loadingText={reading ? "Lendo arquivos…" : "Criando plano…"} type="button" disabled={mutation.isPending || reading || !!fileError || !!timingError || !validPlanDate(planDate, today()) || !(filePayloads.length > 0 || (rawJson.trim() && jsonValid)) || selected.size === 0 || invalidTargets || aiBlocked} onClick={() => submit()}>
               {mutation.isPending ? <Spinner /> : <BrainCircuit size={17} />} Usar IA: analisar e montar proposta
             </Button>
           </Card>
@@ -550,6 +570,7 @@ function PlanItemCard({ item, editable, saving, timeZone, onPatch, message, onMe
   message?: string; onMessageChange: (text: string) => void; onSaveMessage: () => void; onCancelMessage: () => void
 }) {
   const editingMessage = message !== undefined
+  const affiliateUrl = safeAffiliateUrl(item.product.affiliateUrl)
   const discount = item.product.originalPrice && item.product.originalPrice > item.product.discountedPrice
     ? Math.round((1 - item.product.discountedPrice / item.product.originalPrice) * 100) : undefined
 
@@ -577,6 +598,7 @@ function PlanItemCard({ item, editable, saving, timeZone, onPatch, message, onMe
             <ItemStateSelect item={item} disabled={!editable || saving} onChange={(state) => onPatch({ state })} />
           </div>
           <p className="mt-2 text-sm text-muted">{item.reason || 'Sem justificativa informada.'}</p>
+          {affiliateUrl && <a className="mt-2 inline-flex min-h-11 items-center gap-1.5 text-sm font-medium text-accent underline" href={affiliateUrl} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} aria-hidden="true" />Abrir oferta em nova aba</a>}
           {item.rejectionReasons && item.rejectionReasons.length > 0 && <p className="mt-1 text-xs text-danger">{item.rejectionReasons.join(' · ')}</p>}
           <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
             <span className="rounded-lg bg-surface-muted px-2.5 py-2"><strong>Nota</strong> {score(item.score)}</span>
