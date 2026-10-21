@@ -55,10 +55,20 @@ export const SmartAudiencePolicySchema = z
     maxStandouts: z.number().int().min(0).max(10).default(3),
     freshnessHours: z.number().int().min(1).max(24).default(24),
     timezone: TimezoneSchema.default('America/Sao_Paulo'),
+    excludePolitical: z.boolean().default(false),
+    minPrice: z.number().finite().min(0).optional(),
+    maxPrice: z.number().finite().min(0).optional(),
     minCommissionPercent: z.number().min(0).max(100).optional(),
     minEstimatedCommission: z.number().min(0).max(1_000_000).optional(),
   })
   .superRefine((value, context) => {
+    if (value.minPrice !== undefined && value.maxPrice !== undefined && value.minPrice > value.maxPrice) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['maxPrice'],
+        message: 'O preço máximo deve ser maior ou igual ao mínimo',
+      })
+    }
     if (value.startTime >= value.endTime) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -91,13 +101,21 @@ export const UpdateSmartAudienceSchema = z
     destinationGroupIds: z.array(z.string().max(120)).max(20).optional(),
     destinations: z.array(SmartAudienceDestinationSchema).max(20).optional(),
     profile: SmartAudienceProfileSchema.partial().optional(),
-    policy: SmartAudiencePolicySchema.innerType().partial().optional(),
+    policy: SmartAudiencePolicySchema.innerType().partial().extend({
+      minPrice: z.number().finite().min(0).nullable().optional(),
+      maxPrice: z.number().finite().min(0).nullable().optional(),
+      minCommissionPercent: z.number().min(0).max(100).nullable().optional(),
+      minEstimatedCommission: z.number().min(0).max(1_000_000).nullable().optional(),
+    }).optional(),
     description: z.string().trim().min(10).max(1000).optional(),
     dailyCap: z.number().int().min(1).max(50).optional(),
     startTime: TimeSchema.optional(),
     endTime: TimeSchema.optional(),
     minIntervalMinutes: z.number().int().min(12).max(16).optional(),
     maxIntervalMinutes: z.number().int().min(12).max(16).optional(),
+    excludePolitical: z.boolean().optional(),
+    minPrice: z.number().finite().min(0).nullable().optional(),
+    maxPrice: z.number().finite().min(0).nullable().optional(),
     minCommissionPercent: z.number().min(0).max(100).nullable().optional(),
     minEstimatedCommission: z.number().min(0).max(1_000_000).nullable().optional(),
     maxStandoutMessages: z.number().int().min(0).max(10).optional(),
@@ -134,6 +152,7 @@ export const CreateSmartPlanSchema = z
       .optional(),
     settings: SmartAudiencePolicySchema.innerType().partial().optional(),
     campaignStartTime: TimeSchema.optional(),
+    startNow: z.boolean().optional(),
   })
   .refine((value) => (value.rawJson === undefined) !== (value.payloads === undefined), {
     message: 'Informe rawJson ou payloads, exclusivamente',
@@ -159,6 +178,7 @@ export const SmartPlanItemSchema = z.object({
   standout: z.boolean().default(false),
   customMessage: z.string().trim().max(800).nullable().optional(),
   pinned: z.boolean().optional(),
+  sendOrder: z.number().int().nonnegative().optional(),
   observedAt: z.string().datetime(),
   scores: z.record(z.number()).optional(),
 })
@@ -167,6 +187,7 @@ export type SmartPlanItem = z.infer<typeof SmartPlanItemSchema>
 export const UpdateSmartPlanSchema = z.object({
   revision: z.number().int().positive(),
   campaignStartTime: TimeSchema.optional(),
+  startNow: z.boolean().optional(),
   items: z
     .array(
       z

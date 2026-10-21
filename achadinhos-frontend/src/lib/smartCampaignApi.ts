@@ -155,6 +155,7 @@ export interface SmartPlanItem {
   customMessage?: string | null
   messageIntro?: string | null
   pinned?: boolean
+  sendOrder?: number
 }
 
 export interface SmartPlanProgress {
@@ -205,7 +206,7 @@ export interface SmartPlan {
   date?: string
   days: number
   timezone?: string
-  settings?: { global?: { campaignStartTime?: string }; audiences?: Record<string, unknown> }
+  settings?: { global?: { campaignStartTime?: string; startNow?: boolean; earlyStart?: { date: string; time: string } }; audiences?: Record<string, unknown> }
   audienceSlugs: SmartAudienceSlug[]
   progress?: SmartPlanProgress | null
   inputSummary?: { total?: number; valid?: number; duplicates?: number; warnings?: number }
@@ -243,6 +244,8 @@ export type SmartCreatePlanInput = {
   date: string
   days: number
   audienceSlugs: SmartAudienceSlug[]
+  campaignStartTime?: string
+  startNow?: boolean
 } & (
   | { rawJson: string; payloads?: never }
   | { rawJson?: never; payloads: SmartImportPayload[] }
@@ -338,10 +341,10 @@ export const smartCampaignApi = {
   async plan(id: string): Promise<SmartPlan> {
     return normalizePlan(unwrap<SmartPlan>(await api.get(`/smart-campaigns/plans/${id}`)))
   },
-  async updatePlan(id: string, revision: number, items: SmartPlanItemPatch[], campaignStartTime?: string): Promise<SmartPlan> {
-    return normalizePlan(unwrap<SmartPlan>(await api.patch(`/smart-campaigns/plans/${id}`, { revision, items, campaignStartTime })))
+  async updatePlan(id: string, revision: number, items: SmartPlanItemPatch[], campaignStartTime?: string, startNow?: boolean): Promise<SmartPlan> {
+    return normalizePlan(unwrap<SmartPlan>(await api.patch(`/smart-campaigns/plans/${id}`, { revision, items, campaignStartTime, startNow })))
   },
-  async action(id: string, action: 'approve' | 'pause' | 'resume' | 'cancel' | 'retry', revision?: number, requestId?: string): Promise<SmartPlan> {
+  async action(id: string, action: 'approve' | 'pause' | 'resume' | 'cancel' | 'retry' | 'advance' | 'shuffle', revision?: number, requestId?: string): Promise<SmartPlan> {
     return normalizePlan(unwrap<SmartPlan>(await api.post(`/smart-campaigns/plans/${id}/${action}`, { revision, requestId })))
   },
   async resolveSend(id: string, resolution: SmartSendResolution): Promise<SmartSendResolutionResult> {

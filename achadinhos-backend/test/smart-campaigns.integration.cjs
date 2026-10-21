@@ -209,6 +209,86 @@ async function configureAudiences(service, userId, slugs = Object.keys(groupIds)
   }
 }
 
+test('advance preserves reservations, intervals and retries; shuffle survives approval', async (t) => {
+  assertLocalDatabase()
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T11:00:00Z') })
+  const user = await createUser('advance')
+  try {
+    const deps = fakeDependencies()
+    const service = new SmartCampaignService(deps.imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['domestica'])
+    const created = await service.createPlan(user.id, {
+      requestId: randomUUID(), date: '2026-10-21', days: 2, audienceSlugs: ['domestica'],
+      rawJson: Array.from({ length: 8 }, (_, i) => offer(`Organizador doméstico ${i}`, 900 + i)),
+    })
+    const row = await SmartPlan.findOne({ where: { uuid: created.id } })
+    await service.processPendingAnalysis(row.id)
+    const reviewed = await service.getPlan(user.id, created.id)
+    const selected = reviewed.items.filter((item) => item.state === 'SELECTED')
+    assert.ok(selected.length >= 3)
+    const pinned = await service.updatePlan(user.id, created.id, {
+      revision: reviewed.revision, items: [{ id: selected[0].id, pinned: true }],
+    })
+    const shuffled = await service.shuffle(user.id, created.id, pinned.revision)
+    assert.deepEqual(shuffled.items.filter((item) => item.state === 'SELECTED').map((item) => item.id).sort(), selected.map((item) => item.id).sort())
+    assert.equal(shuffled.items.find((item) => item.id === selected[0].id).sendOrder, 0)
+    await assert.rejects(service.shuffle(user.id, created.id, pinned.revision), /alterado/)
+    const approved = await service.approve(user.id, created.id, shuffled.revision)
+    const before = await SmartSend.findAll({ where: { planId: row.id }, order: [['scheduledAt', 'ASC']] })
+    const expected = shuffled.items.filter((item) => item.state === 'SELECTED').sort((a, b) => a.sendOrder - b.sendOrder)
+    assert.deepEqual(before.map((send) => send.offer.title), expected.map((item) => item.product.title))
+    const original = before.map((send) => ({ id: send.id, at: send.scheduledAt.getTime(), status: send.status, attempts: send.attempts }))
+    const advanced = await service.advance(user.id, created.id, approved.revision)
+    assert.equal(advanced.settings.global.earlyStart.time, '08:00')
+    const after = await SmartSend.findAll({ where: { planId: row.id }, order: [['scheduledAt', 'ASC']] })
+    assert.equal(after[0].scheduledAt.toISOString(), '2026-10-21T11:00:00.000Z')
+    assert.deepEqual(after.map((send) => send.id), original.map((send) => send.id))
+    assert.deepEqual(after.map((send) => [send.status, send.attempts]), original.map((send) => [send.status, send.attempts]))
+    for (let i = 1; i < after.length; i++) assert.equal(after[i].scheduledAt - after[i - 1].scheduledAt, original[i].at - original[i - 1].at)
+    const retry = await service.advance(user.id, created.id, approved.revision)
+    assert.equal(retry.revision, advanced.revision)
+    const again = await SmartSend.findAll({ where: { planId: row.id }, order: [['scheduledAt', 'ASC']] })
+    assert.deepEqual(again.map((send) => send.scheduledAt.toISOString()), after.map((send) => send.scheduledAt.toISOString()))
+    after[0].status = SMART_SEND_STATUS.UNKNOWN
+    await after[0].save()
+    await assert.rejects(service.advance(user.id, created.id, advanced.revision), /incertos/)
+    await assert.rejects(service.advance(user.id + 100000, created.id, advanced.revision), /não encontrado/)
+  } finally {
+    await user.destroy()
+    t.mock.timers.reset()
+  }
+})
+
+test('creation start-now intent sends only after approval and rejects future-day intent', async (t) => {
+  assertLocalDatabase()
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T11:00:25Z') })
+  const user = await createUser('start-now')
+  try {
+    const deps = fakeDependencies()
+    const service = new SmartCampaignService(deps.imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['domestica'])
+    const input = { requestId: randomUUID(), date: '2026-10-21', days: 1, audienceSlugs: ['domestica'], startNow: true, rawJson: [offer('Organizador doméstico', 999)] }
+    await assert.rejects(service.createPlan(user.id, { ...input, date: '2026-10-22' }), /hoje/)
+    const created = await service.createPlan(user.id, input)
+    const row = await SmartPlan.findOne({ where: { uuid: created.id } })
+    assert.equal(await SmartSend.count({ where: { planId: row.id } }), 0)
+    await service.processPendingAnalysis(row.id)
+    const reviewed = await service.getPlan(user.id, created.id)
+    assert.equal(reviewed.settings.global.startNow, true)
+    const approved = await service.approve(user.id, created.id, reviewed.revision)
+    assert.equal(approved.sends[0].scheduledAt.toISOString(), '2026-10-21T11:01:00.000Z')
+    assert.deepEqual(approved.settings.global.earlyStart, { date: '2026-10-21', time: '08:00' })
+    const sender = new SmartCampaignSender(deps.uazapi, deps.connections, deps.groups, {
+      ownerId: 'early-start-test', batchSize: 1, now: () => new Date('2026-10-21T11:01:00Z'),
+    })
+    const sent = await sender.processDue()
+    assert.equal(sent.sent, 1, 'the worker actually sends before 09:00 after explicit approval')
+  } finally {
+    await user.destroy()
+    t.mock.timers.reset()
+  }
+})
+
 test('smart audiences are seeded, editable, and tenant scoped', async () => {
   assertLocalDatabase()
   await sequelize.authenticate()
@@ -403,7 +483,7 @@ test('concurrent approvals cannot duplicate reservations or exceed a destination
     const edited = await service.getPlan(user.id, created.id)
     await assert.rejects(
       service.approve(user.id, created.id, edited.revision),
-      /excederia|limite|comporta/i,
+      /excede|limite|comporta/i,
     )
 
     // A separate one-item plan exercises the approval race and idempotent retry.
@@ -664,6 +744,7 @@ test('UNKNOWN cooldown is server enforced and explicit resolution reconciles led
       groupId: groupIds.pet,
       groupName: 'PET',
       campaignId: null,
+      planUuid: plan.uuid,
       status: PRODUCT_GROUP_DELIVERY_STATUS.SENDING,
     })
     for (const resolution of ['sent', 'retry', 'skip']) {

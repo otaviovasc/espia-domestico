@@ -17,6 +17,8 @@ import { SafeSender, type SendResult } from '@/services/SafeSender'
 import { DEFAULT_TEMPLATE } from '@/utils/messageTemplate'
 import { offerIdentityAliases } from '@/utils/offerIdentity'
 import { logger } from '@/utils/logger'
+import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
+import { evaluateSmartProductEligibility } from '@/utils/smartProductEligibility'
 
 const HARD_START_TIME = '09:00'
 const HARD_END_TIME = '21:00'
@@ -62,6 +64,7 @@ const DEFAULT_POLICY: SmartAudiencePolicy = {
   maxStandouts: 3,
   freshnessHours: 24,
   timezone: 'America/Sao_Paulo',
+  excludePolitical: false,
 }
 
 function validTimezone(value: unknown, fallback: string): string {
@@ -90,17 +93,17 @@ function earlierTime(a: string, b: string): string {
 export function resolveSmartSendPolicy(plan: SmartPlan, send: SmartSend): SmartAudiencePolicy {
   const settings = plan.settings as {
     audiences?: Record<string, Partial<SmartAudiencePolicy>>
-    global?: { timezone?: string }
+    global?: SmartCampaignTiming
   }
   const raw =
     settings?.audiences?.[send.audienceSlug] ?? (plan.settings as Partial<SmartAudiencePolicy>)
   const timezone = validTimezone(raw?.timezone, validTimezone(send.timezone, plan.timezone))
-  const startTime = laterTime(
+  const startTime = explicitSmartStart(settings.global, send.localDate, laterTime(
     typeof raw?.startTime === 'string' && /^\d{2}:\d{2}$/.test(raw.startTime)
       ? raw.startTime
       : HARD_START_TIME,
     HARD_START_TIME,
-  )
+  ))
   const endTime = earlierTime(
     typeof raw?.endTime === 'string' && /^\d{2}:\d{2}$/.test(raw.endTime)
       ? raw.endTime
@@ -406,6 +409,8 @@ export class SmartCampaignSender {
       )
       return 'blocked'
     }
+    const finalAudienceState = await this.enforceCurrentAudience(plan, send, this.now(), prepared.claim)
+    if (finalAudienceState) return finalAudienceState
     return this.callProvider(send, plan, context, group, prepared.claim)
   }
 
@@ -424,12 +429,17 @@ export class SmartCampaignSender {
     plan: SmartPlan,
     send: SmartSend,
     now: Date,
-  ): Promise<'rescheduled' | 'blocked' | null> {
+    preparedClaim?: ProductGroupDelivery,
+  ): Promise<'rescheduled' | 'blocked' | 'skipped' | null> {
     const audience = await SmartAudience.findOne({
       where: { userId: send.userId, slug: send.audienceSlug },
-      attributes: ['enabled', 'destinations'],
+      attributes: ['enabled', 'destinations', 'policy'],
     })
     if (!audience || !audience.enabled) {
+      if (preparedClaim) {
+        await this.abortPreparedDelivery(plan, send, preparedClaim, 'Este público foi desativado antes do envio.')
+        return 'blocked'
+      }
       await this.reschedule(
         send,
         new Date(now.getTime() + 5 * 60 * 1000),
@@ -439,12 +449,22 @@ export class SmartCampaignSender {
       return 'rescheduled'
     }
     if (!audience.destinations.some((destination) => destination.groupId === send.groupId)) {
-      await this.pauseForBlock(
-        plan,
-        send,
-        'O grupo não está mais vinculado a este público. Revise os destinos e aprove o plano novamente.',
-      )
+      const reason = 'O grupo não está mais vinculado a este público. Revise os destinos e aprove o plano novamente.'
+      if (preparedClaim) await this.abortPreparedDelivery(plan, send, preparedClaim, reason)
+      else await this.pauseForBlock(plan, send, reason)
       return 'blocked'
+    }
+    const eligibility = evaluateSmartProductEligibility(
+      send.offer, resolveSmartSendPolicy(plan, send), audience.policy ?? {},
+    )
+    if (!eligibility.eligible) {
+      const reason = `Produto excluído pelos filtros: ${eligibility.reasons.join('; ')}`
+      if (preparedClaim) {
+        await this.abortPreparedDelivery(plan, send, preparedClaim, reason)
+        return 'blocked'
+      }
+      await this.finishWithoutProvider(send, SMART_SEND_STATUS.SKIPPED, reason)
+      return 'skipped'
     }
     return null
   }

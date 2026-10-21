@@ -64,6 +64,21 @@ test('smart sender timezone conversion preserves the requested local slot', () =
   assert.equal(instant.toISOString(), '2026-10-15T12:00:00.000Z')
 })
 
+test('an explicit early start applies only to its approved local date', () => {
+  const plan = {
+    timezone: 'America/Sao_Paulo',
+    settings: {
+      global: { earlyStart: { date: '2026-10-21', time: '08:30' } },
+      audiences: { domestica: { startTime: '09:00', endTime: '21:00' } },
+    },
+  }
+  const send = { audienceSlug: 'domestica', localDate: '2026-10-21' }
+  assert.equal(resolveSmartSendPolicy(plan, send).startTime, '08:30')
+  assert.equal(resolveSmartSendPolicy(plan, { ...send, localDate: '2026-10-22' }).startTime, '09:00')
+  plan.settings.global.earlyStart.time = '25:00'
+  assert.equal(resolveSmartSendPolicy(plan, send).startTime, '09:00')
+})
+
 test('standout intro strips links, placeholders and unsafe control bytes', () => {
   const result = sanitizeSmartMessageIntro(
     '  ⭐ Oferta rara {url}\u0000\nVeja https://example.invalid/x agora\nLinha 3\nLinha 4  ',

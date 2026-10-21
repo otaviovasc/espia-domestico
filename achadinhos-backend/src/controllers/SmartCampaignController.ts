@@ -102,6 +102,18 @@ export class SmartCampaignController {
     })
   }
 
+  async advance(request: Request, response: Response): Promise<void> {
+    response.json({ success: true, data: await this.service.advance(
+      this.userId(request), request.params.id, this.actionRevision(request),
+    ) })
+  }
+
+  async shuffle(request: Request, response: Response): Promise<void> {
+    response.json({ success: true, data: await this.service.shuffle(
+      this.userId(request), request.params.id, this.actionRevision(request),
+    ) })
+  }
+
   async resume(request: Request, response: Response): Promise<void> {
     response.json({
       success: true,

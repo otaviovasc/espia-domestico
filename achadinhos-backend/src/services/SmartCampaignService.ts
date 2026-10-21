@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, randomInt, randomUUID } from 'node:crypto'
 import { CreationAttributes, Op, QueryTypes, Transaction } from 'sequelize'
 import { injectable, inject } from 'tsyringe'
 import { sequelize } from '@/database'
@@ -44,8 +44,25 @@ import { offerIdentity, offerIdentityAliases } from '@/utils/offerIdentity'
 import { logger } from '@/utils/logger'
 import { recordSmartOperation } from '@/utils/smartOperationAudit'
 import { env } from '@/config/env'
+import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
+import { evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 
 const MIN_SMART_FIT = 70
+
+function compareSmartOrder(left: SmartPlanItem, right: SmartPlanItem): number {
+  return (left.sendOrder ?? Number.MAX_SAFE_INTEGER) - (right.sendOrder ?? Number.MAX_SAFE_INTEGER)
+    || right.score - left.score
+}
+
+function immediateTiming(date: string, timezones: string[], now = new Date()) {
+  if (new Set(timezones).size !== 1)
+    throw BadRequestError('O início imediato exige o mesmo fuso horário nos públicos')
+  if (timezones.some((timezone) => getSmartLocalDate(now, timezone) !== date))
+    throw BadRequestError('O início imediato está disponível apenas para hoje')
+  const parts = zonedParts(now, timezones[0])
+  const time = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`
+  return { date, time }
+}
 
 const NICHE_CUES: Record<NicheSlug, RegExp> = {
   domestica: /\b(cozinha|panela|air ?fryer|airfryer|liquidificador|aspirador|limpeza|organizador|edredom|cama|banho|skincare|maquiagem|secador|chapinha|bolsa|necessaire)\b/i,
@@ -72,6 +89,7 @@ const DEFAULT_POLICY: SmartAudiencePolicy = {
   maxStandouts: 3,
   freshnessHours: 24,
   timezone: 'America/Sao_Paulo',
+  excludePolitical: false,
   minCommissionPercent: 0,
   minEstimatedCommission: 0,
 }
@@ -251,16 +269,6 @@ export function buildSmartSchedule(
   return slots
 }
 
-function commissionRate(offer: OfferInput): number {
-  if (typeof offer.commissionRate === 'number') return offer.commissionRate
-  const parsed = Number(
-    String(offer.commissionPercent ?? '')
-      .replace('%', '')
-      .replace(',', '.'),
-  )
-  return Number.isFinite(parsed) ? Math.max(0, Math.min(100, parsed)) : 0
-}
-
 function discount(offer: OfferInput): number {
   if (typeof offer.discountPercent === 'number') return offer.discountPercent
   if (!offer.originalPrice || offer.originalPrice <= offer.discountedPrice) return 0
@@ -365,7 +373,7 @@ function audienceSnapshot(
 }
 
 function serializeAudience(audience: SmartAudience) {
-  const policy = audience.policy
+  const policy = { ...audience.policy, excludePolitical: audience.policy.excludePolitical ?? false }
   return {
     id: audience.id,
     slug: audience.slug,
@@ -382,6 +390,9 @@ function serializeAudience(audience: SmartAudience) {
     endTime: policy.endTime,
     minIntervalMinutes: policy.minGapSeconds / 60,
     maxIntervalMinutes: policy.maxGapSeconds / 60,
+    excludePolitical: policy.excludePolitical,
+    minPrice: policy.minPrice,
+    maxPrice: policy.maxPrice,
     minCommissionPercent: policy.minCommissionPercent,
     minEstimatedCommission: policy.minEstimatedCommission,
     maxStandoutMessages: policy.maxStandouts,
@@ -579,6 +590,9 @@ export class SmartCampaignService {
       ...(input.maxStandoutMessages === undefined
         ? {}
         : { maxStandouts: input.maxStandoutMessages }),
+      ...(input.excludePolitical === undefined ? {} : { excludePolitical: input.excludePolitical }),
+      ...(input.minPrice === undefined ? {} : { minPrice: input.minPrice }),
+      ...(input.maxPrice === undefined ? {} : { maxPrice: input.maxPrice }),
       ...(input.minCommissionPercent === undefined
         ? {}
         : { minCommissionPercent: input.minCommissionPercent ?? undefined }),
@@ -586,11 +600,15 @@ export class SmartCampaignService {
         ? {}
         : { minEstimatedCommission: input.minEstimatedCommission ?? undefined }),
     }
-    const policy = SmartAudiencePolicySchema.parse({
+    const mergedPolicy = {
       ...audience.policy,
       ...(input.policy ?? {}),
       ...flatPolicy,
-    })
+    }
+    for (const key of ['minPrice', 'maxPrice', 'minCommissionPercent', 'minEstimatedCommission'] as const) {
+      if (mergedPolicy[key] === null) delete mergedPolicy[key]
+    }
+    const policy = SmartAudiencePolicySchema.parse(mergedPolicy)
     if (policy.startTime >= policy.endTime || policy.minGapSeconds > policy.maxGapSeconds) {
       throw BadRequestError('Política de horário ou intervalo inválida')
     }
@@ -679,6 +697,7 @@ export class SmartCampaignService {
     ) {
       throw BadRequestError('A data inicial do plano não pode estar no passado')
     }
+    if (input.startNow) immediateTiming(input.date, audiences.map((audience) => audience.policy.timezone))
     const parsed = input.payloads
       ? this.imports.parsePayloads(input.payloads)
       : this.imports.parse(input.rawJson)
@@ -713,6 +732,7 @@ export class SmartCampaignService {
       global: {
         timezone: audiences[0]?.policy.timezone ?? DEFAULT_POLICY.timezone,
         campaignStartTime: input.campaignStartTime ?? '09:00',
+        startNow: input.startNow ?? false,
       },
       audienceProfiles: audienceSnapshot(audiences),
     }
@@ -731,6 +751,7 @@ export class SmartCampaignService {
             offerAudienceSlugs,
             settings: input.settings ?? {},
             campaignStartTime: input.campaignStartTime ?? '09:00',
+            ...(input.startNow ? { startNow: true } : {}),
           }),
         )
         .digest('hex')
@@ -1227,8 +1248,7 @@ export class SmartCampaignService {
           observations[index],
         )
         const warnings = [...(analysis.warnings ?? [])]
-        const rate = commissionRate(offer)
-        const hardReasons: string[] = []
+          const hardReasons = evaluateSmartProductEligibility(offer, policy, audience.policy).reasons
         if (!isVerifiedOffer(offer)) hardReasons.push('Atribuição afiliada não verificada')
         if (!hasCommissionEvidence(offer)) hardReasons.push('Comissão não informada na coleta')
         if (!observations[index]) hardReasons.push('Horário de observação ausente')
@@ -1242,9 +1262,6 @@ export class SmartCampaignService {
         ) {
           hardReasons.push('Evidência da oferta está antiga; atualize o produto')
         }
-        if (rate < (policy.minCommissionPercent ?? 0)) hardReasons.push('Comissão abaixo do mínimo')
-        if (scored.estimatedCommission < (policy.minEstimatedCommission ?? 0))
-          hardReasons.push('Comissão estimada abaixo do mínimo')
         if (fit.score < MIN_SMART_FIT) hardReasons.push('Baixa afinidade com o público')
         if (!allowedRoutes.get(index)?.has(audience.slug)) {
           hardReasons.push('Priorizado para outro público para evitar repetição')
@@ -1461,9 +1478,9 @@ export class SmartCampaignService {
         throw ConflictError('Somente planos em revisão podem ser editados')
       if (plan.revision !== input.revision)
         throw ConflictError('O plano foi alterado; atualize a tela')
-      const settings = plan.settings as {
+      const settings = structuredClone(plan.settings) as {
         audiences: Record<string, SmartAudiencePolicy>
-        global?: { timezone?: string; campaignStartTime?: string }
+        global?: SmartCampaignTiming
       }
       if (input.campaignStartTime) {
         const latestEnd = plan.audienceSlugs
@@ -1474,7 +1491,17 @@ export class SmartCampaignService {
         settings.global = { ...settings.global, campaignStartTime: input.campaignStartTime }
         plan.settings = settings
       }
+      if (input.startNow !== undefined) {
+        if (input.startNow) immediateTiming(plan.startDate, plan.audienceSlugs.map((slug) => settings.audiences[slug].timezone))
+        settings.global = { ...settings.global, startNow: input.startNow }
+        plan.settings = settings
+      }
       const updates = new Map(input.items.map((item) => [item.id, item]))
+      const currentAudiences = await SmartAudience.findAll({
+        where: { userId, slug: plan.audienceSlugs },
+        transaction,
+      })
+      const currentPolicies = new Map(currentAudiences.map((audience) => [audience.slug, audience.policy]))
       const start = plan.startDate
       const end = addDays(start, plan.days - 1)
       const items = (plan.items as SmartPlanItem[]).map((item) => {
@@ -1487,19 +1514,15 @@ export class SmartCampaignService {
         if (next.state === 'SELECTED') {
           const settings = plan.settings as { audiences: Record<string, SmartAudiencePolicy> }
           const policy = settings.audiences[next.audienceSlug]
-          const gateFailures: string[] = []
-          const rate = commissionRate(next.product)
-          const estimated = (next.product.discountedPrice * rate) / 100
+            const currentPolicy = currentPolicies.get(next.audienceSlug)
+            if (!currentPolicy) throw BadRequestError('Público não encontrado')
+            const gateFailures = evaluateSmartProductEligibility(next.product, policy ?? {}, currentPolicy).reasons
           if (!isVerifiedOffer(next.product))
             gateFailures.push('atribuição afiliada não verificada')
           if (!hasCommissionEvidence(next.product)) gateFailures.push('comissão não informada')
           if (!next.observedAt || new Date(next.observedAt).getTime() <= 0)
             gateFailures.push('observação ausente')
           if ((next.fitScore ?? 0) < MIN_SMART_FIT) gateFailures.push('afinidade insuficiente')
-          if (rate < (policy?.minCommissionPercent ?? 0))
-            gateFailures.push('comissão abaixo do mínimo')
-          if (estimated < (policy?.minEstimatedCommission ?? 0))
-            gateFailures.push('retorno estimado abaixo do mínimo')
           if (gateFailures.length) {
             throw BadRequestError(`O item não pode ser selecionado: ${gateFailures.join(', ')}`)
           }
@@ -1520,7 +1543,7 @@ export class SmartCampaignService {
           for (const date of dates) {
             const dayItems = items
               .filter((item) => item.audienceSlug === slug && item.state === 'SELECTED' && item.date === date)
-              .sort((left, right) => right.score - left.score)
+              .sort(compareSmartOrder)
             const earliest = date === getSmartLocalDate(new Date(), policy.timezone)
               ? new Date(Date.now() + policy.minGapSeconds * 1000)
               : undefined
@@ -1639,9 +1662,9 @@ export class SmartCampaignService {
           `Pause as campanhas manuais ativas: ${conflicting.map((item) => item.name).join(', ')}`,
         )
       }
-      const settings = plan.settings as {
+      const settings = structuredClone(plan.settings) as {
         audiences: Record<string, SmartAudiencePolicy>
-        global?: { campaignStartTime?: string }
+        global?: SmartCampaignTiming
       }
       const selected = (plan.items as SmartPlanItem[]).filter((item) => item.state === 'SELECTED')
       if (!selected.length) throw BadRequestError('Selecione ao menos um produto antes de aprovar')
@@ -1651,6 +1674,12 @@ export class SmartCampaignService {
       }
       const rows: CreationAttributes<SmartSend>[] = []
       validateAudienceDailyCaps(selected, settings.audiences)
+      const approvalNow = new Date()
+      if (settings.global?.startNow) {
+        const earlyStart = immediateTiming(plan.startDate, usedSlugs.map((slug) => settings.audiences[slug].timezone), approvalNow)
+        settings.global = { ...settings.global, earlyStart }
+        plan.settings = { ...settings, global: { ...settings.global } }
+      }
       for (const slug of usedSlugs) {
         const audience = selectedAudiences.get(slug)!
         const policy = {
@@ -1664,15 +1693,16 @@ export class SmartCampaignService {
         ]) {
           const dayItems = selected
             .filter((item) => item.audienceSlug === slug && item.date === date)
-            .sort((left, right) => right.score - left.score)
+            .sort(compareSmartOrder)
+          const dayPolicy = { ...policy, startTime: explicitSmartStart(settings.global, date, policy.startTime) }
           let earliest: Date | undefined
-          if (date === getSmartLocalDate(new Date(), policy.timezone)) {
-            earliest = new Date(Date.now() + policy.minGapSeconds * 1000)
+          if (date === getSmartLocalDate(approvalNow, policy.timezone)) {
+            earliest = settings.global?.startNow ? approvalNow : new Date(approvalNow.getTime() + policy.minGapSeconds * 1000)
           }
           const slots = buildSmartSchedule(
             date,
             dayItems.length,
-            policy,
+            dayPolicy,
             `${plan.uuid}:${slug}:${date}:approved`,
             earliest,
           )
@@ -1682,17 +1712,15 @@ export class SmartCampaignService {
         }
         const standoutByDate = new Map<string, number>()
         for (const item of selected.filter((entry) => entry.audienceSlug === slug)) {
-          const rate = commissionRate(item.product)
-          const estimatedCommission = (item.product.discountedPrice * rate) / 100
+          const eligibility = evaluateSmartProductEligibility(item.product, policy, audience.policy)
           if (
             !isVerifiedOffer(item.product) ||
             !hasCommissionEvidence(item.product) ||
             (item.fitScore ?? 0) < MIN_SMART_FIT ||
-            rate < (policy.minCommissionPercent ?? 0) ||
-            estimatedCommission < (policy.minEstimatedCommission ?? 0)
+            !eligibility.eligible
           ) {
             throw BadRequestError(
-              `O item "${item.product.title}" não atende aos critérios automáticos`,
+              `O item "${item.product.title}" não atende aos critérios automáticos${eligibility.reasons.length ? `: ${eligibility.reasons.join('; ')}` : ''}`,
             )
           }
           if (item.standout) {
@@ -1828,6 +1856,111 @@ export class SmartCampaignService {
 
   async pause(userId: number, uuid: string, revision?: number) {
     return this.changeScheduledStatus(userId, uuid, SMART_PLAN_STATUS.PAUSED, revision)
+  }
+
+  async shuffle(userId: number, uuid: string, revision: number) {
+    return sequelize.transaction(async (transaction) => {
+      const plan = await this.requirePlan(userId, uuid, transaction)
+      if (plan.status !== SMART_PLAN_STATUS.REVIEW)
+        throw ConflictError('Somente planos em revisão podem ser embaralhados')
+      if (plan.revision !== revision) throw ConflictError('O plano foi alterado; atualize a tela')
+      const items = (plan.items as SmartPlanItem[]).map((item) => ({ ...item }))
+      const groups = new Map<string, SmartPlanItem[]>()
+      for (const item of items.filter((item) => item.state === 'SELECTED')) {
+        const key = `${item.audienceSlug}:${item.date}`
+        const group = groups.get(key) ?? []
+        group.push(item)
+        groups.set(key, group)
+      }
+      for (const group of groups.values()) {
+        const ordered = group.sort(compareSmartOrder)
+        const movable = ordered.filter((item) => !item.pinned)
+        for (let index = movable.length - 1; index > 0; index--) {
+          const other = randomInt(index + 1)
+          ;[movable[index], movable[other]] = [movable[other], movable[index]]
+        }
+        const slots = ordered.map((item) => item.scheduledAt)
+        let cursor = 0
+        ordered.map((item) => item.pinned ? item : movable[cursor++]).forEach((item, index) => {
+          item.sendOrder = index
+          item.scheduledAt = slots[index]
+        })
+      }
+      plan.items = items
+      plan.revision += 1
+      await plan.save({ transaction })
+      await recordSmartOperation(userId, 'SMART_PLAN_SHUFFLED', {
+        planId: plan.id, planUuid: uuid, revision: plan.revision,
+      }, transaction)
+      return serializePlan(plan)
+    })
+  }
+
+  async advance(userId: number, uuid: string, revision: number) {
+    const preview = await this.requirePlan(userId, uuid)
+    const scope = await this.connections.getConnectionScope(userId)
+    if (!scope) throw BadRequestError('Conecte o WhatsApp antes de adiantar o plano')
+    const destinations = await SmartSend.findAll({
+      attributes: ['groupId'], where: { userId, planId: preview.id },
+    })
+    await sequelize.transaction(async (transaction) => {
+      await this.advisoryLock(transaction, `delivery-account:${userId}:${scope}`)
+      for (const groupId of [...new Set(destinations.map((send) => send.groupId))].sort()) {
+        await this.advisoryLock(transaction, `delivery-destination:${userId}:${scope}:${groupId}`)
+      }
+      // Match the sender's lock order: delivery locks, sends, then plan.
+      const sends = await SmartSend.findAll({
+        where: { userId, planId: preview.id }, transaction, lock: transaction.LOCK.UPDATE,
+        order: [['scheduledAt', 'ASC'], ['id', 'ASC']],
+      })
+      const plan = await this.requirePlan(userId, uuid, transaction)
+      const settings = plan.settings as { audiences: Record<string, SmartAudiencePolicy>; global?: SmartCampaignTiming }
+      if (settings.global?.advancedFromRevision === revision) return
+      if (plan.revision !== revision) throw ConflictError('O plano foi alterado; atualize a tela')
+      if (plan.status !== SMART_PLAN_STATUS.SCHEDULED)
+        throw ConflictError('Somente planos agendados podem ser adiantados')
+      const now = new Date()
+      if (sends.some((send) => [SMART_SEND_STATUS.UNKNOWN, SMART_SEND_STATUS.FAILED, SMART_SEND_STATUS.SENDING].includes(send.status)
+        || (send.leaseExpiresAt && send.leaseExpiresAt > now)))
+        throw ConflictError('Aguarde o envio em andamento ou resolva os envios incertos antes de adiantar')
+      if (await this.connections.getConnectionScope(userId) !== scope || sends.some((send) => send.connectionScope !== scope))
+        throw ConflictError('A conexão mudou; revise o plano antes de adiantar')
+      const today = getSmartLocalDate(now, plan.timezone)
+      const pending = sends.filter((send) => send.status === SMART_SEND_STATUS.PENDING && send.localDate === today)
+      if (!pending.length) throw ConflictError('Não há envios pendentes para hoje')
+      const earlyStart = immediateTiming(today, pending.map((send) => send.timezone), now)
+      const nextSlot = Math.ceil(now.getTime() / 60_000) * 60_000
+      const itemTimes = new Map<string, string>()
+      let changed = 0
+      for (const groupId of [...new Set(pending.map((send) => send.groupId))]) {
+        const group = pending.filter((send) => send.groupId === groupId)
+        const shift = Math.max(0, group[0].scheduledAt.getTime() - nextSlot)
+        if (!shift) continue
+        for (const send of group) {
+          const scheduledAt = new Date(send.scheduledAt.getTime() - shift)
+          const policy = settings.audiences[send.audienceSlug] ?? DEFAULT_POLICY
+          if (scheduledAt >= smartZonedInstant(today, policy.endTime < '21:00' ? policy.endTime : '21:00', send.timezone)
+            || !isEvidenceFresh(send.evidenceObservedAt, scheduledAt, Math.min(policy.freshnessHours, 24)))
+            throw ConflictError('A oferta ou a janela de envio não permite adiantar este plano')
+          send.scheduledAt = scheduledAt
+          await send.save({ transaction })
+          itemTimes.set(`${send.audienceSlug}:${send.localDate}:${send.offerIdentity}`, scheduledAt.toISOString())
+          changed++
+        }
+      }
+      if (!changed) return
+      plan.items = (plan.items as SmartPlanItem[]).map((item) => {
+        const scheduledAt = itemTimes.get(`${item.audienceSlug}:${item.date}:${offerIdentity(item.product)}`)
+        return scheduledAt ? { ...item, scheduledAt } : item
+      })
+      plan.settings = { ...settings, global: { ...settings.global, earlyStart, advancedFromRevision: revision } }
+      plan.revision += 1
+      await plan.save({ transaction })
+      await recordSmartOperation(userId, 'SMART_PLAN_ADVANCED', {
+        planId: plan.id, planUuid: uuid, revision: plan.revision, sendCount: changed, earlyStart,
+      }, transaction)
+    })
+    return this.getPlan(userId, uuid)
   }
 
   async resume(userId: number, uuid: string, revision?: number) {

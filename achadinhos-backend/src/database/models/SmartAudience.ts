@@ -27,6 +27,9 @@ export interface SmartAudiencePolicy {
   maxStandouts: number
   freshnessHours: number
   timezone: string
+  excludePolitical: boolean
+  minPrice?: number
+  maxPrice?: number
   minCommissionPercent?: number
   minEstimatedCommission?: number
 }
