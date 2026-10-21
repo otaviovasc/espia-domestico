@@ -350,6 +350,116 @@ test('advance preserves reservations, intervals and retries; shuffle survives ap
   }
 })
 
+test('concurrent advance and cancel finish without reverse delivery locks', { timeout: 15_000 }, async (t) => {
+  assertLocalDatabase()
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T10:00:25Z') })
+  const user = await createUser('advance-cancel')
+  try {
+    const deps = fakeDependencies()
+    const service = new SmartCampaignService(deps.imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['pet'])
+    const created = await service.createPlan(user.id, {
+      requestId: randomUUID(), date: '2026-10-21', days: 1, audienceSlugs: ['pet'],
+      rawJson: [offer('Coleira para gatos', 980)],
+    })
+    const row = await SmartPlan.findOne({ where: { uuid: created.id } })
+    await service.processPendingAnalysis(row.id)
+    const reviewed = await service.getPlan(user.id, created.id)
+    const approved = await service.approve(user.id, created.id, reviewed.revision)
+    const results = await Promise.allSettled([
+      service.advance(user.id, created.id, approved.revision),
+      service.cancel(user.id, created.id, approved.revision),
+    ])
+    assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1)
+    const rejected = results.find((result) => result.status === 'rejected')
+    assert.match(rejected.reason.message, /alterado/)
+    assert.equal(rejected.reason.statusCode, 409)
+    await row.reload()
+    assert.equal(row.revision, approved.revision + 1)
+    const sends = await SmartSend.findAll({ where: { planId: row.id } })
+    assert.ok(sends.length > 0)
+    assert.ok(sends.every((send) => send.status === (
+      row.status === SMART_PLAN_STATUS.CANCELLED ? SMART_SEND_STATUS.SKIPPED : SMART_SEND_STATUS.PENDING
+    )))
+  } finally {
+    await user.destroy()
+    t.mock.timers.reset()
+  }
+})
+
+test('resume requires restored original scope and groups without rebinding pending sends', async (t) => {
+  assertLocalDatabase()
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T10:00:25Z') })
+  const user = await createUser('resume-binding')
+  try {
+    const deps = fakeDependencies()
+    const service = new SmartCampaignService(deps.imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['pet'])
+    const created = await service.createPlan(user.id, {
+      requestId: randomUUID(), date: '2026-10-21', days: 1, audienceSlugs: ['pet'],
+      rawJson: [offer('Coleira para gatos', 981)],
+    })
+    const row = await SmartPlan.findOne({ where: { uuid: created.id } })
+    await service.processPendingAnalysis(row.id)
+    const reviewed = await service.getPlan(user.id, created.id)
+    const approved = await service.approve(user.id, created.id, reviewed.revision)
+    const paused = await service.pause(user.id, created.id, approved.revision)
+    deps.connections.getConnectionScope = async () => 'replacement-scope'
+    await assert.rejects(service.resume(user.id, created.id, paused.revision), /conexão original/)
+    deps.connections.getConnectionScope = async () => 'smart-test-scope'
+    await service.updateAudience(user.id, 'pet', { destinations: [] })
+    await assert.rejects(service.resume(user.id, created.id, paused.revision), /vínculo original/)
+    await configureAudiences(service, user.id, ['pet'])
+    const verifyGroups = deps.groups.requireCurrentGroups
+    deps.groups.requireCurrentGroups = async () => new Map()
+    await assert.rejects(service.resume(user.id, created.id, paused.revision), /grupos originais/)
+    deps.groups.requireCurrentGroups = verifyGroups
+    await SmartSend.update({ status: SMART_SEND_STATUS.UNKNOWN }, { where: { planId: row.id } })
+    await assert.rejects(service.resume(user.id, created.id, paused.revision), /incertos/)
+    await row.reload()
+    assert.equal(row.status, SMART_PLAN_STATUS.PAUSED)
+    assert.equal(row.revision, paused.revision)
+    await SmartSend.update({ status: SMART_SEND_STATUS.PENDING }, { where: { planId: row.id } })
+    const resumed = await service.resume(user.id, created.id, paused.revision)
+    assert.equal(resumed.status, SMART_PLAN_STATUS.SCHEDULED)
+    const sends = await SmartSend.findAll({ where: { planId: row.id } })
+    assert.ok(sends.every((send) => send.connectionScope === 'smart-test-scope' && send.groupId === groupIds.pet))
+  } finally {
+    await user.destroy()
+    t.mock.timers.reset()
+  }
+})
+
+test('startNow selects fresh early-morning evidence but approval revalidates its actual slot', async (t) => {
+  assertLocalDatabase()
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T10:00:25Z') })
+  const user = await createUser('start-now-freshness')
+  try {
+    const deps = fakeDependencies()
+    const service = new SmartCampaignService(deps.imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['pet'])
+    const created = await service.createPlan(user.id, {
+      requestId: randomUUID(), date: '2026-10-21', days: 1, audienceSlugs: ['pet'], startNow: true,
+      rawJson: [offer('Coleira para gatos', 982, { observedAt: new Date('2026-10-20T11:00:00Z') })],
+    })
+    const row = await SmartPlan.findOne({ where: { uuid: created.id } })
+    await service.processPendingAnalysis(row.id)
+    const reviewed = await service.getPlan(user.id, created.id)
+    const selected = reviewed.items.filter((item) => item.state === 'SELECTED')
+    assert.equal(selected.length, 1)
+    assert.equal(selected[0].scheduledAt, '2026-10-21T10:01:00.000Z')
+    assert.equal(await SmartSend.count({ where: { planId: row.id } }), 0)
+    t.mock.timers.setTime(new Date('2026-10-21T11:01:00Z').getTime())
+    await assert.rejects(service.approve(user.id, created.id, reviewed.revision), /atualiz|antiga|evidência/i)
+    await row.reload()
+    assert.equal(row.status, SMART_PLAN_STATUS.REVIEW)
+    assert.equal(await SmartSend.count({ where: { planId: row.id } }), 0)
+  } finally {
+    await user.destroy()
+    t.mock.timers.reset()
+  }
+})
+
 test('creation start-now intent sends only after approval and rejects future-day intent', async (t) => {
   assertLocalDatabase()
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T11:00:25Z') })
