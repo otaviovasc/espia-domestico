@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ClassificationProfileIdSchema } from './classificationProfile'
 import { OfferSchema } from './campaign'
 
 /** Only presentation and commercial fields can be edited; marketplace identity and AI score are immutable. */
@@ -35,6 +36,14 @@ export interface SavedProductClassification {
 }
 
 export type SavedProductClassifications = Record<string, SavedProductClassification>
+
+export const SavedProductFiltersSchema = z.object({
+  search: z.string().trim().max(300).optional(),
+  profileId: ClassificationProfileIdSchema.optional(),
+  category: z.enum(['A', 'B', 'C', 'D']).optional(),
+})
+
+export type SavedProductFilters = z.infer<typeof SavedProductFiltersSchema>
 
 export const SavedProductMembershipUpdateSchema = z
   .object({

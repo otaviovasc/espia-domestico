@@ -374,7 +374,7 @@ export class SmartCampaignSender {
       await this.pauseForBlock(
         plan,
         send,
-        'A conexão do WhatsApp mudou desde a aprovação. Revise e aprove o plano novamente.',
+        'A conexão do WhatsApp mudou desde a aprovação. Restaure a conexão original para retomar ou resolva os envios incertos e cancele os pendentes antes de criar outro plano.',
       )
       return 'blocked'
     }
@@ -396,7 +396,7 @@ export class SmartCampaignSender {
           plan,
           send,
           prepared.claim,
-          'A conexão mudou imediatamente antes do envio. Revise e aprove o plano novamente.',
+          'A conexão mudou imediatamente antes do envio. Restaure a conexão original para retomar ou resolva os envios incertos e cancele os pendentes antes de criar outro plano.',
         )
         return 'blocked'
       }
@@ -450,7 +450,7 @@ export class SmartCampaignSender {
       return 'rescheduled'
     }
     if (!audience.destinations.some((destination) => destination.groupId === send.groupId)) {
-      const reason = 'O grupo não está mais vinculado a este público. Revise os destinos e aprove o plano novamente.'
+      const reason = 'O grupo não está mais vinculado a este público. Restaure o vínculo original para retomar ou resolva os envios incertos e cancele os pendentes antes de criar outro plano.'
       if (preparedClaim) await this.abortPreparedDelivery(plan, send, preparedClaim, reason)
       else await this.pauseForBlock(plan, send, reason)
       return 'blocked'
@@ -596,14 +596,17 @@ export class SmartCampaignSender {
         const localReady = getSmartLocalParts(readyAt, policy.timezone)
         const tomorrow = addLocalDays(localReady.date, 1)
         const targetPolicy = resolveSmartSendPolicy(plan, { ...send, localDate: tomorrow } as SmartSend)
+        const readyPolicy = resolveSmartSendPolicy(plan, { ...send, localDate: localReady.date } as SmartSend)
         const target =
-          localReady.time >= policy.endTime
+          localReady.time >= readyPolicy.endTime
             ? smartLocalDateTime(
                 tomorrow,
                 targetPolicy.startTime,
                 targetPolicy.timezone,
               )
-            : readyAt
+            : localReady.time < readyPolicy.startTime
+              ? smartLocalDateTime(localReady.date, readyPolicy.startTime, readyPolicy.timezone)
+              : readyAt
         const localDate = getSmartLocalParts(target, policy.timezone).date
         if (!isEvidenceFresh(send.evidenceObservedAt, target, policy.freshnessHours)) {
           await this.finishInTransaction(

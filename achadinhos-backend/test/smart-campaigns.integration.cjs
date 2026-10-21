@@ -209,6 +209,97 @@ async function configureAudiences(service, userId, slugs = Object.keys(groupIds)
   }
 }
 
+test('eligibility excludes before AI, keeps rejected evidence and blocks manual/approval bypass', async (t) => {
+  assertLocalDatabase()
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T12:00:00Z') })
+  const user = await createUser('eligibility-rejected')
+  try {
+    const deps = fakeDependencies()
+    deps.intelligence.analyze = async () => assert.fail('all selected audiences excluded these offers before AI')
+    deps.intelligence.standoutCopy = async () => assert.fail('excluded offers must not request copy')
+    const service = new SmartCampaignService(deps.imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['pet'])
+    await service.updateAudience(user.id, 'pet', {
+      excludePolitical: true, minPrice: 90, maxPrice: 110,
+      minCommissionPercent: 10, minEstimatedCommission: 10,
+    })
+    const products = [
+      { ...offer('Coleira Bolsonaro', 950), discountedPrice: 100 },
+      { ...offer('Coleira pequena', 951), discountedPrice: 50 },
+      { ...offer('Coleira sem comissão', 952), discountedPrice: 100, commissionRate: undefined,
+        commissionPercent: undefined, extensionEvidence: { extractedAt: '2026-10-21T12:00:00Z' } },
+    ]
+    const created = await service.createPlan(user.id, {
+      requestId: randomUUID(), date: '2026-10-21', days: 1, audienceSlugs: ['pet'], rawJson: products,
+    })
+    const row = await SmartPlan.findOne({ where: { uuid: created.id } })
+    await service.processPendingAnalysis(row.id)
+    const reviewed = await service.getPlan(user.id, created.id)
+    assert.equal(reviewed.status, SMART_PLAN_STATUS.REVIEW)
+    assert.equal(reviewed.items.length, 3)
+    assert.ok(reviewed.items.every((item) => item.state === 'REJECTED'))
+    assert.match(reviewed.items[0].reason, /política/)
+    assert.match(reviewed.items[1].reason, /Preço abaixo/)
+    assert.equal(reviewed.items[2].product.commissionRate, undefined)
+    assert.equal(reviewed.items[2].estimatedCommission, undefined)
+    await assert.rejects(service.updatePlan(user.id, created.id, {
+      revision: reviewed.revision, items: [{ id: reviewed.items[0].id, state: 'SELECTED' }],
+    }), /política/)
+    // Persist a forged selection to prove approval has its own gate.
+    await row.reload()
+    row.items = row.items.map((item, index) => index === 0 ? { ...item, state: 'SELECTED', fitScore: 95 } : item)
+    await row.save()
+    await assert.rejects(service.approve(user.id, created.id, reviewed.revision), /política/)
+    assert.equal(await SmartSend.count({ where: { planId: row.id } }), 0)
+  } finally {
+    await user.destroy()
+  }
+})
+
+test('current eligibility blocks review, approval and already-approved dispatch after policy changes', async (t) => {
+  assertLocalDatabase()
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T12:00:00Z') })
+  const user = await createUser('eligibility-live')
+  try {
+    let providerCalls = 0
+    const deps = fakeDependencies({ provider: {
+      async sendText() { providerCalls++; return { id: 'should-not-send' } },
+      async sendMedia() { providerCalls++; return { id: 'should-not-send' } },
+    } })
+    const service = new SmartCampaignService(deps.imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['pet'])
+    const created = await service.createPlan(user.id, {
+      requestId: randomUUID(), date: '2026-10-21', days: 1, audienceSlugs: ['pet'],
+      rawJson: [{ ...offer('Fonte automática para gatos', 953), discountedPrice: 100 }],
+      startNow: true,
+    })
+    const row = await SmartPlan.findOne({ where: { uuid: created.id } })
+    await service.processPendingAnalysis(row.id)
+    const reviewed = await service.getPlan(user.id, created.id)
+    const selected = reviewed.items.find((item) => item.state === 'SELECTED')
+    assert.ok(selected)
+    await service.updateAudience(user.id, 'pet', { maxPrice: 99 })
+    await assert.rejects(service.updatePlan(user.id, created.id, {
+      revision: reviewed.revision, items: [{ id: selected.id, state: 'SELECTED' }],
+    }), /Preço acima/)
+    await assert.rejects(service.approve(user.id, created.id, reviewed.revision), /Preço acima/)
+    assert.equal(await SmartSend.count({ where: { planId: row.id } }), 0)
+    await service.updateAudience(user.id, 'pet', { maxPrice: null })
+    await service.approve(user.id, created.id, reviewed.revision)
+    await service.updateAudience(user.id, 'pet', { minEstimatedCommission: 100 })
+    const sender = new SmartCampaignSender(deps.uazapi, deps.connections, deps.groups, { now: () => new Date('2026-10-21T12:00:00Z') })
+    const outcome = await sender.processDue()
+    assert.equal(outcome.skipped, 1)
+    assert.equal(providerCalls, 0)
+    const send = await SmartSend.findOne({ where: { planId: row.id } })
+    assert.equal(send.status, SMART_SEND_STATUS.SKIPPED)
+    assert.match(send.lastError, /Comissão estimada abaixo/)
+    assert.equal(await ProductGroupDelivery.count({ where: { planUuid: row.uuid } }), 0)
+  } finally {
+    await user.destroy()
+  }
+})
+
 test('advance preserves reservations, intervals and retries; shuffle survives approval', async (t) => {
   assertLocalDatabase()
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T11:00:00Z') })

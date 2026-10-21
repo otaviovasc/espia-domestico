@@ -39,6 +39,7 @@ import { NICHE_PRESETS } from '@/services/nichePresets'
 import { OfferImportService } from '@/services/OfferImportService'
 import { SavedProductService } from '@/services/SavedProductService'
 import { SmartCampaignIntelligence } from '@/services/SmartCampaignIntelligence'
+import { listSmartPlanHistory, type SmartPlanHistoryQuery } from '@/services/smartCampaignHistory'
 import { User } from '@/database/models/User'
 import { offerIdentity, offerIdentityAliases } from '@/utils/offerIdentity'
 import { logger } from '@/utils/logger'
@@ -322,9 +323,7 @@ function observedAtFor(offer: OfferInput): string | null {
 }
 
 function hasCommissionEvidence(offer: OfferInput): boolean {
-  if (typeof offer.extensionEvidence?.commission?.percent === 'number') return true
-  if (typeof offer.commissionRate === 'number' && offer.commissionRate > 0) return true
-  return /^\d+(?:[.,]\d+)?\s*%?$/.test(offer.commissionPercent?.trim() ?? '')
+  return collectedSmartCommissionRate(offer) !== null
 }
 
 function isVerifiedOffer(offer: OfferInput): boolean {
@@ -855,7 +854,8 @@ export class SmartCampaignService {
     return serializePlan(plan)
   }
 
-  async listPlans(userId: number) {
+  async listPlans(userId: number, query?: SmartPlanHistoryQuery) {
+    if (query?.summary) return listSmartPlanHistory(sequelize, userId, query)
     const plans = await SmartPlan.findAll({
       where: { userId },
       order: [['createdAt', 'DESC']],

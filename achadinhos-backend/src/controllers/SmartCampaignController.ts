@@ -11,6 +11,7 @@ import {
 } from '@/dtos/smartCampaign'
 import { UnauthorizedError } from '@/middleware/Error/AppError'
 import { SmartCampaignService } from '@/services/SmartCampaignService'
+import { SmartPlanHistoryQuerySchema } from '@/services/smartCampaignHistory'
 
 @injectable()
 export class SmartCampaignController {
@@ -58,7 +59,9 @@ export class SmartCampaignController {
   }
 
   async listPlans(request: Request, response: Response): Promise<void> {
-    response.json({ success: true, data: await this.service.listPlans(this.userId(request)) })
+    const userId = this.userId(request)
+    const query = SmartPlanHistoryQuerySchema.parse(request.query)
+    response.json({ success: true, data: await this.service.listPlans(userId, query) })
   }
 
   async getPlan(request: Request, response: Response): Promise<void> {

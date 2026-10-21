@@ -805,10 +805,17 @@ export const classificationProfileApi = {
   },
 }
 
+export interface SavedProductFilters {
+  search?: string
+  profileId?: string
+  category?: 'A' | 'B' | 'C' | 'D'
+  groupId?: number
+}
+
 export const savedProductApi = {
-  async list(limit = 100, offset = 0): Promise<{ items: SavedProduct[]; total: number }> {
-    return unwrap<{ items: SavedProduct[]; total: number }>(
-      await api.get('/saved-products', { params: { limit, offset } }),
+  async list(limit = 100, offset = 0, filters: SavedProductFilters = {}): Promise<{ items: SavedProduct[]; total: number; classificationProfiles?: { id: string; name: string }[] }> {
+    return unwrap<{ items: SavedProduct[]; total: number; classificationProfiles?: { id: string; name: string }[] }>(
+      await api.get('/saved-products', { params: { limit, offset, ...filters } }),
     )
   },
   async save(offers: Offer[]): Promise<{ saved: SavedProduct[]; created: number; updated: number; merged?: number }> {

@@ -55,7 +55,7 @@ import { CampaignConfirmDialog } from '@/components/CampaignConfirmDialog'
 import { GroupCombobox } from '@/components/GroupCombobox'
 import { useDraftBaseline } from '@/hooks/useDraftBaseline'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
-import { audienceInput, audienceValidation, validPlanDate, inferFileAudience, countFileOffers, optionalNumber, smartLocalDate, campaignTimingValidation, canAdvanceSmartPlan, nextSmartDelivery, smartCampaignStart, reservedSmartStart, planAudienceContext, safeAffiliateUrl, smartDeliveriesCsv } from '@/lib/smartCampaignUi'
+import { audienceInput, audienceValidation, validPlanDate, inferFileAudience, countFileOffers, optionalNumber, smartLocalDate, campaignTimingValidation, canAdvanceSmartPlan, nextSmartDelivery, smartCampaignStart, reservedSmartStart, planAudienceContext, safeAffiliateUrl, smartDeliveriesCsv, smartRecoveryReason } from '@/lib/smartCampaignUi'
 import './smart-campaigns.css'
 import { createSmartAIRequestId } from '@/lib/smartAiSafety'
 
@@ -719,7 +719,43 @@ function UnknownSendResolution({ planId, sends, onDirtyChange }: { planId: strin
   )
 }
 
-function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: { plan: SmartPlan; audiences: SmartAudience[]; actions: ReactNode; onPlanChange: (plan: SmartPlan) => void; onDirtyChange: DirtyChange }) {
+function DeliveryInspector({ plan }: { plan: SmartPlan }) {
+  const [expanded, setExpanded] = useState(false)
+  const [filter, setFilter] = useState('ALL')
+  const [page, setPage] = useState(0)
+  const id = useId()
+  const sends = plan.sends ?? []
+  const filtered = sends.filter((send) => filter === 'ALL' || (filter === 'ERROR' ? !!send.lastError : send.status === filter))
+  const lastPage = Math.max(0, Math.ceil(filtered.length / 25) - 1)
+  const currentPage = Math.min(page, lastPage)
+  const labels: Record<SmartPlanSend['status'], string> = { PENDING: 'Pendente', SENDING: 'Enviando', SENT: 'Enviado', SKIPPED: 'Ignorado', FAILED: 'Falha', UNKNOWN: 'A confirmar' }
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([smartDeliveriesCsv(plan)], { type: 'text/csv;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `campanha-${plan.id.replace(/[^a-zA-Z0-9_-]/g, '_')}-envios.csv`
+    anchor.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  if (!sends.length) return null
+  return <div className="mt-3 border-t border-line pt-3">
+    <div className="flex flex-wrap items-center justify-between gap-2"><button type="button" className="inline-flex items-center gap-2 text-sm font-medium text-accent" aria-expanded={expanded} aria-controls={`${id}-deliveries`} onClick={() => setExpanded((value) => !value)}><ChevronRight size={16} className={expanded ? 'rotate-90' : ''} aria-hidden="true" />{expanded ? 'Ocultar entregas' : `Ver entregas (${sends.length})`}{sends.some((send) => send.lastError) ? ' e erros completos' : ''}</button><Button variant="ghost" onClick={download}><Download size={15} />Exportar todos os envios (CSV)</Button></div>
+    {expanded && <div id={`${id}-deliveries`} className="mt-3">
+      <Label htmlFor={`${id}-status`}>Situação da entrega</Label><select id={`${id}-status`} className="field-control w-full sm:w-64" value={filter} onChange={(event) => { setFilter(event.target.value); setPage(0) }}><option value="ALL">Todas</option><option value="ERROR">Com erro registrado</option>{Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+      <div className="mt-2 divide-y divide-line">{filtered.slice(currentPage * 25, (currentPage + 1) * 25).map((send) => <article key={send.id} className="min-w-0 py-3 text-sm">
+        <div className="flex flex-wrap items-start justify-between gap-2"><h4 className="min-w-0 font-semibold">{send.groupName}</h4><Badge tone={send.status === 'UNKNOWN' || send.status === 'FAILED' ? 'danger' : 'neutral'}>{labels[send.status]}</Badge></div>
+        <p className="mt-1 text-xs text-muted">{NICHE_STYLES[send.audienceSlug].label} · {formatDateTime(send.scheduledAt, send.timezone ?? plan.timezone ?? 'America/Sao_Paulo')} · {send.attempts} tentativa(s)</p>
+        {send.offerTitle && <p className="mt-1">{send.offerTitle}</p>}
+        {send.sentAt && <p className="mt-1 text-xs text-success">Enviado em {formatDateTime(send.sentAt, send.timezone ?? plan.timezone ?? 'America/Sao_Paulo')}</p>}
+        {send.lastError && <p className="mt-2 whitespace-pre-wrap break-words text-xs text-danger">{send.lastError}</p>}
+      </article>)}</div>
+      {!filtered.length && <p role="status" className="py-4 text-sm text-muted">Nenhuma entrega nesta situação.</p>}
+      {filtered.length > 25 && <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3"><span className="text-xs text-muted">{currentPage * 25 + 1}–{Math.min((currentPage + 1) * 25, filtered.length)} de {filtered.length}</span><div className="flex gap-2"><Button variant="secondary" aria-label="Página anterior de entregas" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}><ArrowLeft size={16} /></Button><Button variant="secondary" aria-label="Próxima página de entregas" disabled={currentPage === lastPage} onClick={() => setPage(currentPage + 1)}><ChevronRight size={16} /></Button></div></div>}
+    </div>}
+  </div>
+}
+
+function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, externalBusy }: { plan: SmartPlan; audiences: SmartAudience[]; actions: ReactNode; onPlanChange: (plan: SmartPlan) => void; onDirtyChange: DirtyChange; externalBusy: boolean }) {
   const queryClient = useQueryClient()
   const [messages, setMessages] = useState<Record<string, string>>({})
   const changedMessages = Object.entries(messages).some(([id, text]) => text !== (plan.items.find((item) => item.id === id)?.customMessage ?? ''))
@@ -749,19 +785,22 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
       onPlanChange(updated)
       void queryClient.invalidateQueries({ queryKey: ['smart-plans'] })
     },
+    onSettled: () => { submitting.current = false },
   })
   const shuffleMutation = useMutation({
     mutationFn: () => smartCampaignApi.action(plan.id, 'shuffle', plan.revision),
     retry: false,
     onSuccess: (updated) => { onPlanChange(updated); void queryClient.invalidateQueries({ queryKey: ['smart-plans'] }) },
+    onSettled: () => { submitting.current = false },
   })
-  const reviewBusy = mutation.isPending || startTimeMutation.isPending || shuffleMutation.isPending
+  const reviewBusy = externalBusy || mutation.isPending || startTimeMutation.isPending || shuffleMutation.isPending
   const changedStartTime = campaignStartTime !== savedCampaignStartTime || startNow !== savedStartNow
   useEffect(() => { setCampaignStartTime(savedCampaignStartTime); setStartNow(savedStartNow) }, [savedCampaignStartTime, savedStartNow])
-  useEffect(() => { onDirtyChange('review', changedMessages || changedStartTime || reviewBusy) }, [changedMessages, changedStartTime, reviewBusy, onDirtyChange])
+  const ownPending = mutation.isPending || startTimeMutation.isPending || shuffleMutation.isPending
+  useEffect(() => { onDirtyChange('review', changedMessages || changedStartTime || ownPending) }, [changedMessages, changedStartTime, ownPending, onDirtyChange])
   useEffect(() => () => onDirtyChange('review', false), [onDirtyChange])
   const patchItem = (item: SmartPlanItem, patch: Partial<SmartPlanItem>) => {
-    if (submitting.current || reviewBusy) return
+    if (submitting.current || reviewBusy || plan.status !== 'REVIEW') return
     submitting.current = true
     mutation.mutate({ item, patch })
   }
@@ -782,6 +821,10 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
     .sort((a, b) => a.date.localeCompare(b.date) || a.audienceSlug.localeCompare(b.audienceSlug) || (a.sendOrder ?? Number.MAX_SAFE_INTEGER) - (b.sendOrder ?? Number.MAX_SAFE_INTEGER) || b.score - a.score)
   const editable = plan.status === 'REVIEW'
   const analysisFailure = isAnalysisFailure(plan)
+  const contexts = plan.audienceSlugs.map((slug) => ({ slug, ...planAudienceContext(plan, slug, audiences) }))
+  const endTime = contexts.map((entry) => entry.policy?.endTime ?? '21:00').sort()[0] ?? '21:00'
+  const timingError = campaignTimingValidation(campaignStartTime, startNow, plan.startDate, today(), endTime)
+  const nextDelivery = nextSmartDelivery(plan)
 
   if (plan.status === 'ANALYZING') {
     const percent = plan.progress?.total ? Math.round((plan.progress.completed / plan.progress.total) * 100) : null
@@ -805,22 +848,22 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
         <Badge tone={statusTone(plan.status)}>{planStatusLabel(plan.status)}</Badge>
       </div>
       {plan.warnings && plan.warnings.length > 0 && <div className="mt-4 rounded-xl border border-warning/30 bg-warning-soft p-3 text-sm text-warning">{plan.warnings.join(' · ')}</div>}
+      {contexts.some((entry) => entry.drift) && <p role="status" className="mt-4 rounded-lg border border-warning/30 bg-warning-soft p-3 text-sm text-warning">As regras ou os destinos atuais diferem deste plano. O resumo usa as regras salvas na criação e os destinos dos envios já reservados. Alterações do público não reconfiguram este histórico.</p>}
+      {contexts.some((entry) => !entry.policyFrozen) && <p role="status" className="mt-3 text-sm text-warning">Snapshot de regras indisponível para parte do plano. Os limites atuais exibidos são apenas referência.</p>}
       <Card className="mt-4 border-accent/20">
         <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-semibold">Resumo da campanha</h3><p className="text-sm text-muted">{counts.SELECTED} selecionados · {counts.RESERVE} na reserva · {counts.REJECTED} rejeitados</p></div>
+        {nextDelivery && <div className="mt-3 border-y border-line py-3 text-sm"><p className="font-medium">{plan.status === 'PAUSED' ? 'Próxima reserva (plano pausado)' : 'Próxima entrega agendada'}: {formatDateTime(nextDelivery.scheduledAt, nextDelivery.timezone ?? plan.timezone ?? 'America/Sao_Paulo')}</p><p className="mt-1 text-xs text-muted">{nextDelivery.groupName} · {NICHE_STYLES[nextDelivery.audienceSlug].label} · {nextDelivery.timezone ?? plan.timezone ?? 'America/Sao_Paulo'}</p></div>}
         {editable && <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg bg-surface-muted p-3">
-          <div><Label htmlFor={`${prefix}-campaign-start`}>Horário de início da campanha</Label><input id={`${prefix}-campaign-start`} className="block rounded-lg border border-line-strong bg-surface px-3 py-2 text-sm text-ink" type="time" min="09:00" max={audiences.filter((entry) => plan.audienceSlugs.includes(entry.slug)).map((entry) => entry.policy.endTime).sort()[0] ?? '21:00'} value={campaignStartTime} disabled={reviewBusy || startNow} onChange={(event) => setCampaignStartTime(event.target.value)} /></div>
-          <label className="flex items-center gap-2 py-2 text-sm"><input type="checkbox" checked={startNow} disabled={reviewBusy || plan.startDate !== today()} onChange={(event) => setStartNow(event.target.checked)} />Iniciar ao aprovar hoje</label>
-          <Button type="button" disabled={!changedStartTime || reviewBusy} onClick={() => startTimeMutation.mutate()}>{startTimeMutation.isPending ? <Spinner /> : <Save size={15} />} Salvar início da campanha</Button>
+          <div><Label htmlFor={`${prefix}-campaign-start`}>Início da campanha (Brasília)</Label><input id={`${prefix}-campaign-start`} className="field-control block w-full" type="time" min="09:00" max={endTime} value={campaignStartTime} aria-invalid={!!timingError} disabled={reviewBusy || startNow} onChange={(event) => setCampaignStartTime(event.target.value)} /></div>
+          <label className="flex min-h-11 items-center gap-2 py-2 text-sm"><input type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={startNow} disabled={reviewBusy || (!startNow && plan.startDate !== today())} onChange={(event) => setStartNow(event.target.checked)} />Iniciar ao aprovar hoje</label>
+          <Button type="button" disabled={!changedStartTime || reviewBusy || !!timingError} onClick={() => { if (submitting.current || reviewBusy || !editable || timingError || !changedStartTime) return; submitting.current = true; startTimeMutation.mutate() }}>{startTimeMutation.isPending ? <Spinner /> : <Save size={15} />} Salvar início da campanha</Button>
+          {timingError && <p role="status" className="w-full text-xs text-danger">{timingError}</p>}
           <p className="w-full text-xs text-muted">Os horários de cada produto serão distribuídos automaticamente a partir desse início, respeitando os intervalos e limites dos públicos.</p>
         </div>}
         {agenda.length ? <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[28rem] text-left text-sm"><thead><tr className="border-b border-line text-xs text-muted"><th className="px-2 py-2 font-medium">Dia</th><th className="px-2 py-2 font-medium">Público</th><th className="px-2 py-2 font-medium">Grupo(s)</th><th className="px-2 py-2 text-right font-medium">Ofertas</th></tr></thead><tbody>{agenda.map((row) => {
-          const audienceRow = audiences.find((entry) => entry.slug === row.audienceSlug)
-          const groups = audienceRow
-            ? audienceRow.destinations.length
-              ? audienceRow.destinations.map((destination) => destination.groupName)
-              : audienceRow.destinationGroupIds
-            : []
-          return <tr key={`${row.audienceSlug}:${row.date}`} className="border-b border-line last:border-0"><td className="px-2 py-2">{formatDate(row.date)}</td><td className="px-2 py-2">{audienceRow ? audienceLabel(audienceRow) : NICHE_STYLES[row.audienceSlug].label}</td><td className="px-2 py-2">{groups.length ? groups.join(', ') : <span className="text-danger">Sem grupo vinculado</span>}</td><td className="px-2 py-2 text-right tabular-nums">{row.count} / {audienceRow?.policy.dailyCap ?? 50}</td></tr>
+          const context = planAudienceContext(plan, row.audienceSlug, audiences)
+          const groups = context.destinations.map((destination) => destination.groupName)
+          return <tr key={`${row.audienceSlug}:${row.date}`} className="border-b border-line last:border-0"><td className="px-2 py-2">{formatDate(row.date)}</td><td className="px-2 py-2">{NICHE_STYLES[row.audienceSlug].label}</td><td className="max-w-xs break-words px-2 py-2">{groups.length ? groups.join(', ') : <span className="text-danger">Sem destino registrado</span>}<span className="block text-xs text-muted">{context.destinationsFrozen ? 'Destinos reservados' : 'Destinos atuais; confirmados ao aprovar'}</span></td><td className="px-2 py-2 text-right tabular-nums">{row.count} / {context.policy?.dailyCap ?? '—'}</td></tr>
         })}</tbody></table></div> : <p className="mt-3 text-sm text-warning">Nenhuma oferta foi selecionada para envio. Revise as reservas e os critérios dos públicos.</p>}
       </Card>
       {actions}
@@ -832,7 +875,7 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
               <div key={key} className="rounded-lg bg-surface-muted p-2 text-center"><strong className="block text-lg">{plan.sendSummary?.[key] ?? 0}</strong><span className="text-xs text-muted">{label}</span></div>
             ))}
           </div>
-          {plan.sends?.some((send) => send.lastError) && <div className="mt-3 space-y-1 border-t border-line pt-3">{plan.sends.filter((send) => send.lastError).slice(0, 5).map((send) => <p key={send.id} className="text-xs text-danger"><strong>{send.groupName}</strong> · {formatDateTime(send.scheduledAt)} · {send.lastError}</p>)}</div>}
+          <DeliveryInspector plan={plan} />
         </Card>
       )}
       {plan.sends?.some((send) => send.status === 'UNKNOWN') && (
@@ -845,12 +888,12 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
         <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-audience`}>Público</Label><select id={`${prefix}-audience`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as SmartAudienceSlug | 'ALL')}><option value="ALL">Todos os públicos</option>{plan.audienceSlugs.map((slug) => <option key={slug} value={slug}>{NICHE_STYLES[slug].label}</option>)}</select></div>
         <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-date`}>Dia</Label><select id={`${prefix}-date`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={date} onChange={(e) => setDate(e.target.value)}><option value="ALL">Todos os dias</option>{dates.map((value) => <option key={value} value={value}>{formatDate(value)}</option>)}</select></div>
       </div>
-      {editable && <div className="mt-3 flex justify-end"><Button variant="secondary" title="Embaralhar a ordem de todos os selecionados; itens fixados mantêm a posição" disabled={reviewBusy || changedMessages || changedStartTime || counts.SELECTED < 2} onClick={() => shuffleMutation.mutate()}>{shuffleMutation.isPending ? <Spinner /> : <Shuffle size={16} />}Embaralhar ordem dos selecionados</Button></div>}
+      {editable && <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p id={`${prefix}-shuffle-scope`} className="text-xs text-muted">Todos os selecionados, em todos os públicos e dias. Os filtros acima não limitam o embaralhamento; itens fixados mantêm a posição.</p><Button variant="secondary" aria-describedby={`${prefix}-shuffle-scope`} disabled={reviewBusy || changedMessages || changedStartTime || counts.SELECTED < 2} onClick={() => { if (submitting.current || reviewBusy || !editable || changedMessages || changedStartTime || counts.SELECTED < 2) return; submitting.current = true; shuffleMutation.mutate() }}>{shuffleMutation.isPending ? <Spinner /> : <Shuffle size={16} />}Embaralhar todos os selecionados</Button></div>}
       {(mutation.isError || startTimeMutation.isError || shuffleMutation.isError) && <div className="mt-4"><ErrorState message={apiErrorMessage(mutation.error ?? startTimeMutation.error ?? shuffleMutation.error)} /></div>}
       {changedMessages && <p role="status" className="mt-4 rounded-lg bg-warning-soft p-3 text-sm text-warning">Há introduções especiais não salvas. Elas permanecem ao mudar os filtros. Salve ou descarte as edições antes de aprovar ou retomar.</p>}
       <div className="mt-4 space-y-3">
         {visible.length === 0 ? <EmptyState title="Nada neste filtro">Escolha outro público, dia ou situação para revisar os produtos.</EmptyState> : visible.map((item) => {
-          const policy = audiences.find((entry) => entry.slug === item.audienceSlug)?.policy
+          const policy = planAudienceContext(plan, item.audienceSlug, audiences).policy
           return <PlanItemCard key={item.id} item={item} editable={editable} saving={reviewBusy} timeZone={policy?.timezone ?? plan.timezone ?? 'America/Sao_Paulo'}
           message={messages[item.id]}
           onMessageChange={(text) => setMessages((current) => ({ ...current, [item.id]: text }))}
@@ -866,21 +909,34 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange }: {
 function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, draftsPending, onDirtyChange }: { plan: SmartPlan; audiences: SmartAudience[]; onPlanChange: (plan: SmartPlan) => void; onCreateFresh: () => void; aiBlocked: boolean; draftsPending: boolean; onDirtyChange: DirtyChange }) {
   const queryClient = useQueryClient()
   const [confirming, setConfirming] = useState<'approve' | 'cancel' | 'resume' | 'advance' | null>(null)
+  const [actionError, setActionError] = useState('')
+  const confirmationRevision = useRef(plan.revision)
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => { const timer = window.setInterval(() => setNow(new Date()), 30_000); return () => window.clearInterval(timer) }, [])
   const submitting = useRef(false)
-  const hasUnknownSend = plan.sends?.some((send) => send.status === 'UNKNOWN') ?? false
-  const hasFailedSend = plan.sends?.some((send) => send.status === 'FAILED') ?? false
+  const hasUnknownSend = (plan.sendSummary?.UNKNOWN ?? 0) > 0 || (plan.sends?.some((send) => send.status === 'UNKNOWN') ?? false)
+  const hasFailedSend = (plan.sendSummary?.FAILED ?? 0) > 0 || (plan.sends?.some((send) => send.status === 'FAILED') ?? false)
+  const hasInFlightSend = (plan.sendSummary?.SENDING ?? 0) > 0 || (plan.sends?.some((send) => send.status === 'SENDING') ?? false)
+  const destinationDrift = plan.audienceSlugs.some((slug) => planAudienceContext(plan, slug, audiences).destinationDrift)
+  const recoveryReason = smartRecoveryReason(plan)
   const analysisFailure = isAnalysisFailure(plan)
   type PlanAction = 'approve' | 'pause' | 'resume' | 'cancel' | 'retry' | 'advance'
   type PlanActionRequest = { action: PlanAction; requestId?: string }
   const mutation = useMutation({
     mutationFn: ({ action, requestId }: PlanActionRequest) => smartCampaignApi.action(plan.id, action, plan.revision, requestId),
     retry: false,
-    onSuccess: (updated) => { setConfirming(null); onPlanChange(updated); queryClient.invalidateQueries({ queryKey: ['smart-plans'] }) },
+    onSuccess: (updated) => { setActionError(''); setConfirming(null); onPlanChange(updated); queryClient.invalidateQueries({ queryKey: ['smart-plans'] }) },
     onSettled: () => { submitting.current = false },
   })
   useEffect(() => { onDirtyChange('plan-action', mutation.isPending) }, [mutation.isPending, onDirtyChange])
-  const action = (name: PlanAction, input?: PlanActionRequest) => {
+  const action = (name: PlanAction, input?: PlanActionRequest, expectedRevision?: number) => {
+    if (expectedRevision !== undefined && expectedRevision !== plan.revision) { setActionError('O plano mudou durante a confirmação. Revise a agenda atualizada e confirme novamente.'); return }
     if (submitting.current || mutation.isPending || (name === 'retry' && aiBlocked) || ((name === 'approve' || name === 'resume' || name === 'advance') && draftsPending)) return
+    if (name === 'advance' && !canAdvanceSmartPlan(plan)) return
+    if (name === 'approve' && (!['REVIEW', 'READY', 'DRAFT'].includes(plan.status) || !selectedCount || missingAudienceNames.length)) return
+    if (name === 'resume' && (plan.status !== 'PAUSED' || hasUnknownSend || hasFailedSend || hasInFlightSend || destinationDrift)) return
+    if (name === 'cancel' && (hasUnknownSend || hasInFlightSend || ['COMPLETED', 'CANCELLED', 'FAILED'].includes(plan.status))) return
+    setActionError('')
     submitting.current = true
     mutation.mutate(input ?? { action: name, requestId: name === 'retry' ? createSmartAIRequestId() : undefined })
   }
@@ -889,57 +945,61 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, 
   const missingAudienceNames = selectedSlugs
     .filter((slug) => !(audiences.find((audience) => audience.slug === slug)?.destinations.length || audiences.find((audience) => audience.slug === slug)?.destinationGroupIds.length))
     .map((slug) => audienceLabel(audiences.find((audience) => audience.slug === slug) ?? { slug, name: '' }))
-  const destinationNames = [...new Set(audiences
-    .filter((audience) => selectedSlugs.includes(audience.slug))
-    .flatMap((audience) => audience.destinations.length
-      ? audience.destinations.map((destination) => destination.groupName)
-      : audience.destinationGroupIds))]
-  const campaignStartTime = plan.settings?.global?.startNow ? 'ao aprovar hoje' : plan.settings?.global?.campaignStartTime ?? '09:00'
-  const canAdvance = plan.status === 'SCHEDULED' && !hasUnknownSend && !hasFailedSend
-    && !plan.sends?.some((send) => send.status === 'SENDING')
-    && plan.sends?.some((send) => send.status === 'PENDING' && new Date(send.scheduledAt) > new Date()
-      && new Intl.DateTimeFormat('en-CA', { timeZone: plan.timezone ?? 'America/Sao_Paulo' }).format(new Date(send.scheduledAt)) === today())
+  const destinationNames = [...new Set(selectedSlugs.flatMap((slug) => planAudienceContext(plan, slug, audiences).destinations.map((group) => group.groupName)))]
+  const campaignStartTime = smartCampaignStart(plan, plan.startDate)
+  const canAdvance = canAdvanceSmartPlan(plan, now)
+  const reviewAction = (name: NonNullable<typeof confirming>) => { confirmationRevision.current = plan.revision; setActionError(''); setConfirming(name) }
   const scheduleLines = selectedSlugs.flatMap((slug) => {
     const audience = audiences.find((entry) => entry.slug === slug)
-    const zone = audience?.policy.timezone ?? plan.timezone ?? 'America/Sao_Paulo'
+    const context = planAudienceContext(plan, slug, audiences)
+    const zone = context.policy?.timezone ?? plan.timezone ?? 'America/Sao_Paulo'
     const audienceItems = plan.items.filter((item) => item.state === 'SELECTED' && item.audienceSlug === slug)
     return [...new Set(audienceItems.map((item) => item.date))].sort().map((date) => {
       const dated = audienceItems.filter((item) => item.date === date)
-      const groups = audience?.destinations.map((destination) => destination.groupName).join(', ') || 'sem grupo vinculado'
-      return `${NICHE_STYLES[slug].label} · ${groups} · ${formatDate(date)} · início ${campaignStartTime} (${zone}; ${dated.length} produtos)`
+      const groups = context.destinations.map((destination) => destination.groupName).join(', ') || 'sem grupo vinculado'
+      const reserved = reservedSmartStart(plan, slug, date, zone)
+      const start = reserved ? `primeira reserva ${formatDateTime(reserved, zone)}` : `início ${smartCampaignStart(plan, date)}`
+      return `${audience ? audienceLabel(audience) : NICHE_STYLES[slug].label} · ${groups} · ${formatDate(date)} · ${start} (${zone}; ${dated.length} produtos)`
     })
   })
-  const approvalDescription = `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início da campanha em ${formatDate(plan.startDate)} às ${campaignStartTime}.\n\nAgenda por público e grupo:\n${scheduleLines.map((line) => `• ${line}`).join('\n')}\n\nDestinos: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\nOs horários de cada produto serão distribuídos automaticamente a partir do horário de início, respeitando os intervalos e limites diários de cada público. Um produto só será enviado uma vez por grupo dentro desta campanha; campanhas diferentes podem enviar o mesmo produto. Ao confirmar, os envios pelo WhatsApp começam conforme a agenda.`
+  const approvalDescription = `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início em ${formatDate(plan.startDate)}: ${campaignStartTime}.\n\nAgenda por público e grupo:\n${scheduleLines.map((line) => `• ${line}`).join('\n')}\n\nDestinos: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\n${plan.settings?.global?.startNow ? 'Ao confirmar, os envios de hoje podem começar antes das 09:00, no próximo minuto disponível. Os outros dias mantêm o horário configurado. ' : ''}Os horários respeitam os intervalos e limites salvos neste plano. Um produto só será enviado uma vez por grupo nesta campanha; campanhas diferentes podem enviar o mesmo produto. Ao confirmar, os envios pelo WhatsApp começam conforme a agenda.`
   return (
     <Card className="smart-plan-actions mt-5 border-accent/30">
       <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
         <div><p className="font-semibold">{planStatusLabel(plan.status)}</p><p className="text-xs text-muted">{plan.status === 'FAILED' && !analysisFailure ? 'O histórico desta execução foi preservado. Use uma coleta atualizada para montar um novo plano.' : 'A aprovação reserva os horários e inicia a execução na janela configurada.'}</p></div>
-        <div className="flex flex-wrap gap-2">
-          {(plan.status === 'REVIEW' || plan.status === 'READY' || plan.status === 'DRAFT') && <Button onClick={() => setConfirming('approve')} disabled={mutation.isPending || draftsPending || selectedCount === 0 || destinationNames.length === 0}><Send size={16} /> Revisar e aprovar campanha</Button>}
+        <div className="flex flex-wrap gap-2" aria-busy={mutation.isPending}>
+          {(plan.status === 'REVIEW' || plan.status === 'READY' || plan.status === 'DRAFT') && <Button onClick={() => reviewAction('approve')} disabled={mutation.isPending || draftsPending || selectedCount === 0 || missingAudienceNames.length > 0}><Send size={16} /> Revisar e aprovar campanha</Button>}
           {(plan.status === 'APPROVED' || plan.status === 'SCHEDULED' || plan.status === 'RUNNING') && <Button variant="secondary" onClick={() => action('pause')} disabled={mutation.isPending}><Pause size={16} /> Pausar</Button>}
-          {canAdvance && <Button onClick={() => setConfirming('advance')} disabled={mutation.isPending || draftsPending}><Play size={16} />Adiantar envios de hoje</Button>}
-          {plan.status === 'PAUSED' && !hasFailedSend && <Button onClick={() => setConfirming('resume')} disabled={mutation.isPending || hasUnknownSend || draftsPending}><Play size={16} /> {hasUnknownSend ? 'Resolva os envios incertos' : 'Retomar'}</Button>}
+          {canAdvance && <Button onClick={() => reviewAction('advance')} disabled={mutation.isPending || draftsPending}><Play size={16} />Adiantar envios de hoje</Button>}
+          {plan.status === 'PAUSED' && !hasFailedSend && <Button onClick={() => reviewAction('resume')} disabled={mutation.isPending || hasUnknownSend || hasInFlightSend || destinationDrift || draftsPending}><Play size={16} />{recoveryReason === 'binding-change' ? 'Revisar retomada do vínculo original' : 'Revisar e retomar'}</Button>}
           {analysisFailure && <Button onClick={() => action('retry')} disabled={mutation.isPending || aiBlocked}><RotateCcw size={16} /> Usar IA: repetir análise</Button>}
           {((plan.status === 'FAILED' && !analysisFailure) || hasFailedSend) && <Button variant="secondary" onClick={onCreateFresh}><FileJson size={16} /> Criar plano com coleta atualizada</Button>}
-          {!['COMPLETED', 'CANCELLED', 'FAILED'].includes(plan.status) && <Button variant="danger" onClick={() => setConfirming('cancel')} disabled={mutation.isPending}><Square size={15} /> Revisar cancelamento</Button>}
+          {!['COMPLETED', 'CANCELLED', 'FAILED'].includes(plan.status) && <Button variant="danger" onClick={() => reviewAction('cancel')} disabled={mutation.isPending || hasUnknownSend || hasInFlightSend}><Square size={15} /> Revisar cancelamento</Button>}
         </div>
       </div>
-      {draftsPending && <p role="status" className="mt-3 text-sm text-warning">Salve as edições do público e das mensagens antes de liberar envios.</p>}
+      {mutation.isPending && <p role="status" className="mt-3 flex items-center gap-2 text-sm text-muted"><Spinner />Aplicando ação ao plano…</p>}
+      {draftsPending && <p role="status" className="mt-3 text-sm text-warning">Salve ou descarte as edições dos públicos, mensagens e horário antes de liberar envios.</p>}
+      {(hasUnknownSend || hasInFlightSend) && <p role="status" className="mt-3 text-sm text-warning">{hasUnknownSend ? 'Resolva os envios a confirmar abaixo.' : 'Aguarde o envio em andamento.'} A retomada e o cancelamento ficam bloqueados enquanto a entrega não estiver resolvida.</p>}
+      {plan.status === 'PAUSED' && (recoveryReason || destinationDrift) && <div role="status" className="mt-3 space-y-2 border-t border-line pt-3 text-sm text-warning">
+        <p>{destinationDrift || recoveryReason === 'binding-change' ? 'O último bloqueio indica mudança de conta ou destino. Este plano não pode ser aprovado novamente nem transferido para outro vínculo. Restaure a conta e os grupos originais antes de revisar a retomada.' : 'O último bloqueio indica conexão temporariamente indisponível. Reconecte a mesma conta e mantenha os grupos originais antes de revisar a retomada.'}</p>
+        <p>Para usar outro vínculo, resolva primeiro envios incertos ou em andamento, cancele os pendentes e crie uma nova proposta somente com os produtos comprovadamente não entregues. Uma nova coleta não exclui os produtos já enviados automaticamente.</p>
+      </div>}
       {(selectedCount === 0 || missingAudienceNames.length > 0) && (plan.status === 'REVIEW' || plan.status === 'READY' || plan.status === 'DRAFT') && <div role="status" className="mt-3 space-y-1 rounded-lg border border-warning/30 bg-warning-soft p-3 text-sm text-warning">
         {selectedCount === 0 && <p>Nenhum produto selecionado. Mude itens da reserva para selecionados depois de revisar os critérios.</p>}
         {missingAudienceNames.length > 0 && <p>Vincule e salve um grupo de WhatsApp para: {missingAudienceNames.join(', ')}.</p>}
       </div>}
       {confirming && <CampaignConfirmDialog
         title={confirming === 'approve' ? 'Confirmar agenda e envios?' : confirming === 'advance' ? 'Adiantar os envios de hoje?' : confirming === 'resume' ? 'Retomar os envios deste plano?' : 'Cancelar este plano?'}
-        description={confirming === 'approve' ? approvalDescription : `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início em ${formatDate(plan.startDate)}.\n\nDestinos dos públicos selecionados: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\n${confirming === 'advance' ? 'Os envios pendentes de hoje começarão no próximo minuto disponível, inclusive antes das 09:00. Os intervalos, limites e verificações de entrega continuam ativos. Mensagens já enviadas e agendas de outros dias não serão alteradas.' : confirming === 'cancel' ? 'Os próximos envios serão cancelados. Mensagens já enviadas ou iniciadas não podem ser desfeitas.' : 'Esta confirmação inicia os envios pelo WhatsApp nos horários e limites diários de cada público. Até confirmar aqui, o plano não inicia. Confira o resumo da agenda e os destinos.'}`}
+        description={confirming === 'approve' ? approvalDescription : `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início em ${formatDate(plan.startDate)}.\n\nDestinos registrados: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\n${confirming === 'advance' ? 'Os envios pendentes de hoje começarão no próximo minuto disponível, inclusive antes das 09:00. Os intervalos, limites e verificações de entrega continuam ativos. Mensagens já enviadas e agendas de outros dias não serão alteradas.' : confirming === 'cancel' ? 'Os próximos envios serão cancelados. Mensagens já enviadas ou iniciadas não podem ser desfeitas.' : 'Confirme apenas se a conta e os grupos originais estiverem restaurados. O servidor verificará o vínculo antes de retomar os envios pendentes; esta ação não troca os destinos. Os horários e limites salvos neste plano continuam valendo.'}`}
         confirmLabel={confirming === 'approve' ? (plan.settings?.global?.startNow ? 'Confirmar e iniciar hoje' : 'Confirmar e agendar') : confirming === 'advance' ? 'Adiantar e iniciar hoje' : confirming === 'resume' ? 'Retomar envios' : 'Cancelar plano'}
         danger={confirming === 'cancel'}
         onCancel={() => setConfirming(null)}
-        onConfirm={() => { const next = confirming; setConfirming(null); action(next) }}
+        onConfirm={() => { const next = confirming; setConfirming(null); action(next, undefined, confirmationRevision.current) }}
       />}
       {mutation.isError && mutation.variables?.action === 'retry'
         ? <div className="mt-3"><ErrorState message={apiErrorMessage(mutation.error)} retry={() => action('retry', mutation.variables)} /></div>
-        : mutation.isError && <p className="mt-3 text-xs text-danger">{apiErrorMessage(mutation.error)}</p>}
+        : mutation.isError && <p role="alert" className="mt-3 text-xs text-danger">{apiErrorMessage(mutation.error)}</p>}
+      {actionError && <p role="alert" className="mt-3 text-sm text-danger">{actionError}</p>}
     </Card>
   )
 }

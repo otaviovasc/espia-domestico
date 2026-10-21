@@ -1,6 +1,6 @@
 import { injectable } from 'tsyringe'
 import { createHash } from 'crypto'
-import { col, fn, Op, QueryTypes, Transaction, where } from 'sequelize'
+import { col, fn, literal, Op, QueryTypes, Transaction, where } from 'sequelize'
 import { sequelize } from '@/database'
 import { ClassificationProfileRecord } from '@/database/models/ClassificationProfile'
 import { ProductGroup } from '@/database/models/ProductGroup'
@@ -13,6 +13,7 @@ import type {
   SavedProductClassification,
   SavedProductClassifications,
   SavedProductOfferPatch,
+  SavedProductFilters,
 } from '@/dtos/savedProduct'
 import { ConflictError, NotFoundError, UnauthorizedError } from '@/middleware/Error/AppError'
 import { logger } from '@/utils/logger'
@@ -370,23 +371,45 @@ export class SavedProductService {
     })
   }
 
-  async list(userId: number, limit: number, offset: number, groupId?: number) {
-    return sequelize.transaction(async (transaction) => {
-      let memberProductIds: number[] | undefined
+  async list(userId: number, limit: number, offset: number, groupId?: number, filters: SavedProductFilters = {}) {
+    // Count, page and filter options share a snapshot even during concurrent saves.
+    return sequelize.transaction({ isolationLevel: Transaction.ISOLATION_LEVELS.REPEATABLE_READ }, async (transaction) => {
+      const conditions = []
       if (groupId !== undefined) {
         const group = await ProductGroup.findOne({ where: { id: groupId, userId }, transaction })
         if (!group) throw NotFoundError('Grupo de produtos não encontrado')
-        const memberships = await SavedProductGroupMembership.findAll({
-          attributes: ['savedProductId'],
-          where: { productGroupId: groupId },
-          transaction,
-        })
-        memberProductIds = memberships.map((membership) => membership.savedProductId)
+        conditions.push(literal(`EXISTS (
+          SELECT 1 FROM saved_product_group_memberships m
+          WHERE m.saved_product_id = "SavedProduct"."id"
+            AND m.product_group_id = ${sequelize.escape(groupId)}
+        )`))
+      }
+      const classifications = '"SavedProduct"."classifications"'
+      const offer = '"SavedProduct"."offer"'
+      if (filters.profileId) {
+        const profile = sequelize.escape(filters.profileId)
+        conditions.push(literal(`${classifications} ? ${profile}`))
+        if (filters.category) conditions.push(literal(`${classifications} -> ${profile} ->> 'category' = ${sequelize.escape(filters.category)}`))
+      } else if (filters.category) {
+        const category = sequelize.escape(filters.category)
+        conditions.push(literal(`(EXISTS (
+          SELECT 1 FROM jsonb_each(${classifications}) c WHERE c.value ->> 'category' = ${category}
+        ) OR (${classifications} = '{}'::jsonb AND ${offer} ->> 'category' = ${category}))`))
+      }
+      if (filters.search?.trim()) {
+        // strpos keeps %, _ and backslashes literal, matching the UI's substring search.
+        const search = `lower(${sequelize.escape(filters.search.trim())})`
+        const fields = ['title', 'productId', 'affiliateUrl', 'classificationProfileName']
+          .map((field) => `strpos(lower(${offer} ->> '${field}'), ${search}) > 0`)
+        conditions.push(literal(`(${fields.join(' OR ')} OR EXISTS (
+          SELECT 1 FROM jsonb_each(${classifications}) c
+          WHERE strpos(lower(c.value ->> 'profileName'), ${search}) > 0
+        ))`))
       }
       const { rows, count } = await SavedProduct.findAndCountAll({
         where: {
           userId,
-          ...(memberProductIds ? { id: { [Op.in]: memberProductIds } } : {}),
+          [Op.and]: conditions,
         },
         order: [
           ['createdAt', 'DESC'],
@@ -396,7 +419,14 @@ export class SavedProductService {
         offset,
         transaction,
       })
-      return { items: await serializeProducts(rows, transaction), total: count }
+      // Include archived profiles from this tenant's entire catalog, not only this page.
+      const classificationProfiles = await sequelize.query<{ id: string; name: string }>(`
+        SELECT c.key AS id, MIN(c.value ->> 'profileName') AS name
+        FROM saved_products p CROSS JOIN LATERAL jsonb_each(p.classifications) c
+        WHERE p.user_id = :userId
+        GROUP BY c.key ORDER BY c.key
+      `, { replacements: { userId }, type: QueryTypes.SELECT, transaction })
+      return { items: await serializeProducts(rows, transaction), total: count, classificationProfiles }
     })
   }
 

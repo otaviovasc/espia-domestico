@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { CheckCircle2, FileJson, FolderPlus, ImageOff, Pencil, Search, Tags, Upload, X } from 'lucide-react'
 import {
@@ -86,6 +86,7 @@ export default function ProductCatalogPage() {
   const cancelRequested = useRef(false)
   useEffect(() => () => { cancelRequested.current = true }, [])
   const [session, setSession] = useState<ImportSession | null>(null)
+  const [inputChanged, setInputChanged] = useState(false)
   const [savedImportIndexes, setSavedImportIndexes] = useState<Set<number>>(new Set())
   const [profileDirty, setProfileDirty] = useState(false)
   const [reviewPage, setReviewPage] = useState(1)
@@ -133,25 +134,27 @@ export default function ProductCatalogPage() {
     queryFn: productGroupApi.list,
   })
 
-  const catalog = useInfiniteQuery({
-    queryKey: ['saved-products', 'pages'],
-    initialPageParam: 0,
-    queryFn: ({ pageParam }) => savedProductApi.list(100, pageParam),
-    getNextPageParam: (last, pages) => {
-      const loaded = pages.reduce((count, page) => count + page.items.length, 0)
-      return loaded < last.total && last.items.length > 0 ? loaded : undefined
-    },
+  const catalogFilters = {
+    search: catalogSearch.trim() || undefined,
+    profileId: catalogProfileId === 'all' ? undefined : catalogProfileId,
+    category: catalogCategory === 'all' ? undefined : catalogCategory,
+    groupId: catalogGroupId === 'all' ? undefined : Number(catalogGroupId),
+  }
+  const catalog = useQuery({
+    queryKey: ['saved-products', 'page', catalogPage, catalogFilters],
+    queryFn: () => savedProductApi.list(PAGE_SIZE, (catalogPage - 1) * PAGE_SIZE, catalogFilters),
   })
-  const savedItems = useMemo(() => catalog.data?.pages.flatMap((page) => page.items) ?? [], [catalog.data])
+  const savedItems = useMemo(() => catalog.data?.items ?? [], [catalog.data])
+  const catalogTotal = catalog.data?.total ?? 0
+  const catalogPageCount = Math.max(1, Math.ceil(catalogTotal / PAGE_SIZE))
+  if (catalog.data && catalogPage > catalogPageCount) setCatalogPage(catalogPageCount)
   const catalogProfileOptions = useMemo(() => {
     const options = new Map((classificationProfiles.data ?? []).map((profile) => [profile.id, profile.name]))
-    for (const item of savedItems) {
-      for (const [profileId, classification] of Object.entries(item.classifications ?? {})) {
-        if (!options.has(profileId)) options.set(profileId, `${classification.profileName} (arquivado)`)
-      }
+    for (const profile of catalog.data?.classificationProfiles ?? []) {
+      if (!options.has(profile.id)) options.set(profile.id, `${profile.name} (arquivado)`)
     }
     return [...options].map(([id, name]) => ({ id, name }))
-  }, [classificationProfiles.data, savedItems])
+  }, [classificationProfiles.data, catalog.data?.classificationProfiles])
   const groups = useQuery({
     queryKey: ['groups'],
     queryFn: () => groupApi.list(),
@@ -283,14 +286,25 @@ export default function ProductCatalogPage() {
     mutationFn: async (mode: 'new' | 'pending' | 'failed') => {
       classificationRunning.current = true
       cancelRequested.current = false
-      if (mode === 'new') { setSavedImportIndexes(new Set()); setSelected(new Set()); setReviewPage(1); setCategoryFilter('all'); setSaveProgress(null) }
       setError(null)
-      setFeedback(null)
       const initial = mode !== 'new' && session ? session : createImportSession(
         importFilesRef.current.length
           ? await campaignApi.importPayloads(prepareImportPayloads(importFilesRef.current, jsonText), classificationProfileId)
           : await campaignApi.importOffers(prepareImportPayloads([], jsonText)[0].json, { classificationProfileId, parseOnly: true }),
       )
+      if (mode === 'new') {
+        if (!initial.items.length) throw new Error('Nenhum produto válido na nova entrada. Os resultados anteriores foram preservados.')
+        if (cancelRequested.current) return null
+        if (session && hasUnsavedImportWork({ session, savedIndexes: savedImportIndexes, hasInput: true, hasPendingGroups: !!groupRetry?.productIds.length })
+          && !window.confirm('Substituir a classificação atual? Há avaliações ou produtos ainda não salvos. Os resultados atuais serão descartados; classificar novamente pode ter custo.')) return null
+        setSavedImportIndexes(new Set())
+        setSelected(new Set())
+        setReviewPage(1)
+        setCategoryFilter('all')
+        setSaveProgress(null)
+        setInputChanged(false)
+      }
+      setFeedback(null)
       publishSession(initial)
       return classifyImportSession(initial,
         (offers, profile) => campaignApi.importOffers(offers, {
@@ -299,7 +313,7 @@ export default function ProductCatalogPage() {
         { retryFailed: mode === 'failed', cancelled: () => cancelRequested.current, onProgress: publishSession, errorMessage: (cause) => classificationFeedbackMessage(apiErrorMessage(cause)) },
       )
     },
-    onSuccess: publishSession,
+    onSuccess: (next) => { if (next) publishSession(next) },
     onSettled: () => { classificationRunning.current = false },
     onError: (cause) => setError(classificationFeedbackMessage(apiErrorMessage(cause))),
   })
@@ -394,22 +408,9 @@ export default function ProductCatalogPage() {
     ...visibleOffers.filter(({ offer }) => !!offer.category).map(({ index }) => index),
   ]))
 
-  const resetClassification = () => {
-    setResult(null)
-    setSession(null)
-    setSavedImportIndexes(new Set())
-    setReviewPage(1)
-    setSaveProgress(null)
-    setSelected(new Set())
-    setCategoryFilter('all')
-    setFeedback(null)
-    setCatalogFeedback(null)
-    setError(null)
-  }
-
   const updateText = (value: string) => {
     setJsonText(value)
-    resetClassification()
+    setInputChanged(true)
   }
 
   const replaceFiles = (files: ImportFileEntry[]) => {
@@ -430,7 +431,7 @@ export default function ProductCatalogPage() {
       return
     }
     setFileError(null)
-    resetClassification()
+    setInputChanged(true)
     const entries = files.map((file) => ({ id: nextFileId.current++, name: file.name, size: file.size, status: 'reading' as const }))
     replaceFiles([...existing, ...entries])
     await Promise.all(files.map(async (file, index) => {
@@ -443,7 +444,7 @@ export default function ProductCatalogPage() {
     if (classificationRunning.current || save.isPending) return
     replaceFiles(importFilesRef.current.filter((file) => file.id !== id))
     setFileError(null)
-    resetClassification()
+    setInputChanged(true)
   }
 
   const toggle = (index: number) => {
@@ -486,35 +487,7 @@ export default function ProductCatalogPage() {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : undefined
   }
-  const visibleSavedItems = useMemo(() => {
-    const query = catalogSearch.trim().toLocaleLowerCase('pt-BR')
-    return savedItems.filter((item) => {
-      if (catalogGroupId !== 'all' && !item.groupIds?.includes(Number(catalogGroupId))) return false
-      const classifications = Object.entries(item.classifications ?? {})
-      const selectedClassification = catalogProfileId === 'all'
-        ? null
-        : item.classifications?.[catalogProfileId]
-      if (catalogProfileId !== 'all' && !selectedClassification) return false
-      if (catalogCategory !== 'all') {
-        const matchesCategory = selectedClassification
-          ? selectedClassification.category === catalogCategory
-          : classifications.length > 0
-            ? classifications.some(([, value]) => value.category === catalogCategory)
-            : item.offer.category === catalogCategory
-        if (!matchesCategory) return false
-      }
-      if (!query) return true
-      return item.offer.title.toLocaleLowerCase('pt-BR').includes(query)
-        || item.offer.productId?.toLocaleLowerCase('pt-BR').includes(query)
-        || item.offer.affiliateUrl.toLocaleLowerCase('pt-BR').includes(query)
-        || item.offer.classificationProfileName?.toLocaleLowerCase('pt-BR').includes(query)
-        || classifications.some(([, value]) => value.profileName.toLocaleLowerCase('pt-BR').includes(query))
-    })
-  }, [catalogCategory, catalogGroupId, catalogProfileId, catalogSearch, savedItems])
-
-  const catalogPageCount = Math.max(1, Math.ceil(visibleSavedItems.length / PAGE_SIZE))
-  const safeCatalogPage = Math.min(catalogPage, catalogPageCount)
-  const pagedSavedItems = visibleSavedItems.slice((safeCatalogPage - 1) * PAGE_SIZE, safeCatalogPage * PAGE_SIZE)
+  const pagedSavedItems = savedItems
 
   // A filter change starts a fresh selection; bulk actions never include hidden filters.
   const changeCatalogFilter = <T,>(setter: (value: T) => void, value: T) => {
@@ -550,10 +523,11 @@ export default function ProductCatalogPage() {
     setEditError(null)
   }
 
-  const importDirty = hasUnsavedImportWork({
+  const hasImportInput = !!jsonText.trim() || importFiles.length > 0
+  const importDirty = (inputChanged && hasImportInput) || hasUnsavedImportWork({
     session,
     savedIndexes: savedImportIndexes,
-    hasInput: !!jsonText.trim() || importFiles.length > 0,
+    hasInput: hasImportInput,
     working: classify.isPending || save.isPending || retryGroups.isPending,
     hasPendingGroups: !!groupRetry?.productIds.length,
   })
@@ -574,7 +548,7 @@ export default function ProductCatalogPage() {
         <Link to="/compose" className="catalog-primary-link">Criar campanha</Link>
       </header>
       <nav className="catalog-navigation" aria-label="Áreas de produtos">
-        <button type="button" aria-pressed={activeView === 'catalog'} onClick={() => setActiveView('catalog')}>Catálogo salvo <span>{catalog.data?.pages[0]?.total ?? '—'}</span></button>
+        <button type="button" aria-pressed={activeView === 'catalog'} onClick={() => setActiveView('catalog')}>Catálogo salvo <span>{catalog.data?.total ?? '—'}</span></button>
         <button type="button" aria-pressed={activeView === 'import'} onClick={() => setActiveView('import')}>Importar e classificar{classify.isPending ? <span>Em andamento</span> : result ? <span>{result.offers.length} para revisar</span> : null}</button>
       </nav>
 
@@ -616,7 +590,7 @@ export default function ProductCatalogPage() {
         </div>
         </div>
         {importFiles.length > 0 && <div className="mt-3 rounded-lg border border-line p-3">
-          <div className="flex items-center justify-between gap-3 text-sm"><span>{importFiles.length} arquivo(s) · {(totalFileBytes / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} KB{readingFiles ? ' · Lendo arquivos…' : ''}</span><button type="button" className="text-muted underline" disabled={classify.isPending || save.isPending} onClick={() => { replaceFiles([]); setFileError(null); resetClassification() }}>Limpar arquivos</button></div>
+          <div className="flex items-center justify-between gap-3 text-sm"><span>{importFiles.length} arquivo(s) · {(totalFileBytes / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} KB{readingFiles ? ' · Lendo arquivos…' : ''}</span><button type="button" className="text-muted underline" disabled={classify.isPending || save.isPending} onClick={() => { replaceFiles([]); setFileError(null); setInputChanged(true) }}>Limpar arquivos</button></div>
           <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">{importFiles.map((file) => <li key={file.id} className="flex items-start justify-between gap-3 text-sm"><div className="min-w-0"><span className="break-all font-medium">{file.name}</span> · {(file.size / 1024).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} KB · {file.status === 'reading' ? 'Lendo…' : file.status === 'ready' ? 'Pronto' : 'Erro'}{file.error && <p role="alert" className="text-xs text-danger">{file.error}</p>}</div><button type="button" className="text-muted underline" aria-label={`Remover arquivo ${file.name}`} disabled={classify.isPending || save.isPending} onClick={() => removeFile(file.id)}>Remover</button></li>)}</ul>
         </div>}
         {inputError && (importFiles.length > 0 || jsonText.trim()) && <p role="status" className="mt-3 text-sm text-warning">{inputError}</p>}
@@ -630,8 +604,9 @@ export default function ProductCatalogPage() {
               {session!.items.some((item) => item.status === 'failed' && item.retryable) && <Button variant="secondary" disabled={save.isPending} onClick={() => classify.mutate('failed')}>Tentar falhas novamente</Button>}
             </>}
           </div>
-          <p className="mt-2 text-xs">Continuar e tentar falhas preservam as avaliações concluídas e o perfil original. Alterar o JSON inicia uma nova sessão; mantenha esta página aberta até salvar.</p>
+          <p className="mt-2 text-xs">Continuar e tentar falhas preservam as avaliações concluídas e o perfil original. Editar a entrada preserva estes resultados. Uma nova classificação só os substitui após validar a entrada e confirmar o descarte de trabalho não salvo.</p>
         </div>}
+        {session && inputChanged && <p role="status" className="text-sm text-warning">A entrada foi alterada. Os resultados abaixo pertencem à classificação anterior e continuam disponíveis para salvar.</p>}
         {session && <>
           {(session.files?.length ?? 0) > 0 && <div className="mt-3"><Table scrollLabel="Progresso por arquivo: role para ver todas as colunas" className="catalog-file-table w-full text-left text-xs"><TableCaption className="caption-top mb-2 text-left font-medium text-ink">Resumo e progresso de cada arquivo</TableCaption><TableHeader><TableRow className="border-b border-line"><TableHead className="px-2 py-2">Arquivo</TableHead><TableHead className="px-2 py-2">Formato</TableHead><TableHead className="px-2 py-2">Itens</TableHead><TableHead className="px-2 py-2">Válidos únicos</TableHead><TableHead className="px-2 py-2">Inválidos</TableHead><TableHead className="px-2 py-2">Duplicados</TableHead><TableHead className="px-2 py-2">Avisos</TableHead><TableHead className="px-2 py-2">Classificados</TableHead><TableHead className="px-2 py-2">Falhas</TableHead><TableHead className="px-2 py-2">Pendentes</TableHead></TableRow></TableHeader><TableBody>{session.files!.map((file) => <TableRow key={file.fileIndex} className="border-b border-line"><TableCell className="px-2 py-2">{file.name}</TableCell><TableCell className="px-2 py-2">{file.source}</TableCell><TableCell className="px-2 py-2">{file.totalSeen}</TableCell><TableCell className="px-2 py-2">{file.imported}</TableCell><TableCell className="px-2 py-2">{file.invalid}</TableCell><TableCell className="px-2 py-2">{file.duplicates}</TableCell><TableCell className="px-2 py-2">{file.warnings}</TableCell><TableCell className="px-2 py-2">{fileProgress.get(file.fileIndex)?.classified ?? 0}</TableCell><TableCell className="px-2 py-2">{fileProgress.get(file.fileIndex)?.failed ?? 0}</TableCell><TableCell className="px-2 py-2">{fileProgress.get(file.fileIndex)?.pending ?? 0}</TableCell></TableRow>)}</TableBody></Table></div>}
           <ImportFeedbackList title="Falhas da classificação" entries={session.items.filter((item) => item.status === 'failed').map((item) => ({ key: item.sourceIndex, message: `${importOriginLabel(item.sourceIndex, item.provenance)}: ${item.offer.title}. ${classificationFeedbackMessage(item.message)}` }))} />
@@ -784,12 +759,12 @@ export default function ProductCatalogPage() {
           {groupError && <p role="alert" className="mt-3 text-sm text-danger">{groupError}</p>}
           {groupFeedback && <p role="status" className="mt-3 text-sm text-success">{groupFeedback}</p>}
         </details>
-        {savedItems.length > 0 && (
+        {(
           <div className="catalog-results-toolbar mt-4 space-y-2">
             <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
               <div className="relative">
                 <Search size={16} className="absolute left-3 top-3 text-subtle" />
-                <Input className="pl-9" disabled={assignGroups.isPending} value={catalogSearch} onChange={(event) => { changeCatalogFilter(setCatalogSearch, event.target.value) }} placeholder="Buscar nos produtos carregados" aria-label="Buscar no catálogo carregado" />
+                <Input className="pl-9" disabled={assignGroups.isPending} value={catalogSearch} onChange={(event) => { changeCatalogFilter(setCatalogSearch, event.target.value) }} placeholder="Buscar em todo o catálogo" aria-label="Buscar no catálogo" maxLength={300} />
               </div>
               <select disabled={assignGroups.isPending} value={catalogGroupId} onChange={(event) => { changeCatalogFilter(setCatalogGroupId, event.target.value) }} className="h-10 rounded-lg border border-line-strong bg-surface px-3 text-sm outline-none focus:border-accent focus:ring-2 focus:ring-accent/25" aria-label="Filtrar catálogo por grupo de produtos">
                 <option value="all">Todos os grupos</option>
@@ -805,14 +780,11 @@ export default function ProductCatalogPage() {
               </select>
             </div>
             <p className="text-xs text-muted">
-              {visibleSavedItems.length} resultado(s) entre {savedItems.length} produto(s) carregado(s).
-              {(catalog.data?.pages[0]?.total ?? savedItems.length) > savedItems.length
-                ? ' Carregue mais para pesquisar o restante do catálogo.'
-                : ' Todo o catálogo está carregado.'}
+              {catalog.isPending ? 'Buscando…' : `${catalogTotal} resultado(s) em todo o catálogo.`}
             </p>
             <p className="text-xs text-muted">Ao mudar a busca, o grupo, o nicho ou a categoria, a seleção é limpa.</p>
             <div data-active={selectedSavedIds.size > 0} className="catalog-bulk-actions flex flex-wrap items-center gap-3">
-              <button type="button" className="text-sm text-accent underline" disabled={assignGroups.isPending || pagedSavedItems.length === 0} onClick={() => setSelectedSavedIds(new Set(pagedSavedItems.map((item) => item.id)))}>Selecionar página</button><button type="button" className="text-sm text-accent underline" disabled={assignGroups.isPending || visibleSavedItems.length === 0} onClick={() => setSelectedSavedIds(new Set(visibleSavedItems.map((item) => item.id)))}>Selecionar filtrados ({visibleSavedItems.length})</button>
+              <button type="button" className="text-sm text-accent underline" disabled={assignGroups.isPending || pagedSavedItems.length === 0} onClick={() => setSelectedSavedIds(new Set(pagedSavedItems.map((item) => item.id)))}>Selecionar página</button>
               {selectedSavedIds.size > 0 && <button type="button" className="text-sm text-muted underline" disabled={assignGroups.isPending} onClick={() => setSelectedSavedIds(new Set())}>Limpar seleção</button>}
               <span role="status" className="catalog-selection-count text-xs text-muted"><strong>{selectedSavedIds.size}</strong> selecionado(s){selectedOnOtherPages > 0 ? `, incluindo ${selectedOnOtherPages} em outras páginas deste filtro` : ''}</span>
               {selectedSavedIds.size > 0 && <>
@@ -828,9 +800,9 @@ export default function ProductCatalogPage() {
         )}
         {catalog.isPending ? <div className="mt-4"><Spinner /></div> : catalog.isError ? (
           <p role="alert" className="mt-4 text-sm text-danger">Não foi possível carregar o catálogo. <button type="button" className="underline" onClick={() => void catalog.refetch()}>Tentar novamente</button></p>
-        ) : savedItems.length ? (
+        ) : catalogTotal > 0 || catalogSearch.trim() || catalogGroupId !== 'all' || catalogProfileId !== 'all' || catalogCategory !== 'all' ? (
           <div className="catalog-products-list mt-4 space-y-2">
-            {visibleSavedItems.length > 0 && <div className="catalog-list-heading" aria-hidden="true"><span /> <span>Oferta</span><span>Classificação e grupos</span><span>Envios no WhatsApp</span></div>}
+            {savedItems.length > 0 && <div className="catalog-list-heading" aria-hidden="true"><span /> <span>Oferta</span><span>Classificação e grupos</span><span>Envios no WhatsApp</span></div>}
             {pagedSavedItems.map((item) => {
               const flag = delivery.data?.[offerIdentity({
                 ...item.offer,
@@ -978,10 +950,9 @@ export default function ProductCatalogPage() {
                 </article>
               )
             })}
-            {visibleSavedItems.length === 0 && <div className="catalog-empty-state"><BrandPattern variant="empty" className="catalog-empty-art" /><h3 className="font-semibold">Nenhum produto com estes filtros</h3><p className="text-sm text-muted">A busca considera somente os produtos carregados.</p><Button variant="secondary" onClick={() => { setCatalogSearch(''); setCatalogCategory('all'); setCatalogGroupId('all'); setCatalogProfileId('all'); setCatalogPage(1); setSelectedSavedIds(new Set()) }}>Limpar filtros</Button></div>}
-            {visibleSavedItems.length > 0 && <div className="catalog-pagination flex items-center justify-between gap-3 text-sm"><Button variant="secondary" disabled={safeCatalogPage === 1} onClick={() => setCatalogPage(safeCatalogPage - 1)}>Anterior</Button><span>Página {safeCatalogPage} de {catalogPageCount}</span><Button variant="secondary" disabled={safeCatalogPage === catalogPageCount} onClick={() => setCatalogPage(safeCatalogPage + 1)}>Próxima</Button></div>}
-            <p className="text-xs text-muted">Mostrando {savedItems.length} de {catalog.data?.pages[0]?.total ?? savedItems.length} produtos.</p>
-            {catalog.hasNextPage && <Button variant="secondary" disabled={catalog.isFetchingNextPage} onClick={() => void catalog.fetchNextPage()}>{catalog.isFetchingNextPage ? 'Carregando…' : 'Carregar mais'}</Button>}
+            {savedItems.length === 0 && <div className="catalog-empty-state"><BrandPattern variant="empty" className="catalog-empty-art" /><h3 className="font-semibold">Nenhum produto com estes filtros</h3><p className="text-sm text-muted">A busca considera todos os produtos do seu catálogo.</p><Button variant="secondary" onClick={() => { setCatalogSearch(''); setCatalogCategory('all'); setCatalogGroupId('all'); setCatalogProfileId('all'); setCatalogPage(1); setSelectedSavedIds(new Set()) }}>Limpar filtros</Button></div>}
+            {catalogTotal > 0 && <div className="catalog-pagination flex items-center justify-between gap-3 text-sm"><Button variant="secondary" disabled={catalogPage === 1} onClick={() => setCatalogPage(catalogPage - 1)}>Anterior</Button><span>Página {catalogPage} de {catalogPageCount}</span><Button variant="secondary" disabled={catalogPage === catalogPageCount} onClick={() => setCatalogPage(catalogPage + 1)}>Próxima</Button></div>}
+            <p className="text-xs text-muted">Mostrando {savedItems.length} de {catalogTotal} resultados.</p>
           </div>
         ) : <div className="catalog-empty-state"><BrandPattern variant="empty" className="catalog-empty-art" /><h3 className="font-semibold text-ink">Seu catálogo começa com uma oferta</h3><p className="text-sm text-muted">Importe um JSON, revise as categorias e salve os produtos que deseja divulgar.</p><Button onClick={() => setActiveView('import')}>Importar produtos</Button></div>}
       </section>

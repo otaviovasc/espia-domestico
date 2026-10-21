@@ -6,6 +6,7 @@ import { ClassificationProfileIdSchema } from '@/dtos/classificationProfile'
 import {
   SavedProductMembershipUpdateSchema,
   SavedProductOfferPatchSchema,
+  SavedProductFiltersSchema,
 } from '@/dtos/savedProduct'
 import { BadRequestError, NotFoundError, UnauthorizedError } from '@/middleware/Error/AppError'
 import { SavedProductService } from '@/services/SavedProductService'
@@ -58,7 +59,8 @@ export class SavedProductController {
         ? undefined
         : pagination(req.query.groupId, 0, Number.MAX_SAFE_INTEGER)
     if (groupId !== undefined && groupId < 1) throw BadRequestError('ID de grupo inválido')
-    const result = await this.service.list(this.userId(req), limit, offset, groupId)
+    const filters = SavedProductFiltersSchema.parse(req.query)
+    const result = await this.service.list(this.userId(req), limit, offset, groupId, filters)
     res.json({ success: true, data: result })
   }
 

@@ -128,8 +128,16 @@ export function planAudienceContext(plan: SmartPlan, slug: SmartAudienceSlug, au
     policyFrozen: !!frozen,
     destinations,
     destinationsFrozen,
+    destinationDrift: destinationsFrozen && savedIds !== currentIds,
     drift: (!!frozen && policyFingerprint(frozen) !== policyFingerprint(audience?.policy)) || (destinationsFrozen && savedIds !== currentIds),
   }
+}
+
+export function smartRecoveryReason(plan: SmartPlan): 'binding-change' | 'disconnected' | null {
+  const errors = [plan.error, ...(plan.sends ?? []).map((send) => send.lastError)].filter(Boolean).join('\n')
+  if (/conexão[^\n]*mudou|grupo[^\n]*(não está mais vinculado|não pertence mais)/i.test(errors)) return 'binding-change'
+  if (/conexão[^\n]*(indisponível|desconectad)|whatsapp[^\n]*(indisponível|desconectad)/i.test(errors)) return 'disconnected'
+  return null
 }
 
 export function safeAffiliateUrl(value?: string): string | undefined {
