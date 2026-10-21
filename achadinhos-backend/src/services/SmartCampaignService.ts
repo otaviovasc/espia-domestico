@@ -1236,12 +1236,12 @@ export class SmartCampaignService {
       }
       const planningNow = new Date()
       const planningLocalDate = getSmartLocalDate(planningNow, policy.timezone)
-        const planningTiming = settings.global?.startNow && plan.startDate === planningLocalDate
-          ? { ...settings.global, earlyStart: immediateTiming(plan.startDate, [policy.timezone], planningNow) }
-          : settings.global
-        const configuredStart = smartZonedInstant(
-          plan.startDate, explicitSmartStart(planningTiming, plan.startDate, policy.startTime), policy.timezone,
-        )
+      const planningTiming = settings.global?.startNow && plan.startDate === planningLocalDate
+        ? { ...settings.global, earlyStart: immediateTiming(plan.startDate, [policy.timezone], planningNow) }
+        : settings.global
+      const configuredStart = smartZonedInstant(
+        plan.startDate, explicitSmartStart(planningTiming, plan.startDate, policy.startTime), policy.timezone,
+      )
       // A same-day plan may be created after its configured start time. Offers
       // collected now must be judged against a send time that is still ahead,
       // otherwise fresh evidence appears to come from the future and every item
@@ -1308,17 +1308,17 @@ export class SmartCampaignService {
       const selected: SmartPlanItem[] = []
       for (let dayOffset = 0; dayOffset < plan.days; dayOffset++) {
         const date = addDays(plan.startDate, dayOffset)
-          const dayPolicy = { ...policy, startTime: explicitSmartStart(planningTiming, date, policy.startTime) }
-          const capacity = Math.min(
-            policy.dailyCap,
-            Math.floor(
-              ((minutes(dayPolicy.endTime) - minutes(dayPolicy.startTime)) * 60) / policy.minGapSeconds,
-            ) + 1,
-          )
+        const dayPolicy = { ...policy, startTime: explicitSmartStart(planningTiming, date, policy.startTime) }
+        const capacity = Math.min(
+          policy.dailyCap,
+          Math.floor(
+            ((minutes(dayPolicy.endTime) - minutes(dayPolicy.startTime)) * 60) / policy.minGapSeconds,
+          ) + 1,
+        )
         const maximum = capacity
         const categoryLimit = Math.max(1, Math.ceil(maximum * 0.25))
         const chosen: SmartPlanItem[] = []
-          const configuredDayStart = smartZonedInstant(date, dayPolicy.startTime, policy.timezone)
+        const configuredDayStart = smartZonedInstant(date, dayPolicy.startTime, policy.timezone)
         const earliestSendAt =
           date === planningLocalDate && planningNow > configuredDayStart
             ? planningNow
@@ -1343,7 +1343,7 @@ export class SmartCampaignService {
           let tentativeSlots: Date[]
           try {
             tentativeSlots = buildSmartSchedule(
-                date, tentative.length, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt,
+              date, tentative.length, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt,
             )
           } catch (error) {
             if (!(error instanceof AppError) || error.statusCode !== 409) throw error
@@ -1357,7 +1357,7 @@ export class SmartCampaignService {
         const slots = buildSmartSchedule(
           date,
           chosen.length,
-            dayPolicy,
+          dayPolicy,
           `${plan.uuid}:${audience.slug}:${date}`,
           earliestSendAt,
         )
@@ -2033,40 +2033,40 @@ export class SmartCampaignService {
       if (found.status !== expected) throw ConflictError('O plano não pode mudar para este estado')
       if (found.revision !== revision) throw ConflictError('O plano foi alterado; atualize a tela')
       if (next === SMART_PLAN_STATUS.SCHEDULED) {
-          const now = new Date()
-          if (sends.some((send) =>
-            [SMART_SEND_STATUS.FAILED, SMART_SEND_STATUS.UNKNOWN, SMART_SEND_STATUS.SENDING].includes(send.status)
-            || (send.leaseExpiresAt && send.leaseExpiresAt > now))) {
+        const now = new Date()
+        if (sends.some((send) =>
+          [SMART_SEND_STATUS.FAILED, SMART_SEND_STATUS.UNKNOWN, SMART_SEND_STATUS.SENDING].includes(send.status)
+          || (send.leaseExpiresAt && send.leaseExpiresAt > now))) {
           throw ConflictError('Resolva os envios incertos ou cancele este plano antes de continuar')
         }
-          const pending = sends.filter((send) => send.status === SMART_SEND_STATUS.PENDING)
-          if (pending.length) {
-            const scope = await this.connections.getConnectionScope(userId)
-            if (!scope || pending.some((send) => send.connectionScope !== scope)) {
-              throw ConflictError('Restaure a conexão original antes de retomar este plano')
+        const pending = sends.filter((send) => send.status === SMART_SEND_STATUS.PENDING)
+        if (pending.length) {
+          const scope = await this.connections.getConnectionScope(userId)
+          if (!scope || pending.some((send) => send.connectionScope !== scope)) {
+            throw ConflictError('Restaure a conexão original antes de retomar este plano')
+          }
+          const audiences = await SmartAudience.findAll({
+            where: { userId, slug: [...new Set(pending.map((send) => send.audienceSlug))] },
+            transaction, lock: transaction.LOCK.UPDATE,
+          })
+          for (const send of pending) {
+            const audience = audiences.find((entry) => entry.slug === send.audienceSlug)
+            if (!audience?.enabled) {
+              throw ConflictError('O público original precisa estar ativo antes de retomar este plano')
             }
-            const audiences = await SmartAudience.findAll({
-              where: { userId, slug: [...new Set(pending.map((send) => send.audienceSlug))] },
-              transaction, lock: transaction.LOCK.UPDATE,
-            })
-            for (const send of pending) {
-              const audience = audiences.find((entry) => entry.slug === send.audienceSlug)
-              if (!audience?.enabled) {
-                throw ConflictError('O público original precisa estar ativo antes de retomar este plano')
-              }
-              if (!audience.destinations.some((destination) => destination.groupId === send.groupId)) {
-                throw ConflictError('Restaure o vínculo original de cada grupo antes de retomar este plano')
-              }
-            }
-            const groupIds = [...new Set(pending.map((send) => send.groupId))].sort()
-            const currentGroups = await this.groups.requireCurrentGroups(userId, groupIds)
-            if (groupIds.some((id) => !currentGroups.has(id))) {
-              throw ConflictError('Restaure os grupos originais na conexão antes de retomar este plano')
-            }
-            if (await this.connections.getConnectionScope(userId) !== scope) {
-              throw ConflictError('A conexão original mudou durante a retomada; tente novamente')
+            if (!audience.destinations.some((destination) => destination.groupId === send.groupId)) {
+              throw ConflictError('Restaure o vínculo original de cada grupo antes de retomar este plano')
             }
           }
+          const groupIds = [...new Set(pending.map((send) => send.groupId))].sort()
+          const currentGroups = await this.groups.requireCurrentGroups(userId, groupIds)
+          if (groupIds.some((id) => !currentGroups.has(id))) {
+            throw ConflictError('Restaure os grupos originais na conexão antes de retomar este plano')
+          }
+          if (await this.connections.getConnectionScope(userId) !== scope) {
+            throw ConflictError('A conexão original mudou durante a retomada; tente novamente')
+          }
+        }
       }
       found.status = next
       found.revision += 1

@@ -43,7 +43,8 @@ function lifecycle(t, status = 'PAUSED') {
     if (options.lock) events.push('lock-sends')
     return [row]
   })
-  t.mock.method(SmartSend, 'count', async () => ['FAILED', 'UNKNOWN', 'SENDING'].includes(row.status) ? 1 : 0)
+  t.mock.method(SmartSend, 'count', async (options) =>
+    options.where.status[require('sequelize').Op.in].includes(row.status) ? 1 : 0)
   t.mock.method(SmartAudience, 'findAll', async () => [state.audience])
   return { service, events, plan, row, state }
 }
@@ -87,7 +88,7 @@ test('resume requires original audience bindings and current group membership', 
   await assert.rejects(service.resume(1, 'plan', 4), /vínculo original/i)
   state.audience.destinations = [{ groupId: row.groupId }]
   state.currentGroups = new Map()
-  await assert.rejects(service.resume(1, 'plan', 4), /grupo.*original/i)
+  await assert.rejects(service.resume(1, 'plan', 4), /grupos? origina/i)
   assert.equal(plan.status, 'PAUSED')
   assert.equal(plan.revision, 4)
   state.currentGroups.set(row.groupId, { id: row.groupId })
@@ -111,6 +112,22 @@ test('resume cannot clear uncertain/in-flight sends or a disabled audience', asy
   state.audience.enabled = false
   await assert.rejects(service.resume(1, 'plan', 4), /público.*ativo/i)
   assert.equal(plan.revision, 4)
+})
+
+test('resume rechecks scope after group verification and leaves historical sends untouched', async (t) => {
+  const { service, plan, row, state } = lifecycle(t)
+  service.groups.requireCurrentGroups = async () => {
+    state.scope = 'replacement'
+    return state.currentGroups
+  }
+  await assert.rejects(service.resume(1, 'plan', 4), /conexão original mudou/i)
+  assert.equal(plan.status, 'PAUSED')
+  assert.equal(plan.revision, 4)
+  row.status = 'SENT'
+  state.audience.destinations = []
+  await service.resume(1, 'plan', 4)
+  assert.equal(plan.status, 'SCHEDULED', 'only pending sends need restored bindings')
+  assert.equal(row.connectionScope, 'original')
 })
 
 test('initial startNow uses today actual slots for freshness without changing future windows', async (t) => {
