@@ -16,6 +16,8 @@ import {
   LoaderCircle,
   PackageCheck,
   Pause,
+  Pin,
+  PinOff,
   Play,
   RefreshCw,
   RotateCcw,
@@ -42,6 +44,8 @@ import {
   type SmartKeywordPack,
   type SmartImportPayload,
   type SmartPlan,
+  type SmartPlanListEntry,
+  type SmartPlanListFilters,
   type SmartPlanItem,
   type SmartPlanItemState,
   type SmartPlanSend,
@@ -55,7 +59,7 @@ import { CampaignConfirmDialog } from '@/components/CampaignConfirmDialog'
 import { GroupCombobox } from '@/components/GroupCombobox'
 import { useDraftBaseline } from '@/hooks/useDraftBaseline'
 import { useUnsavedChanges } from '@/hooks/useUnsavedChanges'
-import { audienceInput, audienceValidation, validPlanDate, inferFileAudience, countFileOffers, optionalNumber, smartLocalDate, campaignTimingValidation, canAdvanceSmartPlan, nextSmartDelivery, smartCampaignStart, reservedSmartStart, planAudienceContext, safeAffiliateUrl, smartDeliveriesCsv, smartRecoveryReason } from '@/lib/smartCampaignUi'
+import { audienceInput, audienceValidation, validPlanDate, inferFileAudience, countFileOffers, optionalNumber, smartLocalDate, campaignTimingValidation, canAdvanceSmartPlan, nextSmartDelivery, smartCampaignStart, reservedSmartStart, planAudienceContext, safeAffiliateUrl, smartDeliveriesCsv, smartRecoveryReason, historyDateValidation } from '@/lib/smartCampaignUi'
 import './smart-campaigns.css'
 import { createSmartAIRequestId } from '@/lib/smartAiSafety'
 
@@ -610,6 +614,8 @@ function PlanItemCard({ item, editable, saving, timeZone, onPatch, message, onMe
           {item.warnings && item.warnings.length > 0 && <div className="mt-3 rounded-lg border border-warning/30 bg-warning-soft p-2 text-xs text-warning">{item.warnings.join(' · ')}</div>}
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted">
             <Clock3 size={14} /> {item.scheduledAt ? formatDateTime(item.scheduledAt, timeZone) : item.state === 'SELECTED' ? 'Horário será calculado na aprovação' : 'Sem horário'}
+            {editable && item.state === 'SELECTED' && <Button variant="ghost" className="h-10 w-10 p-2" title={item.pinned ? 'Desafixar posição no embaralhamento' : 'Fixar posição no embaralhamento'} aria-label={item.pinned ? `Desafixar ${item.product.title}` : `Fixar ${item.product.title}`} aria-pressed={!!item.pinned} disabled={saving} onClick={() => onPatch({ pinned: !item.pinned })}>{item.pinned ? <PinOff size={16} /> : <Pin size={16} />}</Button>}
+            {item.pinned && <Badge>Posição fixada</Badge>}
             {editable && item.state === 'SELECTED' && <label className="ml-auto flex cursor-pointer items-center gap-1.5"><input type="checkbox" className="accent-accent" checked={Boolean(item.standout)} onChange={(e) => onPatch({ standout: e.target.checked })} disabled={saving} /> Mensagem especial</label>}
           </div>
           {(item.standout || item.customMessage || editingMessage) && (
@@ -764,13 +770,17 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, ext
   const [audience, setAudience] = useState<SmartAudienceSlug | 'ALL'>('ALL')
   const [date, setDate] = useState('ALL')
   const [state, setState] = useState<SmartPlanItemState>('SELECTED')
-  const [campaignStartTime, setCampaignStartTime] = useState(plan.settings?.global?.campaignStartTime ?? '09:00')
-  const [startNow, setStartNow] = useState(plan.settings?.global?.startNow ?? false)
+  const [search, setSearch] = useState('')
+  const [sort, setSort] = useState('ORDER')
+  const searchTerm = useDeferredValue(search.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR'))
   const savedStartNow = plan.settings?.global?.startNow ?? false
   const savedCampaignStartTime = plan.settings?.global?.campaignStartTime ?? '09:00'
+  const [timingDraft, setTimingDraft] = useState<{ campaignStartTime: string; startNow: boolean } | null>(null)
+  const campaignStartTime = timingDraft?.campaignStartTime ?? savedCampaignStartTime
+  const startNow = timingDraft?.startNow ?? savedStartNow
   const mutation = useMutation({
     mutationFn: ({ item, patch }: { item: SmartPlanItem; patch: Partial<SmartPlanItem> }) => smartCampaignApi.updatePlan(plan.id, plan.revision, [{
-      id: item.id, state: patch.state, standout: patch.standout, customMessage: patch.customMessage, audienceSlug: patch.audienceSlug, date: patch.date,
+      id: item.id, state: patch.state, standout: patch.standout, customMessage: patch.customMessage, audienceSlug: patch.audienceSlug, date: patch.date, pinned: patch.pinned,
     }]),
     onSettled: () => { submitting.current = false },
     onSuccess: (updated, { item, patch }) => {
@@ -782,6 +792,7 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, ext
   const startTimeMutation = useMutation({
     mutationFn: () => smartCampaignApi.updatePlan(plan.id, plan.revision, [], campaignStartTime, startNow),
     onSuccess: (updated) => {
+      setTimingDraft(null)
       onPlanChange(updated)
       void queryClient.invalidateQueries({ queryKey: ['smart-plans'] })
     },
@@ -795,7 +806,6 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, ext
   })
   const reviewBusy = externalBusy || mutation.isPending || startTimeMutation.isPending || shuffleMutation.isPending
   const changedStartTime = campaignStartTime !== savedCampaignStartTime || startNow !== savedStartNow
-  useEffect(() => { setCampaignStartTime(savedCampaignStartTime); setStartNow(savedStartNow) }, [savedCampaignStartTime, savedStartNow])
   const ownPending = mutation.isPending || startTimeMutation.isPending || shuffleMutation.isPending
   useEffect(() => { onDirtyChange('review', changedMessages || changedStartTime || ownPending) }, [changedMessages, changedStartTime, ownPending, onDirtyChange])
   useEffect(() => () => onDirtyChange('review', false), [onDirtyChange])
@@ -817,8 +827,10 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, ext
     }
     return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date) || a.audienceSlug.localeCompare(b.audienceSlug))
   }, [plan.items])
-  const visible = plan.items.filter((item) => (audience === 'ALL' || item.audienceSlug === audience) && (date === 'ALL' || item.date === date) && item.state === state)
-    .sort((a, b) => a.date.localeCompare(b.date) || a.audienceSlug.localeCompare(b.audienceSlug) || (a.sendOrder ?? Number.MAX_SAFE_INTEGER) - (b.sendOrder ?? Number.MAX_SAFE_INTEGER) || b.score - a.score)
+  const visible = plan.items.filter((item) => (audience === 'ALL' || item.audienceSlug === audience) && (date === 'ALL' || item.date === date) && item.state === state
+    && item.product.title.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase('pt-BR').includes(searchTerm))
+    .sort((a, b) => sort === 'SCORE' ? b.score - a.score : sort === 'PRICE_ASC' ? a.product.discountedPrice - b.product.discountedPrice : sort === 'PRICE_DESC' ? b.product.discountedPrice - a.product.discountedPrice
+      : a.date.localeCompare(b.date) || a.audienceSlug.localeCompare(b.audienceSlug) || (a.sendOrder ?? Number.MAX_SAFE_INTEGER) - (b.sendOrder ?? Number.MAX_SAFE_INTEGER) || b.score - a.score)
   const editable = plan.status === 'REVIEW'
   const analysisFailure = isAnalysisFailure(plan)
   const contexts = plan.audienceSlugs.map((slug) => ({ slug, ...planAudienceContext(plan, slug, audiences) }))
@@ -854,8 +866,8 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, ext
         <div className="flex flex-wrap items-baseline justify-between gap-2"><h3 className="font-semibold">Resumo da campanha</h3><p className="text-sm text-muted">{counts.SELECTED} selecionados · {counts.RESERVE} na reserva · {counts.REJECTED} rejeitados</p></div>
         {nextDelivery && <div className="mt-3 border-y border-line py-3 text-sm"><p className="font-medium">{plan.status === 'PAUSED' ? 'Próxima reserva (plano pausado)' : 'Próxima entrega agendada'}: {formatDateTime(nextDelivery.scheduledAt, nextDelivery.timezone ?? plan.timezone ?? 'America/Sao_Paulo')}</p><p className="mt-1 text-xs text-muted">{nextDelivery.groupName} · {NICHE_STYLES[nextDelivery.audienceSlug].label} · {nextDelivery.timezone ?? plan.timezone ?? 'America/Sao_Paulo'}</p></div>}
         {editable && <div className="mt-3 flex flex-wrap items-end gap-2 rounded-lg bg-surface-muted p-3">
-          <div><Label htmlFor={`${prefix}-campaign-start`}>Início da campanha (Brasília)</Label><input id={`${prefix}-campaign-start`} className="field-control block w-full" type="time" min="09:00" max={endTime} value={campaignStartTime} aria-invalid={!!timingError} disabled={reviewBusy || startNow} onChange={(event) => setCampaignStartTime(event.target.value)} /></div>
-          <label className="flex min-h-11 items-center gap-2 py-2 text-sm"><input type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={startNow} disabled={reviewBusy || (!startNow && plan.startDate !== today())} onChange={(event) => setStartNow(event.target.checked)} />Iniciar ao aprovar hoje</label>
+          <div><Label htmlFor={`${prefix}-campaign-start`}>Início da campanha (Brasília)</Label><input id={`${prefix}-campaign-start`} className="field-control block w-full" type="time" min="09:00" max={endTime} value={campaignStartTime} aria-invalid={!!timingError} disabled={reviewBusy || startNow} onChange={(event) => setTimingDraft({ campaignStartTime: event.target.value, startNow })} /></div>
+          <label className="flex min-h-11 items-center gap-2 py-2 text-sm"><input type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={startNow} disabled={reviewBusy || (!startNow && plan.startDate !== today())} onChange={(event) => setTimingDraft({ campaignStartTime, startNow: event.target.checked })} />Iniciar ao aprovar hoje</label>
           <Button type="button" disabled={!changedStartTime || reviewBusy || !!timingError} onClick={() => { if (submitting.current || reviewBusy || !editable || timingError || !changedStartTime) return; submitting.current = true; startTimeMutation.mutate() }}>{startTimeMutation.isPending ? <Spinner /> : <Save size={15} />} Salvar início da campanha</Button>
           {timingError && <p role="status" className="w-full text-xs text-danger">{timingError}</p>}
           <p className="w-full text-xs text-muted">Os horários de cada produto serão distribuídos automaticamente a partir desse início, respeitando os intervalos e limites dos públicos.</p>
@@ -888,6 +900,12 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, ext
         <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-audience`}>Público</Label><select id={`${prefix}-audience`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={audience} onChange={(e) => setAudience(e.target.value as SmartAudienceSlug | 'ALL')}><option value="ALL">Todos os públicos</option>{plan.audienceSlugs.map((slug) => <option key={slug} value={slug}>{NICHE_STYLES[slug].label}</option>)}</select></div>
         <div className="min-w-0 flex-1"><Label htmlFor={`${prefix}-date`}>Dia</Label><select id={`${prefix}-date`} className="w-full rounded-lg border border-line-strong px-3 py-2 text-sm" value={date} onChange={(e) => setDate(e.target.value)}><option value="ALL">Todos os dias</option>{dates.map((value) => <option key={value} value={value}>{formatDate(value)}</option>)}</select></div>
       </div>
+      <div className="mt-3 grid min-w-0 items-end gap-3 sm:grid-cols-[minmax(0,1fr)_12rem_auto]">
+        <div><Label htmlFor={`${prefix}-search`}>Buscar produto</Label><Input id={`${prefix}-search`} type="search" placeholder="Nome do produto" value={search} onChange={(event) => setSearch(event.target.value)} /></div>
+        <div><Label htmlFor={`${prefix}-sort`}>Ordenar visualização</Label><select id={`${prefix}-sort`} className="field-control w-full" value={sort} onChange={(event) => setSort(event.target.value)}><option value="ORDER">Ordem salva do plano</option><option value="SCORE">Maior nota</option><option value="PRICE_ASC">Menor preço</option><option value="PRICE_DESC">Maior preço</option></select></div>
+        <Button variant="ghost" disabled={audience === 'ALL' && date === 'ALL' && state === 'SELECTED' && !search && sort === 'ORDER'} onClick={() => { setAudience('ALL'); setDate('ALL'); setState('SELECTED'); setSearch(''); setSort('ORDER') }}><RotateCcw size={15} />Limpar filtros</Button>
+      </div>
+      <p role="status" className="mt-2 text-xs text-muted">{visible.length} produto(s) nesta visualização. A ordenação visual não altera a agenda.</p>
       {editable && <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><p id={`${prefix}-shuffle-scope`} className="text-xs text-muted">Todos os selecionados, em todos os públicos e dias. Os filtros acima não limitam o embaralhamento; itens fixados mantêm a posição.</p><Button variant="secondary" aria-describedby={`${prefix}-shuffle-scope`} disabled={reviewBusy || changedMessages || changedStartTime || counts.SELECTED < 2} onClick={() => { if (submitting.current || reviewBusy || !editable || changedMessages || changedStartTime || counts.SELECTED < 2) return; submitting.current = true; shuffleMutation.mutate() }}>{shuffleMutation.isPending ? <Spinner /> : <Shuffle size={16} />}Embaralhar todos os selecionados</Button></div>}
       {(mutation.isError || startTimeMutation.isError || shuffleMutation.isError) && <div className="mt-4"><ErrorState message={apiErrorMessage(mutation.error ?? startTimeMutation.error ?? shuffleMutation.error)} /></div>}
       {changedMessages && <p role="status" className="mt-4 rounded-lg bg-warning-soft p-3 text-sm text-warning">Há introduções especiais não salvas. Elas permanecem ao mudar os filtros. Salve ou descarte as edições antes de aprovar ou retomar.</p>}
@@ -1004,17 +1022,17 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, 
   )
 }
 
-function PlanHistory({ plans, selectedId, onSelect }: { plans: SmartPlan[]; selectedId: string | null; onSelect: (id: string) => void }) {
-  if (plans.length === 0) return <EmptyState title="Nenhum plano criado">Depois da primeira importação, análises e campanhas agendadas aparecerão aqui.</EmptyState>
+function PlanHistory({ plans, selectedId, onSelect, disabled }: { plans: SmartPlanListEntry[]; selectedId: string | null; onSelect: (id: string) => void; disabled: boolean }) {
+  if (plans.length === 0) return <EmptyState title="Nenhum plano nesta seleção">Revise os filtros ou importe uma coleta para criar uma proposta.</EmptyState>
   return (
     <div className="space-y-3">
       {plans.map((plan) => (
-        <button type="button" key={plan.id} onClick={() => onSelect(plan.id)} className={`w-full rounded-2xl border bg-surface p-4 text-left shadow-sm transition hover:border-accent/30 ${selectedId === plan.id ? 'border-accent/30 ring-2 ring-accent/20' : 'border-line'}`}>
+        <button type="button" key={plan.id} disabled={disabled} onClick={() => onSelect(plan.id)} className={`w-full rounded-lg border bg-surface p-4 text-left transition hover:border-accent/30 disabled:cursor-wait disabled:opacity-60 ${selectedId === plan.id ? 'border-accent/30 ring-2 ring-accent/20' : 'border-line'}`}>
           <div className="flex items-start justify-between gap-3">
             <div><div className="flex flex-wrap items-center gap-2"><strong>Plano de {formatDate(plan.startDate)}</strong><Badge tone={statusTone(plan.status)}>{planStatusLabel(plan.status)}</Badge></div><p className="mt-1 text-xs text-muted">{plan.days} dia(s) · {plan.audienceSlugs.map((slug) => NICHE_STYLES[slug].label).join(', ')} · atualizado {formatDateTime(plan.updatedAt)}</p></div>
             <ChevronRight className="shrink-0 text-subtle" size={18} />
           </div>
-          {plan.progress?.total ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-surface-muted"><div className="h-full bg-accent" style={{ width: `${Math.min(100, (plan.progress.completed / plan.progress.total) * 100)}%` }} /></div> : null}
+          <p className="mt-2 text-xs text-muted">{plan.itemCount} produto(s) · {plan.sendSummary?.SENT ?? 0} enviados · {plan.sendSummary?.PENDING ?? 0} pendentes{(plan.sendSummary?.UNKNOWN ?? 0) > 0 ? ` · ${plan.sendSummary?.UNKNOWN} a confirmar` : ''}{(plan.sendSummary?.FAILED ?? 0) > 0 ? ` · ${plan.sendSummary?.FAILED} falhas` : ''}</p>
         </button>
       ))}
     </div>
@@ -1023,17 +1041,26 @@ function PlanHistory({ plans, selectedId, onSelect }: { plans: SmartPlan[]; sele
 
 export default function SmartCampaignsPage() {
   const [searchParams] = useSearchParams()
-  const [stage, setStage] = useState<Stage>('audiences')
+  const routePlanId = searchParams.get('plan')
+  const [stage, setStage] = useState<Stage>(routePlanId ? 'review' : 'audiences')
   const stagesRef = useRef<HTMLElement>(null)
-  useEffect(() => { stagesRef.current?.querySelector('[aria-current=step]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }) }, [stage])
+  useEffect(() => {
+    const nav = stagesRef.current
+    const active = nav?.querySelector<HTMLElement>('[aria-current="step"]')
+    if (!nav || !active) return
+    const bounds = nav.getBoundingClientRect()
+    const target = active.getBoundingClientRect()
+    nav.scrollTo({ left: nav.scrollLeft + target.left - bounds.left - (bounds.width - target.width) / 2, behavior: 'auto' })
+  }, [stage])
   const [planDate, setPlanDate] = useState(today())
   const [selectedAudiences, setSelectedAudiences] = useState<Set<SmartAudienceSlug>>(new Set())
   const [selectionInitialized, setSelectionInitialized] = useState(false)
-  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null)
-  useEffect(() => {
-    const planId = searchParams.get('plan')
-    if (planId) { setSelectedPlanId(planId); setStage('review') }
-  }, [searchParams])
+  const [selectedPlanId, setSelectedPlanId] = useState<string | null>(routePlanId)
+  const [previousRoutePlanId, setPreviousRoutePlanId] = useState(routePlanId)
+  if (routePlanId !== previousRoutePlanId) {
+    setPreviousRoutePlanId(routePlanId)
+    if (routePlanId) { setSelectedPlanId(routePlanId); setStage('review') }
+  }
   const [nextPlanId, setNextPlanId] = useState<string | null>(null)
   const [dirtyParts, setDirtyParts] = useState<Record<string, boolean>>({})
   const reportDirty = useCallback<DirtyChange>((key, dirty) => setDirtyParts((current) => current[key] === dirty ? current : { ...current, [key]: dirty }), [])
@@ -1041,13 +1068,18 @@ export default function SmartCampaignsPage() {
   const audienceDirty = Object.entries(dirtyParts).some(([key, value]) => key.startsWith('audience:') && value)
   const { prompt } = useUnsavedChanges(dirty, 'Há configurações, arquivos ou textos não salvos nas campanhas inteligentes. Continue editando para preservá-los.')
   const queryClient = useQueryClient()
+  const historyPrefix = useId()
+  const [historyFilters, setHistoryFilters] = useState<SmartPlanListFilters>({ page: 1, pageSize: 20 })
+  const historyError = historyDateValidation(historyFilters.dateFrom ?? '', historyFilters.dateTo ?? '')
+  const updateHistory = (patch: Partial<SmartPlanListFilters>) => setHistoryFilters((current) => ({ ...current, ...patch, page: 1 }))
   const aiStatusQuery = useQuery({ queryKey: ['smart-ai-status'], queryFn: smartCampaignApi.aiStatus, retry: false, staleTime: 60_000 })
   const audiencesQuery = useQuery({ queryKey: ['smart-audiences'], queryFn: smartCampaignApi.audiences })
   const groupsQuery = useQuery({ queryKey: ['groups'], queryFn: () => groupApi.list() })
   const plansQuery = useQuery({
-    queryKey: ['smart-plans'], queryFn: smartCampaignApi.plans,
+    queryKey: ['smart-plans', historyFilters], queryFn: () => smartCampaignApi.planSummaries(historyFilters),
+    enabled: stage === 'monitor' && !historyError,
     refetchInterval: (query) => {
-      const statuses = query.state.data?.map((plan) => plan.status) ?? []
+      const statuses = query.state.data?.plans.map((plan) => plan.status) ?? []
       if (statuses.includes('ANALYZING')) return planPollInterval('ANALYZING')
       if (statuses.includes('RUNNING')) return planPollInterval('RUNNING')
       return statuses.some((status) => status === 'APPROVED' || status === 'SCHEDULED') ? planPollInterval('SCHEDULED') : false
@@ -1098,13 +1130,20 @@ export default function SmartCampaignsPage() {
       {selectedPlanId && detailQuery.isLoading && <Card className="flex items-center gap-3"><Spinner />Carregando plano…</Card>}
       {detailQuery.isError && <ErrorState message={apiErrorMessage(detailQuery.error)} retry={() => { void detailQuery.refetch() }} />}
       {selectedPlanId && <div className="mb-4 flex justify-end"><Button variant="ghost" loading={detailQuery.isFetching} loadingText="Atualizando…" onClick={() => { void detailQuery.refetch() }}><RefreshCw size={15} />Atualizar plano</Button></div>}
-      {activePlan && <PlanReview key={activePlan.id} plan={activePlan} audiences={audiences} actions={<PlanActions key={`actions:${activePlan.id}`} plan={activePlan} audiences={audiences} onPlanChange={handlePlan} onCreateFresh={() => setStage('import')} aiBlocked={aiBlocked} draftsPending={audienceDirty || !!dirtyParts.review} onDirtyChange={reportDirty} />} onPlanChange={handlePlan} onDirtyChange={reportDirty} />}
+      {activePlan && <PlanReview key={activePlan.id} plan={activePlan} audiences={audiences} externalBusy={!!dirtyParts['plan-action'] || !!dirtyParts['resolution-pending']} actions={<PlanActions key={`actions:${activePlan.id}`} plan={activePlan} audiences={audiences} onPlanChange={handlePlan} onCreateFresh={() => setStage('import')} aiBlocked={aiBlocked} draftsPending={audienceDirty || !!dirtyParts.review || !!dirtyParts['resolution-pending']} onDirtyChange={reportDirty} />} onPlanChange={handlePlan} onDirtyChange={reportDirty} />}
     </div>
     <section hidden={stage !== 'monitor'} aria-labelledby="history-title">
-      <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 id="history-title" className="section-heading">Planos e envios</h2><p className="page-description">Consulte análises, aprovações, pausas e resultados.</p></div><Button variant="secondary" onClick={() => { void plansQuery.refetch() }} loading={plansQuery.isFetching} loadingText="Atualizando…"><RefreshCw size={15} />Atualizar</Button></div>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3"><div><h2 id="history-title" className="section-heading">Planos e envios</h2><p className="page-description">Consulte análises, aprovações, pausas e resultados.</p></div><Button variant="secondary" disabled={!!historyError} onClick={() => { void plansQuery.refetch() }} loading={plansQuery.isFetching} loadingText="Atualizando…"><RefreshCw size={15} />Atualizar</Button></div>
+      <fieldset className="mb-4 grid min-w-0 gap-3 sm:grid-cols-3"><legend className="sr-only">Filtrar planos</legend>
+        <div><Label htmlFor={`${historyPrefix}-status`}>Situação</Label><select id={`${historyPrefix}-status`} className="field-control w-full" value={historyFilters.status ?? ''} onChange={(event) => updateHistory({ status: (event.target.value || undefined) as SmartPlanStatus | undefined })}><option value="">Todas</option>{(['ANALYZING', 'REVIEW', 'SCHEDULED', 'PAUSED', 'COMPLETED', 'FAILED', 'CANCELLED'] as const).map((value) => <option key={value} value={value}>{planStatusLabel(value)}</option>)}</select></div>
+        <div><Label htmlFor={`${historyPrefix}-from`}>Início da campanha, de</Label><Input id={`${historyPrefix}-from`} type="date" value={historyFilters.dateFrom ?? ''} onChange={(event) => updateHistory({ dateFrom: event.target.value || undefined })} /></div>
+        <div><Label htmlFor={`${historyPrefix}-to`}>Até</Label><Input id={`${historyPrefix}-to`} type="date" min={historyFilters.dateFrom} value={historyFilters.dateTo ?? ''} aria-invalid={!!historyError} onChange={(event) => updateHistory({ dateTo: event.target.value || undefined })} /></div>
+      </fieldset>
+      {(historyFilters.status || historyFilters.dateFrom || historyFilters.dateTo) && <Button variant="ghost" className="mb-3" onClick={() => setHistoryFilters({ page: 1, pageSize: 20 })}><RotateCcw size={15} />Limpar filtros</Button>}
+      {historyError && <p role="status" className="mb-3 text-sm text-warning">{historyError}</p>}
       {plansQuery.isLoading && <Card className="flex items-center gap-3"><Spinner />Carregando histórico…</Card>}
       {plansQuery.isError && <ErrorState message={apiErrorMessage(plansQuery.error)} retry={() => { void plansQuery.refetch() }} />}
-      {plansQuery.data && <PlanHistory plans={plansQuery.data} selectedId={selectedPlanId} onSelect={openPlan} />}
+      {plansQuery.data && !historyError && <><PlanHistory plans={plansQuery.data.plans} selectedId={selectedPlanId} onSelect={openPlan} disabled={!!dirtyParts['plan-action'] || !!dirtyParts['resolution-pending']} /><div className="mt-4 flex flex-wrap items-center justify-between gap-3"><span role="status" className="text-sm text-muted">{plansQuery.data.total} plano(s) · página {plansQuery.data.page}</span><div className="flex gap-2"><Button variant="secondary" disabled={plansQuery.isFetching || historyFilters.page <= 1} onClick={() => setHistoryFilters((current) => ({ ...current, page: current.page - 1 }))}><ArrowLeft size={16} />Anterior</Button><Button variant="secondary" disabled={plansQuery.isFetching || !plansQuery.data.hasMore} onClick={() => setHistoryFilters((current) => ({ ...current, page: current.page + 1 }))}>Próxima<ChevronRight size={16} /></Button></div></div></>}
     </section>
     <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4"><Button variant="ghost" onClick={() => setStage(STAGES[currentIndex - 1].id)} disabled={currentIndex === 0}><ArrowLeft size={16} />Etapa anterior</Button>{currentIndex < STAGES.length - 1 && <Button variant="secondary" onClick={() => setStage(STAGES[currentIndex + 1].id)}>Próxima etapa<ChevronRight size={16} /></Button>}</div>
     {nextPlanId && <CampaignConfirmDialog title="Abrir outro plano?" description="Há textos não salvos neste plano. Ao abrir outro, essas edições serão descartadas." confirmLabel="Descartar e abrir" onCancel={() => setNextPlanId(null)} onConfirm={() => { if (dirtyParts['plan-action']) return; reportDirty('review', false); setSelectedPlanId(nextPlanId); setNextPlanId(null); setStage('review') }} />}

@@ -5,6 +5,9 @@
 .smart-workspace :is(input, textarea, select) { min-width: 0; }
 .smart-workspace textarea { resize: vertical; }
 .smart-workspace button { min-height: 2.5rem; }
+.smart-workspace .ui-button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.smart-workspace .ui-button > span { min-width: 0; }
+.smart-workspace .ui-button svg { flex-shrink: 0; }
 .smart-workspace select { min-height: 2.75rem; color: var(--color-ink); background-color: var(--color-surface); border: 2px solid var(--color-line-strong); }
 .smart-workspace :is(p, h3, h4, strong) { overflow-wrap: anywhere; }
 .smart-workspace .surface-panel { min-width: 0; }

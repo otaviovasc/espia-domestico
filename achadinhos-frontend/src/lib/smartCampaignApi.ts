@@ -249,6 +249,22 @@ export interface SmartPlanItemPatch {
   pinned?: boolean
 }
 
+export type SmartPlanListEntry = Pick<SmartPlan, 'id' | 'uuid' | 'status' | 'revision' | 'startDate' | 'date' | 'days' | 'timezone' | 'audienceSlugs' | 'sendSummary' | 'approvedAt' | 'createdAt' | 'updatedAt'> & { itemCount: number; completedAt?: string | null }
+export interface SmartPlanListFilters {
+  page: number
+  pageSize: number
+  status?: SmartPlanStatus
+  dateFrom?: string
+  dateTo?: string
+}
+export interface SmartPlanListResult {
+  plans: SmartPlanListEntry[]
+  page: number
+  pageSize: number
+  total: number
+  hasMore: boolean
+}
+
 export interface SmartImportPayload {
   name: string
   json: unknown
@@ -359,6 +375,10 @@ export const smartCampaignApi = {
   async plans(): Promise<SmartPlan[]> {
     const result = unwrap<SmartPlan[] | { items: SmartPlan[] }>(await api.get('/smart-campaigns/plans'))
     return (Array.isArray(result) ? result : result.items).map(normalizePlan)
+  },
+  async planSummaries(filters: SmartPlanListFilters): Promise<SmartPlanListResult> {
+    const result = unwrap<SmartPlanListResult>(await api.get('/smart-campaigns/plans', { params: { summary: true, ...filters } }))
+    return { ...result, plans: result.plans.map((plan) => ({ ...plan, audienceSlugs: plan.audienceSlugs.map(canonicalSlug) })) }
   },
   async plan(id: string): Promise<SmartPlan> {
     return normalizePlan(unwrap<SmartPlan>(await api.get(`/smart-campaigns/plans/${id}`)))

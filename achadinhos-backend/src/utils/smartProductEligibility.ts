@@ -1,11 +1,21 @@
 import type { SmartAudiencePolicy } from '@/database/models/SmartAudience'
 import type { OfferInput } from '@/dtos/campaign'
 
-type EligibilityPolicy = Partial<Pick<SmartAudiencePolicy,
-  'excludePolitical' | 'minPrice' | 'maxPrice' | 'minCommissionPercent' | 'minEstimatedCommission'
->>
-type EligibilityOffer = Pick<OfferInput,
-  'title' | 'description' | 'discountedPrice' | 'currency' | 'commissionRate' | 'commissionPercent' | 'extensionEvidence'
+type EligibilityPolicy = Partial<
+  Pick<
+    SmartAudiencePolicy,
+    'excludePolitical' | 'minPrice' | 'maxPrice' | 'minCommissionPercent' | 'minEstimatedCommission'
+  >
+>
+type EligibilityOffer = Pick<
+  OfferInput,
+  | 'title'
+  | 'description'
+  | 'discountedPrice'
+  | 'currency'
+  | 'commissionRate'
+  | 'commissionPercent'
+  | 'extensionEvidence'
 >
 
 function normalize(text: string): string {
@@ -20,30 +30,69 @@ function words(pattern: string): RegExp {
 // Only explicit title/description text is inspected, independently per field. Ambiguous
 // names/acronyms alone (Lula, PT, PL, Moro, etc.) are not evidence. Lula requires a nearby
 // political cue; culinary/generic uses and substring matches are deliberately retained.
-const EXPLICIT_POLITICAL = words([
-  'politic[ao]s?', 'eleic(?:ao|oes)', 'eleitoral', 'campanha eleitoral',
-  'partido politico', 'partido dos trabalhadores', 'partido liberal',
-  'bolsonaro', 'bolsonarismo', 'bolsonarista[s]?', 'lulismo', 'lulista[s]?',
-  'luiz inacio lula da silva', 'dilma rousseff', 'fernando henrique cardoso',
-  'sergio moro', 'alexandre de moraes', 'donald trump', 'joe biden',
-  'impeachment', 'comunismo', 'fascismo', 'socialismo',
-].join('|'))
-const LULA_CONTEXT = words([
-  'lula(?:[\\s,.:;!?-]+[\\p{L}\\p{N}]+){0,3}[\\s,.:;!?-]+(?:presidente|presidencial|governo|pt|13|livre|ladrao)',
-  '(?:presidente|presidencial|governo|voto|vote|fora|faz o l|pt)(?:[\\s,.:;!?-]+[\\p{L}\\p{N}]+){0,3}[\\s,.:;!?-]+lula',
-].join('|'))
+const EXPLICIT_POLITICAL = words(
+  [
+    'politic[ao]s?',
+    'eleic(?:ao|oes)',
+    'eleitoral',
+    'campanha eleitoral',
+    'partido politico',
+    'partido dos trabalhadores',
+    'partido liberal',
+    'bolsonaro',
+    'bolsonarismo',
+    'bolsonarista[s]?',
+    'lulismo',
+    'lulista[s]?',
+    'luiz inacio lula da silva',
+    'dilma rousseff',
+    'fernando henrique cardoso',
+    'sergio moro',
+    'alexandre de moraes',
+    'donald trump',
+    'joe biden',
+    'impeachment',
+    'comunismo',
+    'fascismo',
+    'socialismo',
+  ].join('|'),
+)
+const LULA_CONTEXT = words(
+  [
+    'lula(?:[\\s,.:;!?-]+[\\p{L}\\p{N}]+){0,3}[\\s,.:;!?-]+(?:presidente|presidencial|governo|pt|ladrao)',
+    '(?:presidente|presidencial|governo|voto|vote|fora|faz o l|pt)(?:[\\s,.:;!?-]+[\\p{L}\\p{N}]+){0,3}[\\s,.:;!?-]+lula',
+  ].join('|'),
+)
+const LULA_SLOGAN = words('lula (?:livre|13)')
+const MERCHANDISE = words('camiseta|camisa|caneca|adesivo|bandeira|botton|bone')
+const CULINARY = words(
+  'isca|pesca|receita|empanad[ao]s?|molho|congelad[ao]s?|frutos do mar|conservantes|unidades',
+)
 
-export function hasExplicitPoliticalMention(offer: Pick<OfferInput, 'title' | 'description'>): boolean {
+export function hasExplicitPoliticalMention(
+  offer: Pick<OfferInput, 'title' | 'description'>,
+): boolean {
   return [offer.title, offer.description].some((field) => {
     if (!field) return false
-    const text = normalize(field)
-    return EXPLICIT_POLITICAL.test(text) || LULA_CONTEXT.test(text)
+    const text = normalize(field).replace(
+      /\bpolitica de (?:privacidade|trocas?|devoluc(?:ao|oes)|garantia|frete|reembolso)\b/g,
+      '',
+    )
+    return (
+      EXPLICIT_POLITICAL.test(text) ||
+      LULA_CONTEXT.test(text) ||
+      (LULA_SLOGAN.test(text) &&
+        !CULINARY.test(text) &&
+        (MERCHANDISE.test(text) || /^(?:lula livre|lula 13)[.!]?$/u.test(text.trim())))
+    )
   })
 }
 
 // Keep the existing collected-rate precedence and percent-string interpretation.
 // Attribution, commission evidence and freshness remain separate lifecycle gates.
-export function collectedSmartCommissionRate(offer: Pick<OfferInput, 'commissionRate' | 'commissionPercent' | 'extensionEvidence'>): number | null {
+export function collectedSmartCommissionRate(
+  offer: Pick<OfferInput, 'commissionRate' | 'commissionPercent' | 'extensionEvidence'>,
+): number | null {
   if (typeof offer.commissionRate === 'number' && Number.isFinite(offer.commissionRate))
     return Math.max(0, Math.min(100, offer.commissionRate))
   const text = offer.commissionPercent?.trim() ?? ''
@@ -60,15 +109,22 @@ export function smartCommissionRate(offer: EligibilityOffer): number {
 }
 
 /** All supplied policies must pass; live changes cannot relax the approved snapshot. */
-export function evaluateSmartProductEligibility(offer: EligibilityOffer, ...policies: EligibilityPolicy[]) {
+export function evaluateSmartProductEligibility(
+  offer: EligibilityOffer,
+  ...policies: EligibilityPolicy[]
+) {
   const reasons = new Set<string>()
   const rate = collectedSmartCommissionRate(offer)
-  const estimatedCommission = rate === null || !Number.isFinite(offer.discountedPrice)
-    ? null : (offer.discountedPrice * rate) / 100
+  const estimatedCommission =
+    rate === null || !Number.isFinite(offer.discountedPrice)
+      ? null
+      : (offer.discountedPrice * rate) / 100
   for (const policy of policies) {
     if (policy.excludePolitical && hasExplicitPoliticalMention(offer))
       reasons.add('Menção política explícita no título ou descrição')
-    const monetaryGate = policy.minPrice !== undefined || policy.maxPrice !== undefined ||
+    const monetaryGate =
+      policy.minPrice !== undefined ||
+      policy.maxPrice !== undefined ||
       (policy.minEstimatedCommission ?? 0) > 0
     if (monetaryGate && (offer.currency ?? 'BRL').toUpperCase() !== 'BRL')
       reasons.add('Limites monetários exigem preço em BRL')

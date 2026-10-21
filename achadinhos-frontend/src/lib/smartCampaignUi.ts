@@ -151,7 +151,8 @@ export function safeAffiliateUrl(value?: string): string | undefined {
 /** Quote every cell and neutralize formula prefixes, including hidden leading whitespace. */
 export function smartCsvCell(value: unknown): string {
   const text = String(value ?? '')
-  const safe = /^[\s\u0000-\u001f]*[=+\-@]/.test(text) || /^[\t\r\n]/.test(text) ? `'${text}` : text
+  const first = [...text].find((character) => character.charCodeAt(0) > 31 && !/\s/.test(character))
+  const safe = (first && '=+-@'.includes(first)) || /^[\t\r\n]/.test(text) ? `'${text}` : text
   return `"${safe.replace(/"/g, '""')}"`
 }
 
@@ -165,4 +166,9 @@ export function validPlanDate(value: string, minimum: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value < minimum) return false
   const parsed = new Date(`${value}T12:00:00Z`)
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+
+export function historyDateValidation(from: string, to: string): string | null {
+  if ((from && !validPlanDate(from, '0000-01-01')) || (to && !validPlanDate(to, '0000-01-01'))) return 'Escolha datas válidas para filtrar os planos.'
+  return from && to && from > to ? 'A data final deve ser maior ou igual à data inicial.' : null
 }
