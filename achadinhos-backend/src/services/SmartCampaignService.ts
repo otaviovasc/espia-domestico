@@ -1200,7 +1200,7 @@ export class SmartCampaignService {
     const settings = plan.settings as {
       audiences: Record<string, SmartAudiencePolicy>
       audienceProfiles?: NicheIntelligenceOverrides
-      global?: { campaignStartTime?: string }
+      global?: SmartCampaignTiming
     }
     const allowedRoutes = new Map<number, Set<string>>()
     offers.forEach((offer, index) => {
@@ -1236,7 +1236,12 @@ export class SmartCampaignService {
       }
       const planningNow = new Date()
       const planningLocalDate = getSmartLocalDate(planningNow, policy.timezone)
-      const configuredStart = smartZonedInstant(plan.startDate, policy.startTime, policy.timezone)
+        const planningTiming = settings.global?.startNow && plan.startDate === planningLocalDate
+          ? { ...settings.global, earlyStart: immediateTiming(plan.startDate, [policy.timezone], planningNow) }
+          : settings.global
+        const configuredStart = smartZonedInstant(
+          plan.startDate, explicitSmartStart(planningTiming, plan.startDate, policy.startTime), policy.timezone,
+        )
       // A same-day plan may be created after its configured start time. Offers
       // collected now must be judged against a send time that is still ahead,
       // otherwise fresh evidence appears to come from the future and every item
@@ -1300,19 +1305,20 @@ export class SmartCampaignService {
       const eligible = candidates
         .filter((item) => item.state !== 'REJECTED')
         .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
-      const capacity = Math.min(
-        policy.dailyCap,
-        Math.floor(
-          ((minutes(policy.endTime) - minutes(policy.startTime)) * 60) / policy.minGapSeconds,
-        ) + 1,
-      )
       const selected: SmartPlanItem[] = []
       for (let dayOffset = 0; dayOffset < plan.days; dayOffset++) {
         const date = addDays(plan.startDate, dayOffset)
+          const dayPolicy = { ...policy, startTime: explicitSmartStart(planningTiming, date, policy.startTime) }
+          const capacity = Math.min(
+            policy.dailyCap,
+            Math.floor(
+              ((minutes(dayPolicy.endTime) - minutes(dayPolicy.startTime)) * 60) / policy.minGapSeconds,
+            ) + 1,
+          )
         const maximum = capacity
         const categoryLimit = Math.max(1, Math.ceil(maximum * 0.25))
         const chosen: SmartPlanItem[] = []
-        const configuredDayStart = smartZonedInstant(date, policy.startTime, policy.timezone)
+          const configuredDayStart = smartZonedInstant(date, dayPolicy.startTime, policy.timezone)
         const earliestSendAt =
           date === planningLocalDate && planningNow > configuredDayStart
             ? planningNow
@@ -1337,7 +1343,7 @@ export class SmartCampaignService {
           let tentativeSlots: Date[]
           try {
             tentativeSlots = buildSmartSchedule(
-              date, tentative.length, policy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt,
+                date, tentative.length, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt,
             )
           } catch (error) {
             if (!(error instanceof AppError) || error.statusCode !== 409) throw error
@@ -1351,7 +1357,7 @@ export class SmartCampaignService {
         const slots = buildSmartSchedule(
           date,
           chosen.length,
-          policy,
+            dayPolicy,
           `${plan.uuid}:${audience.slug}:${date}`,
           earliestSendAt,
         )
@@ -1990,6 +1996,25 @@ export class SmartCampaignService {
     return this.changeScheduledStatus(userId, uuid, SMART_PLAN_STATUS.SCHEDULED, revision)
   }
 
+  private async lockPlanSends(userId: number, planId: number, transaction: Transaction) {
+    const destinations = await SmartSend.findAll({
+      attributes: ['connectionScope', 'groupId'], where: { userId, planId }, transaction,
+    })
+    // Use persisted scopes, including disconnected ones, and match advance/sender ordering.
+    for (const scope of [...new Set(destinations.map((send) => send.connectionScope))].sort()) {
+      await this.advisoryLock(transaction, `delivery-account:${userId}:${scope}`)
+    }
+    const destinationKeys = destinations.map((send) =>
+      `delivery-destination:${userId}:${send.connectionScope}:${send.groupId}`)
+    for (const key of [...new Set(destinationKeys)].sort()) {
+      await this.advisoryLock(transaction, key)
+    }
+    return SmartSend.findAll({
+      where: { userId, planId }, transaction, lock: transaction.LOCK.UPDATE,
+      order: [['scheduledAt', 'ASC'], ['id', 'ASC']],
+    })
+  }
+
   private async changeScheduledStatus(
     userId: number,
     uuid: string,
@@ -1998,7 +2023,9 @@ export class SmartCampaignService {
   ) {
     if (revision === undefined)
       throw BadRequestError('Informe a revisão atual para alterar o plano')
+    const preview = await this.requirePlan(userId, uuid)
     const plan = await sequelize.transaction(async (transaction) => {
+      const sends = await this.lockPlanSends(userId, preview.id, transaction)
       const found = await this.requirePlan(userId, uuid, transaction)
       const expected =
         next === SMART_PLAN_STATUS.PAUSED ? SMART_PLAN_STATUS.SCHEDULED : SMART_PLAN_STATUS.PAUSED
@@ -2006,17 +2033,40 @@ export class SmartCampaignService {
       if (found.status !== expected) throw ConflictError('O plano não pode mudar para este estado')
       if (found.revision !== revision) throw ConflictError('O plano foi alterado; atualize a tela')
       if (next === SMART_PLAN_STATUS.SCHEDULED) {
-        const attentionRequired = await SmartSend.count({
-          where: {
-            userId,
-            planId: found.id,
-            status: { [Op.in]: [SMART_SEND_STATUS.FAILED, SMART_SEND_STATUS.UNKNOWN] },
-          },
-          transaction,
-        })
-        if (attentionRequired) {
+          const now = new Date()
+          if (sends.some((send) =>
+            [SMART_SEND_STATUS.FAILED, SMART_SEND_STATUS.UNKNOWN, SMART_SEND_STATUS.SENDING].includes(send.status)
+            || (send.leaseExpiresAt && send.leaseExpiresAt > now))) {
           throw ConflictError('Resolva os envios incertos ou cancele este plano antes de continuar')
         }
+          const pending = sends.filter((send) => send.status === SMART_SEND_STATUS.PENDING)
+          if (pending.length) {
+            const scope = await this.connections.getConnectionScope(userId)
+            if (!scope || pending.some((send) => send.connectionScope !== scope)) {
+              throw ConflictError('Restaure a conexão original antes de retomar este plano')
+            }
+            const audiences = await SmartAudience.findAll({
+              where: { userId, slug: [...new Set(pending.map((send) => send.audienceSlug))] },
+              transaction, lock: transaction.LOCK.UPDATE,
+            })
+            for (const send of pending) {
+              const audience = audiences.find((entry) => entry.slug === send.audienceSlug)
+              if (!audience?.enabled) {
+                throw ConflictError('O público original precisa estar ativo antes de retomar este plano')
+              }
+              if (!audience.destinations.some((destination) => destination.groupId === send.groupId)) {
+                throw ConflictError('Restaure o vínculo original de cada grupo antes de retomar este plano')
+              }
+            }
+            const groupIds = [...new Set(pending.map((send) => send.groupId))].sort()
+            const currentGroups = await this.groups.requireCurrentGroups(userId, groupIds)
+            if (groupIds.some((id) => !currentGroups.has(id))) {
+              throw ConflictError('Restaure os grupos originais na conexão antes de retomar este plano')
+            }
+            if (await this.connections.getConnectionScope(userId) !== scope) {
+              throw ConflictError('A conexão original mudou durante a retomada; tente novamente')
+            }
+          }
       }
       found.status = next
       found.revision += 1
@@ -2035,7 +2085,9 @@ export class SmartCampaignService {
   async cancel(userId: number, uuid: string, revision?: number) {
     if (revision === undefined)
       throw BadRequestError('Informe a revisão atual para cancelar o plano')
+    const preview = await this.requirePlan(userId, uuid)
     const plan = await sequelize.transaction(async (transaction) => {
+      await this.lockPlanSends(userId, preview.id, transaction)
       const found = await this.requirePlan(userId, uuid, transaction)
       if (found.status === SMART_PLAN_STATUS.CANCELLED) return found
       if ([SMART_PLAN_STATUS.COMPLETED, SMART_PLAN_STATUS.CANCELLED].includes(found.status)) {
