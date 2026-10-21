@@ -190,6 +190,7 @@ function AIStatusBanner({ status, error }: { status?: SmartAIStatus; error?: unk
 
 function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudience; groups: Group[]; onDirtyChange: DirtyChange }) {
   const queryClient = useQueryClient()
+  const lastSaved = useRef(audience)
   const [draft, setDraft] = useState(audience)
   const [keywords, setKeywords] = useState(audience.profile.keywords.join(', '))
   const [negative, setNegative] = useState(audience.profile.negativeKeywords.join(', '))
@@ -204,6 +205,7 @@ function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudi
   const mutation = useMutation({
     mutationFn: () => smartCampaignApi.updateAudience(audience.slug, input),
     onSuccess: (updated) => {
+      lastSaved.current = updated
       setDraft(updated)
       setKeywords(updated.profile.keywords.join(', '))
       setNegative(updated.profile.negativeKeywords.join(', '))
@@ -218,8 +220,9 @@ function AudienceCard({ audience, groups, onDirtyChange }: { audience: SmartAudi
   const selectedGroups = draft.destinationGroupIds.map((id) => groups.find((group) => group.id === id) ?? { id, name: audience.destinations.find((destination) => destination.groupId === id)?.groupName ?? id, size: 0, announceOnly: false })
   const numberField = (key: 'dailyCap' | 'maxStandoutMessages' | 'minIntervalMinutes' | 'maxIntervalMinutes', label: string, min: number, max: number) => <div><Label htmlFor={`${prefix}-${key}`}>{label}</Label><Input id={`${prefix}-${key}`} type="number" min={min} max={max} value={draft[key]} onChange={(e) => setDraft({ ...draft, [key]: Number(e.target.value) })} /></div>
   function reset() {
-    setDraft(audience); setKeywords(audience.profile.keywords.join(', ')); setNegative(audience.profile.negativeKeywords.join(', '))
-    markClean(JSON.stringify(audienceInput(audience, audience.profile.keywords.join(', '), audience.profile.negativeKeywords.join(', '))))
+    const saved = lastSaved.current
+    setDraft(saved); setKeywords(saved.profile.keywords.join(', ')); setNegative(saved.profile.negativeKeywords.join(', '))
+    markClean(JSON.stringify(audienceInput(saved, saved.profile.keywords.join(', '), saved.profile.negativeKeywords.join(', '))))
     mutation.reset()
   }
   return <Card className="smart-audience overflow-hidden p-0">
@@ -869,6 +872,7 @@ function PlanReview({ plan, audiences, actions, onPlanChange, onDirtyChange, ext
           <div><Label htmlFor={`${prefix}-campaign-start`}>Início da campanha (Brasília)</Label><input id={`${prefix}-campaign-start`} className="field-control block w-full" type="time" min="09:00" max={endTime} value={campaignStartTime} aria-invalid={!!timingError} disabled={reviewBusy || startNow} onChange={(event) => setTimingDraft({ campaignStartTime: event.target.value, startNow })} /></div>
           <label className="flex min-h-11 items-center gap-2 py-2 text-sm"><input type="checkbox" className="h-4 w-4 shrink-0 accent-accent" checked={startNow} disabled={reviewBusy || (!startNow && plan.startDate !== today())} onChange={(event) => setTimingDraft({ campaignStartTime, startNow: event.target.checked })} />Iniciar ao aprovar hoje</label>
           <Button type="button" disabled={!changedStartTime || reviewBusy || !!timingError} onClick={() => { if (submitting.current || reviewBusy || !editable || timingError || !changedStartTime) return; submitting.current = true; startTimeMutation.mutate() }}>{startTimeMutation.isPending ? <Spinner /> : <Save size={15} />} Salvar início da campanha</Button>
+          <Button type="button" variant="ghost" disabled={!changedStartTime || reviewBusy} onClick={() => setTimingDraft(null)}><RotateCcw size={15} />Restaurar início salvo</Button>
           {timingError && <p role="status" className="w-full text-xs text-danger">{timingError}</p>}
           <p className="w-full text-xs text-muted">Os horários de cada produto serão distribuídos automaticamente a partir desse início, respeitando os intervalos e limites dos públicos.</p>
         </div>}
@@ -966,6 +970,12 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, 
   const destinationNames = [...new Set(selectedSlugs.flatMap((slug) => planAudienceContext(plan, slug, audiences).destinations.map((group) => group.groupName)))]
   const campaignStartTime = smartCampaignStart(plan, plan.startDate)
   const canAdvance = canAdvanceSmartPlan(plan, now)
+  const pendingToday = (plan.sends ?? []).filter((send) => send.status === 'PENDING' && Number.isFinite(Date.parse(send.scheduledAt))
+    && (send.localDate ?? smartLocalDate(new Date(send.scheduledAt), plan.timezone)) === smartLocalDate(now, plan.timezone))
+  const confirmationSummary = confirming === 'advance'
+    ? `${pendingToday.length} entrega(s) pendentes hoje em ${new Set(pendingToday.map((send) => send.groupId)).size} grupo(s). Mensagens já enviadas não serão alteradas.`
+    : `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início em ${formatDate(plan.startDate)}.`
+  const confirmationDestinations = confirming === 'advance' ? [...new Set(pendingToday.map((send) => send.groupName))] : destinationNames
   const reviewAction = (name: NonNullable<typeof confirming>) => { confirmationRevision.current = plan.revision; setActionError(''); setConfirming(name) }
   const scheduleLines = selectedSlugs.flatMap((slug) => {
     const audience = audiences.find((entry) => entry.slug === slug)
@@ -1008,7 +1018,7 @@ function PlanActions({ plan, audiences, onPlanChange, onCreateFresh, aiBlocked, 
       </div>}
       {confirming && <CampaignConfirmDialog
         title={confirming === 'approve' ? 'Confirmar agenda e envios?' : confirming === 'advance' ? 'Adiantar os envios de hoje?' : confirming === 'resume' ? 'Retomar os envios deste plano?' : 'Cancelar este plano?'}
-        description={confirming === 'approve' ? approvalDescription : `${selectedCount} produto(s), ${selectedSlugs.length} público(s). Início em ${formatDate(plan.startDate)}.\n\nDestinos registrados: ${destinationNames.join(', ') || 'nenhum grupo vinculado'}.\n\n${confirming === 'advance' ? 'Os envios pendentes de hoje começarão no próximo minuto disponível, inclusive antes das 09:00. Os intervalos, limites e verificações de entrega continuam ativos. Mensagens já enviadas e agendas de outros dias não serão alteradas.' : confirming === 'cancel' ? 'Os próximos envios serão cancelados. Mensagens já enviadas ou iniciadas não podem ser desfeitas.' : 'Confirme apenas se a conta e os grupos originais estiverem restaurados. O servidor verificará o vínculo antes de retomar os envios pendentes; esta ação não troca os destinos. Os horários e limites salvos neste plano continuam valendo.'}`}
+        description={confirming === 'approve' ? approvalDescription : `${confirmationSummary}\n\nDestinos registrados: ${confirmationDestinations.join(', ') || 'nenhum grupo vinculado'}.\n\n${confirming === 'advance' ? 'Os envios pendentes de hoje começarão no próximo minuto disponível, inclusive antes das 09:00. Os intervalos, limites e verificações de entrega continuam ativos. Mensagens já enviadas e agendas de outros dias não serão alteradas.' : confirming === 'cancel' ? 'Os próximos envios serão cancelados. Mensagens já enviadas ou iniciadas não podem ser desfeitas.' : 'Confirme apenas se a conta e os grupos originais estiverem restaurados. O servidor verificará o vínculo antes de retomar os envios pendentes; esta ação não troca os destinos. Os horários e limites salvos neste plano continuam valendo.'}`}
         confirmLabel={confirming === 'approve' ? (plan.settings?.global?.startNow ? 'Confirmar e iniciar hoje' : 'Confirmar e agendar') : confirming === 'advance' ? 'Adiantar e iniciar hoje' : confirming === 'resume' ? 'Retomar envios' : 'Cancelar plano'}
         danger={confirming === 'cancel'}
         onCancel={() => setConfirming(null)}
@@ -1124,7 +1134,7 @@ export default function SmartCampaignsPage() {
       <div hidden={stage !== 'keywords'}><KeywordPlanner audiences={audiences} selected={workflowSelection} setSelected={selectAudiences} planDate={planDate} setPlanDate={setPlanDate} aiBlocked={aiBlocked} onDirtyChange={reportDirty} /></div>
       <div hidden={stage !== 'import'}><ImportPlanner audiences={audiences} selected={workflowSelection} setSelected={selectAudiences} planDate={planDate} setPlanDate={setPlanDate} onCreated={onCreated} aiStatus={aiStatusQuery.data} aiBlocked={aiBlocked} onDirtyChange={reportDirty} /></div>
     </>}
-    {!!dirtyParts.review && stage !== 'review' && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-warning-soft p-3 text-sm text-warning"><p>Há introduções especiais não salvas no plano aberto.</p><Button variant="secondary" onClick={() => setStage('review')}>Revisar textos</Button></div>}
+    {!!dirtyParts.review && stage !== 'review' && <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg bg-warning-soft p-3 text-sm text-warning"><p>Há edições de mensagens ou horário não salvas no plano aberto.</p><Button variant="secondary" onClick={() => setStage('review')}>Revisar plano</Button></div>}
     <div hidden={stage !== 'review'}>
       {!selectedPlanId && <div className="space-y-4"><EmptyState title="Escolha um plano para revisar">Abra um plano salvo ou importe uma coleta para preparar sua primeira análise.</EmptyState><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={() => setStage('monitor')}><History size={16} />Abrir planos</Button><Button onClick={() => setStage('import')}><Upload size={16} />Importar coleta</Button></div></div>}
       {selectedPlanId && detailQuery.isLoading && <Card className="flex items-center gap-3"><Spinner />Carregando plano…</Card>}
@@ -1146,6 +1156,6 @@ export default function SmartCampaignsPage() {
       {plansQuery.data && !historyError && <><PlanHistory plans={plansQuery.data.plans} selectedId={selectedPlanId} onSelect={openPlan} disabled={!!dirtyParts['plan-action'] || !!dirtyParts['resolution-pending']} /><div className="mt-4 flex flex-wrap items-center justify-between gap-3"><span role="status" className="text-sm text-muted">{plansQuery.data.total} plano(s) · página {plansQuery.data.page}</span><div className="flex gap-2"><Button variant="secondary" disabled={plansQuery.isFetching || historyFilters.page <= 1} onClick={() => setHistoryFilters((current) => ({ ...current, page: current.page - 1 }))}><ArrowLeft size={16} />Anterior</Button><Button variant="secondary" disabled={plansQuery.isFetching || !plansQuery.data.hasMore} onClick={() => setHistoryFilters((current) => ({ ...current, page: current.page + 1 }))}>Próxima<ChevronRight size={16} /></Button></div></div></>}
     </section>
     <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4"><Button variant="ghost" onClick={() => setStage(STAGES[currentIndex - 1].id)} disabled={currentIndex === 0}><ArrowLeft size={16} />Etapa anterior</Button>{currentIndex < STAGES.length - 1 && <Button variant="secondary" onClick={() => setStage(STAGES[currentIndex + 1].id)}>Próxima etapa<ChevronRight size={16} /></Button>}</div>
-    {nextPlanId && <CampaignConfirmDialog title="Abrir outro plano?" description="Há textos não salvos neste plano. Ao abrir outro, essas edições serão descartadas." confirmLabel="Descartar e abrir" onCancel={() => setNextPlanId(null)} onConfirm={() => { if (dirtyParts['plan-action']) return; reportDirty('review', false); setSelectedPlanId(nextPlanId); setNextPlanId(null); setStage('review') }} />}
+    {nextPlanId && <CampaignConfirmDialog title="Abrir outro plano?" description="Há mensagens ou horário não salvos neste plano. Ao abrir outro, essas edições serão descartadas." confirmLabel="Descartar e abrir" onCancel={() => setNextPlanId(null)} onConfirm={() => { if (dirtyParts['plan-action'] || dirtyParts['resolution-pending']) return; reportDirty('review', false); setSelectedPlanId(nextPlanId); setNextPlanId(null); setStage('review') }} />}
   </div>
 }
