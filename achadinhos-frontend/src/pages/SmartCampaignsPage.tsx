@@ -1056,11 +1056,18 @@ export default function SmartCampaignsPage() {
   const stagesRef = useRef<HTMLElement>(null)
   useEffect(() => {
     const nav = stagesRef.current
-    const active = nav?.querySelector<HTMLElement>('[aria-current="step"]')
-    if (!nav || !active) return
-    const bounds = nav.getBoundingClientRect()
-    const target = active.getBoundingClientRect()
-    nav.scrollTo({ left: nav.scrollLeft + target.left - bounds.left - (bounds.width - target.width) / 2, behavior: 'auto' })
+    if (!nav) return
+    const keepActiveVisible = () => {
+      const active = nav.querySelector<HTMLElement>('[aria-current="step"]')
+      if (!active) return
+      const bounds = nav.getBoundingClientRect()
+      const target = active.getBoundingClientRect()
+      nav.scrollTo({ left: nav.scrollLeft + target.left - bounds.left - (bounds.width - target.width) / 2, behavior: 'auto' })
+    }
+    keepActiveVisible()
+    const observer = new ResizeObserver(keepActiveVisible)
+    observer.observe(nav)
+    return () => observer.disconnect()
   }, [stage])
   const [planDate, setPlanDate] = useState(today())
   const [selectedAudiences, setSelectedAudiences] = useState<Set<SmartAudienceSlug>>(new Set())
