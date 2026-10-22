@@ -368,3 +368,61 @@ for (const status of [401, 403]) {
     assert.equal(calls, 1)
   })
 }
+
+test('domain schema requires the requested audience count and excludes unrequested audiences', async () => {
+  const intelligence = new SmartCampaignIntelligence({
+    async generate(request) {
+      const fit = (slug) => ({ slug, score: 20, reason: 'Pouca afinidade.', category: 'geral', seasonalScore: 10 })
+      const valid = { fits: [fit('domestica'), fit('masculino')], warnings: [] }
+      const wrap = (analysis) => request.schemaName.endsWith('_batch')
+        ? { items: JSON.parse(request.prompt).productData.map(({ id }) => ({ id, analysis })) }
+        : analysis
+      assert.equal(request.schema.safeParse(wrap({ ...valid, fits: [fit('domestica')] })).success, false)
+      assert.equal(request.schema.safeParse(wrap({ ...valid, fits: [fit('domestica'), fit('pet')] })).success, false)
+      return wrap(valid)
+    },
+  })
+  for (const products of [[offer('Produto geral')], [offer('Produto geral'), offer('Outro produto')]]) {
+    assert.equal((await intelligence.analyze(products, ['domestica', 'masculino'], '2026-10-22')).length, products.length)
+  }
+})
+
+test('schema failures report structured output and safe validation paths', async () => {
+  const intelligence = new SmartCampaignIntelligence({ async generate() {
+    return { fits: [{ slug: 'pet', score: 200, reason: 'PRIVATE PRODUCT TEXT', category: 'pet', seasonalScore: 50 }], warnings: [] }
+  } })
+  await assert.rejects(intelligence.analyze([offer('Produto')], ['pet'], '2026-10-22'), (error) => {
+    assert.equal(error.details.category, 'structured_output')
+    assert.deepEqual(error.details.validationIssues, [{ path: 'fits.0.score', code: 'too_big' }])
+    assert.ok(!JSON.stringify(error.details).includes('PRIVATE PRODUCT TEXT'))
+    return true
+  })
+})
+
+test('provider contract makes every audience and product a required named field', async () => {
+  const fit = { score: 20, reason: 'Pouca afinidade.', category: 'geral', seasonalScore: 10 }
+  let calls = 0
+  const intelligence = new SmartCampaignIntelligence({ async generate(request) {
+    calls++
+    assert.ok(request.providerSchema, 'analysis must provide a schema enforcing audience identity')
+    const analysis = { fits: { masculino: fit, domestica: fit }, warnings: [] }
+    const single = !request.schemaName.endsWith('_batch')
+    const ids = single ? [] : JSON.parse(request.prompt).productData.map(({ id }) => id)
+    const wrap = (value) => single ? value : { products: Object.fromEntries(ids.map(id => [id, value])) }
+    for (const fits of [{ domestica: fit }, { domestica: fit, natal: fit }, { ...analysis.fits, natal: fit }]) {
+      assert.equal(request.providerSchema.safeParse(wrap({ fits, warnings: [] })).success, false)
+    }
+    if (!single) {
+      assert.equal(request.providerSchema.safeParse({ products: { [ids[0]]: analysis } }).success, false)
+      assert.equal(request.providerSchema.safeParse({ products: { ...wrap(analysis).products, unexpected: analysis } }).success, false)
+    }
+    return request.providerSchema.parse(wrap(analysis))
+  } })
+  const products = [offer('Produto geral'), offer('Outro produto')]
+  for (const batch of [[products[0]], products]) {
+    const results = await intelligence.analyze(batch, ['domestica', 'masculino'], '2026-10-22')
+    assert.deepEqual(results.map(r=>r.index), batch.map((_,i)=>i))
+    assert.ok(results.every(r=>r.fits.map(f=>f.slug).join(',') === 'domestica,masculino'))
+  }
+  assert.equal(calls, 2)
+})

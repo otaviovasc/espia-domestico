@@ -106,7 +106,7 @@ async function benchmark(modelId) {
         reasoning: { enabled: false },
         usage: { include: true },
       }),
-      schema: request.schema,
+      schema: request.providerSchema ?? request.schema,
       schemaName: request.schemaName,
       system: request.system,
       prompt: request.prompt,

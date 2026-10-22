@@ -1138,6 +1138,7 @@ export class SmartCampaignService {
           providerStatus: error instanceof AppError && typeof error.details?.providerStatus === 'number'
             ? error.details.providerStatus
             : undefined,
+          validationIssues: error instanceof AppError ? error.details?.validationIssues : undefined,
           analysisModel: env.SMART_CLASSIFICATION_MODEL,
           planId: plan.id,
           userId: plan.userId,
