@@ -309,6 +309,15 @@ export class SmartCampaignIntelligence {
       lastError && typeof lastError === 'object'
         ? (lastError as Record<string, unknown>)
         : undefined
+    if (providerRecord?.statusCode === 401 || providerRecord?.statusCode === 403) {
+      // Credentials/access failures cannot be repaired by splitting the product batch.
+      throw new AppError(
+        'O provedor de IA recusou a autenticação ou o acesso. Verifique a configuração do serviço. Os itens continuam pendentes.',
+        503,
+        'SMART_AI_AUTH_FAILED',
+        { cause, category: 'authentication', providerStatus: providerRecord.statusCode },
+      )
+    }
     const diagnosticText = `${lastError instanceof Error ? lastError.message : ''} ${
       typeof providerRecord?.responseBody === 'string' ? providerRecord.responseBody : ''
     }`.toLowerCase()

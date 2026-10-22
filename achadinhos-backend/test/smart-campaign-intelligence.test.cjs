@@ -348,3 +348,23 @@ test('standout copy returns safe use-case copy and rejects commercial claims', a
     (error) => error.code === 'SMART_COPY_UNSAFE',
   )
 })
+
+for (const status of [401, 403]) {
+  test(`provider authentication failure ${status} does not split classification batches`, async () => {
+    let calls = 0
+    const intelligence = new SmartCampaignIntelligence({
+      async generate() {
+        calls++
+        const error = new Error('Provider authentication rejected')
+        error.name = 'AI_APICallError'
+        error.statusCode = status
+        throw error
+      },
+    })
+    await assert.rejects(
+      intelligence.analyze([offer('Fonte para gatos'), offer('Coleira para gatos')], ['pet'], '2026-10-22'),
+      (error) => error.code === 'SMART_AI_AUTH_FAILED' && error.details.category === 'authentication' && error.details.providerStatus === status,
+    )
+    assert.equal(calls, 1)
+  })
+}
