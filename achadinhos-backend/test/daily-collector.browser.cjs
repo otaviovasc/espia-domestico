@@ -29,6 +29,8 @@ test('real Chromium runs vendored share/exclusion scripts and closes after both 
         const page = await originalNewPage()
         await page.route('**/*', route => {
           assert.equal(new URL(route.request().url()).pathname, '/afiliados/hub')
+          assert.match(route.request().headers()['user-agent'], /Chrome\//)
+          assert.doesNotMatch(route.request().headers()['user-agent'], /HeadlessChrome/)
           navigations++
           if (failSecondAudience && navigations === 2) return route.abort('failed')
           return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<html><head><meta charset="utf-8"></head><body><ul>${['MLB12345678', 'MLB87654321', 'MLB87654322'].map((id, i) => `

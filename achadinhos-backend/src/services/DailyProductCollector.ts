@@ -81,6 +81,9 @@ export class DailyProductCollector {
           })
       context = await browser.newContext({
         storageState,
+        // The affiliate hub rejects the default HeadlessChrome agent even with
+        // a valid session. Identify the actual Chromium version normally.
+        userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36`,
         locale: 'pt-BR',
         timezoneId: 'America/Sao_Paulo',
         bypassCSP: true,
