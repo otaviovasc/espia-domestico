@@ -39,6 +39,8 @@ export const SmartProductAnalysisSchema = z
     index: z.number().int().nonnegative(),
     fits: z.array(SmartProductFitSchema).min(1).max(5),
     warnings: z.array(z.string().trim().min(1).max(300)).max(8),
+    // Optional only for persisted pre-upgrade analyses; new AI responses require it.
+    political: z.boolean().optional(),
   })
   .strict()
 export type SmartProductAnalysis = z.infer<typeof SmartProductAnalysisSchema>

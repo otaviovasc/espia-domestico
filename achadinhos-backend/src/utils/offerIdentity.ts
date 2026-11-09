@@ -11,6 +11,12 @@ export function normalizedOfferSource(source?: string): string {
   return source?.trim().toLowerCase() || 'generic'
 }
 
+/** Used for daily novelty/import comparisons without rewriting legacy ledger hashes. */
+export function normalizedMercadoLivreProductId(value?: string | null): string | undefined {
+  const id = value?.replace(/[-\s]/g, '').toUpperCase()
+  return id && /^(MLBU|MLB)\d{6,}$/.test(id) ? id : undefined
+}
+
 /** Canonical, source-aware product identity used by the delivery ledger. */
 export function offerIdentity(input: OfferIdentityInput): string {
   if (input.savedProductId) {

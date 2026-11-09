@@ -10,7 +10,7 @@ process.env.AI_OUTPUT_COST_USD_PER_MILLION = '0.8'
 
 const { SmartCampaignIntelligence, OpenRouterStructuredClient } = require('../dist/services/SmartCampaignIntelligence.js')
 const fit = { score: 20, reason: 'Pouca afinidade.', category: 'geral', seasonalScore: 10 }
-const analysis = { fits: { masculino: fit, domestica: fit }, warnings: [] }
+const analysis = { fits: { masculino: fit, domestica: fit }, political: false, warnings: [] }
 const offer = title => ({ title, discountedPrice: 100, affiliateUrl: 'https://example.com/synthetic', commissioned: true, commissionPercent: '10%' })
 
 test('real SDK sends required product/audience properties and normalizes the provider reply', async () => {
@@ -26,6 +26,8 @@ test('real SDK sends required product/audience properties and normalizes the pro
       assert.equal(schema.properties.fits.type, 'object')
       assert.deepEqual([...schema.properties.fits.required].sort(), ['domestica', 'masculino'])
       assert.equal(schema.properties.fits.additionalProperties, false)
+      assert.ok(schema.required.includes('political'))
+      assert.equal(schema.properties.political.type, 'boolean')
     }
     if (schema.properties.products) {
       assert.deepEqual(schema.properties.products.required, ['p0', 'p1'])
@@ -53,7 +55,7 @@ test('real SDK sends required product/audience properties and normalizes the pro
     }
     assert.equal(requests.length, 2)
     const invalid = new SmartCampaignIntelligence({ async generate(request) {
-      wireReply = { fits: { domestica: fit }, warnings: [] }
+      wireReply = { fits: { domestica: fit }, political: false, warnings: [] }
       return client.generate(request)
     } })
     await assert.rejects(invalid.analyze([offer('Resposta incompleta')], ['domestica', 'masculino'], '2026-10-22'), error => {

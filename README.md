@@ -1,5 +1,7 @@
 # Achadinhos 🛍️
 
+Automação diária (08:00–19:00): [arquitetura e evidências](docs/daily-automation/design-and-evidence.md), [operação](docs/daily-automation/operations.md).
+
 Ferramenta interna para o time de suporte/desenvolvimento enviar **ofertas de
 produtos** (com link de afiliado) para grupos do WhatsApp, usando a **UAZAPI**
 como provedor.

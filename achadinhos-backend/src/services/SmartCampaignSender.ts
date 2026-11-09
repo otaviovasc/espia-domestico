@@ -19,6 +19,7 @@ import { offerIdentityAliases } from '@/utils/offerIdentity'
 import { logger } from '@/utils/logger'
 import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
 import { evaluateSmartProductEligibility } from '@/utils/smartProductEligibility'
+import { hasDailyProductConflict } from '@/services/dailyNovelty'
 
 const HARD_START_TIME = '09:00'
 const HARD_END_TIME = '21:00'
@@ -99,24 +100,30 @@ export function resolveSmartSendPolicy(plan: SmartPlan, send: SmartSend, executi
     settings?.audiences?.[send.audienceSlug] ?? (plan.settings as Partial<SmartAudiencePolicy>)
   const timezone = validTimezone(raw?.timezone, validTimezone(send.timezone, plan.timezone))
   const localDate = executionAt ? getSmartLocalParts(executionAt, timezone).date : send.localDate
-  const startTime = explicitSmartStart(settings.global, localDate, laterTime(
+  const daily = plan.settings.dailyAutomation as { localDate?: string; startTime?: string; endTime?: string } | undefined
+  const dailyEnvelope = daily && daily.localDate === localDate && daily.startTime && daily.endTime
+    && /^([01]\d|2[0-3]):[0-5]\d$/.test(daily.startTime) && /^([01]\d|2[0-3]):[0-5]\d$/.test(daily.endTime)
+    && daily.startTime < daily.endTime && daily.endTime <= HARD_END_TIME ? daily : null
+  const startFloor = dailyEnvelope?.startTime ?? HARD_START_TIME
+  const explicitStart = explicitSmartStart(settings.global, localDate, laterTime(
     typeof raw?.startTime === 'string' && /^\d{2}:\d{2}$/.test(raw.startTime)
       ? raw.startTime
-      : HARD_START_TIME,
-    HARD_START_TIME,
+      : startFloor,
+    startFloor,
   ))
+  const startTime = dailyEnvelope ? laterTime(explicitStart, startFloor) : explicitStart
   const endTime = earlierTime(
     typeof raw?.endTime === 'string' && /^\d{2}:\d{2}$/.test(raw.endTime)
       ? raw.endTime
       : HARD_END_TIME,
-    HARD_END_TIME,
+    dailyEnvelope?.endTime ?? HARD_END_TIME,
   )
   return {
     ...DEFAULT_POLICY,
     ...raw,
     timezone,
-    startTime: startTime < endTime ? startTime : HARD_START_TIME,
-    endTime: startTime < endTime ? endTime : HARD_END_TIME,
+    startTime: startTime < endTime ? startTime : daily ? endTime : HARD_START_TIME,
+    endTime: startTime < endTime || daily ? endTime : HARD_END_TIME,
     dailyCap: Math.floor(numberWithin(raw?.dailyCap, HARD_DAILY_CAP, 1, HARD_DAILY_CAP)),
     minGapSeconds: Math.floor(
       numberWithin(
@@ -387,7 +394,7 @@ export class SmartCampaignSender {
       return 'blocked'
     }
 
-    const prepared = await this.prepareDelivery(send, plan, policy, group, now)
+    const prepared = await this.prepareDelivery(send, plan, policy, group, this.now())
     if (prepared.kind !== 'ready') return prepared.kind
     try {
       const currentContext = await this.connectionService.requireConnectedContext(send.userId)
@@ -412,7 +419,37 @@ export class SmartCampaignSender {
     }
     const finalAudienceState = await this.enforceCurrentAudience(plan, send, this.now(), prepared.claim)
     if (finalAudienceState) return finalAudienceState
+    if (!this.canSendNow(send, plan)) {
+      return await this.abortPreparedDelivery(plan, send, prepared.claim, 'Janela ou evidência expirou durante a preparação.', true) ? 'skipped' : 'unknown'
+    }
     return this.callProvider(send, plan, context, group, prepared.claim)
+  }
+
+  private canSendNow(send: SmartSend, plan: SmartPlan): boolean {
+    const now = this.now()
+    const policy = resolveSmartSendPolicy(plan, send, now)
+    const local = getSmartLocalParts(now, policy.timezone)
+    const daily = plan.settings.dailyAutomation as { localDate?: string } | undefined
+    return isEvidenceFresh(send.evidenceObservedAt, now, policy.freshnessHours)
+      && local.time >= policy.startTime && local.time < policy.endTime
+      && (!daily?.localDate || daily.localDate === local.date)
+  }
+
+  private async readyForProvider(send: SmartSend, plan: SmartPlan): Promise<boolean> {
+    if (!this.canSendNow(send, plan)) return false
+    if (!plan.settings.dailyAutomation) return true
+    const ready = await sequelize.transaction(async transaction => {
+      const keys = deliveryKeys(send)
+      await advisoryLock(transaction, keys.account)
+      await advisoryLock(transaction, keys.destination)
+      const current = await SmartSend.findOne({ where: {
+        id: send.id, userId: send.userId, leaseOwner: this.ownerId,
+        status: SMART_SEND_STATUS.SENDING, leaseExpiresAt: { [Op.gt]: this.now() },
+      }, transaction, lock: transaction.LOCK.UPDATE })
+      const active = await SmartPlan.findOne({ where: { id: plan.id, userId: send.userId, status: SMART_PLAN_STATUS.SCHEDULED }, transaction, lock: transaction.LOCK.UPDATE })
+      return Boolean(current && active && !await hasDailyProductConflict(send.userId, plan.id, plan.uuid, send.offer, transaction))
+    })
+    return ready && this.canSendNow(send, plan)
   }
 
   private async requireCurrentGroup(send: SmartSend): Promise<GroupDTO> {
@@ -432,6 +469,11 @@ export class SmartCampaignSender {
     now: Date,
     preparedClaim?: ProductGroupDelivery,
   ): Promise<'rescheduled' | 'blocked' | 'skipped' | null> {
+    if (!this.dailyTargetAllowed(plan, send, now)) {
+      if (preparedClaim) return await this.abortPreparedDelivery(plan, send, preparedClaim, 'Janela diária encerrada.', true) ? 'skipped' : 'blocked'
+      await this.finishWithoutProvider(send, SMART_SEND_STATUS.SKIPPED, 'Janela diária encerrada.')
+      return 'skipped'
+    }
     const audience = await SmartAudience.findOne({
       where: { userId: send.userId, slug: send.audienceSlug },
       attributes: ['enabled', 'destinations', 'policy'],
@@ -441,9 +483,14 @@ export class SmartCampaignSender {
         await this.abortPreparedDelivery(plan, send, preparedClaim, 'Este público foi desativado antes do envio.')
         return 'blocked'
       }
+      const next = new Date(now.getTime() + 5 * 60 * 1000)
+      if (!this.dailyTargetAllowed(plan, send, next)) {
+        await this.finishWithoutProvider(send, SMART_SEND_STATUS.SKIPPED, 'Público desativado até o fim da janela diária.')
+        return 'skipped'
+      }
       await this.reschedule(
         send,
-        new Date(now.getTime() + 5 * 60 * 1000),
+        next,
         send.localDate,
         'Este público está desativado. Ative-o para retomar apenas esta agenda.',
       )
@@ -493,6 +540,14 @@ export class SmartCampaignSender {
     send.scheduledAt = now
   }
 
+  private dailyTargetAllowed(plan: SmartPlan, send: SmartSend, target: Date): boolean {
+    const daily = plan.settings?.dailyAutomation as { localDate?: string } | undefined
+    if (!daily?.localDate) return true
+    const policy = resolveSmartSendPolicy(plan, send, target)
+    const local = getSmartLocalParts(target, policy.timezone)
+    return local.date === daily.localDate && local.time < policy.endTime
+  }
+
   private async enforceWindow(
     send: SmartSend,
     plan: SmartPlan,
@@ -500,6 +555,11 @@ export class SmartCampaignSender {
     now: Date,
   ): Promise<'rescheduled' | 'skipped' | null> {
     const local = getSmartLocalParts(now, policy.timezone)
+    const daily = plan.settings.dailyAutomation as { localDate?: string } | undefined
+    if (daily?.localDate && (policy.startTime >= policy.endTime || local.date !== daily.localDate || local.time >= policy.endTime)) {
+      await this.finishWithoutProvider(send, SMART_SEND_STATUS.SKIPPED, 'A janela diária encerrou; uma nova coleta deve substituir esta oferta.')
+      return 'skipped'
+    }
     let next: Date | null = null
     let nextLocalDate = local.date
     if (local.time < policy.startTime) {
@@ -556,6 +616,10 @@ export class SmartCampaignSender {
         await this.releaseLeaseInTransaction(freshSend, transaction, 'O plano não está agendado.')
         return { kind: 'blocked', reason: 'O plano não está agendado.' }
       }
+      if (freshPlan.settings.dailyAutomation && await hasDailyProductConflict(send.userId, plan.id, plan.uuid, freshSend.offer, transaction)) {
+        await this.finishInTransaction(freshSend, SMART_SEND_STATUS.SKIPPED, 'Produto reservado ou entregue por outro plano após a coleta diária.', transaction)
+        return { kind: 'skipped', reason: 'Conflito com outro plano.' }
+      }
 
       const legacyRunning = await sequelize.query<{ exists: boolean }>(
         `SELECT EXISTS (
@@ -572,6 +636,10 @@ export class SmartCampaignSender {
       )
       if (legacyRunning[0]?.exists) {
         const next = new Date(now.getTime() + policy.minGapSeconds * 1000)
+        if (!this.dailyTargetAllowed(freshPlan, freshSend, next)) {
+          await this.finishInTransaction(freshSend, SMART_SEND_STATUS.SKIPPED, 'Campanha manual ocupa a janela diária restante.', transaction)
+          return { kind: 'skipped', reason: 'Janela diária encerrada.' }
+        }
         await this.rescheduleInTransaction(
           freshSend,
           next,
@@ -608,6 +676,10 @@ export class SmartCampaignSender {
               ? smartLocalDateTime(localReady.date, readyPolicy.startTime, readyPolicy.timezone)
               : readyAt
         const localDate = getSmartLocalParts(target, policy.timezone).date
+        if (!this.dailyTargetAllowed(freshPlan, freshSend, target)) {
+          await this.finishInTransaction(freshSend, SMART_SEND_STATUS.SKIPPED, 'O intervalo seguro ultrapassa a janela diária.', transaction)
+          return { kind: 'skipped', reason: 'Janela diária encerrada.' }
+        }
         if (!isEvidenceFresh(send.evidenceObservedAt, target, policy.freshnessHours)) {
           await this.finishInTransaction(
             freshSend,
@@ -629,6 +701,10 @@ export class SmartCampaignSender {
 
       const dailyCount = await this.dailyDeliveryCount(send, policy, now, transaction)
       if (dailyCount >= policy.dailyCap) {
+        if (freshPlan.settings.dailyAutomation) {
+          await this.finishInTransaction(freshSend, SMART_SEND_STATUS.SKIPPED, 'Limite diário atingido; a oferta não será movida para amanhã.', transaction)
+          return { kind: 'skipped', reason: 'Limite diário atingido.' }
+        }
         const tomorrow = addLocalDays(getSmartLocalParts(now, policy.timezone).date, 1)
         const targetPolicy = resolveSmartSendPolicy(plan, { ...send, localDate: tomorrow } as SmartSend)
         const next = smartLocalDateTime(tomorrow, targetPolicy.startTime, targetPolicy.timezone)
@@ -736,7 +812,7 @@ export class SmartCampaignSender {
     context: ConnectedContext,
     group: GroupDTO,
     claim: ProductGroupDelivery,
-  ): Promise<'sent' | 'unknown'> {
+  ): Promise<'sent' | 'unknown' | 'skipped'> {
     const offer = send.offer as CampaignOffer
     const safety: CampaignSafety = {
       minDelaySeconds: 0,
@@ -751,8 +827,10 @@ export class SmartCampaignSender {
       this.uazapi,
       context.creds,
       safety,
-      templateWithIntro(send.messageIntro),
+      templateWithIntro(send.messageIntro) + (plan.settings?.dailyAutomation
+        ? `\n\nPreço consultado em ${new Intl.DateTimeFormat('pt-BR', { timeZone: send.timezone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(send.evidenceObservedAt)}. Confira o valor atual no link.` : ''),
       true,
+      () => this.readyForProvider(send, plan),
     )
     const heartbeat = setInterval(() => void this.heartbeat(send, claim), HEARTBEAT_MS)
     let result: SendResult
@@ -776,6 +854,9 @@ export class SmartCampaignSender {
     }
 
     const sentAt = this.now()
+    if (result.cancelledBeforeProvider) {
+      return await this.abortPreparedDelivery(plan, send, claim, 'Envio diário cancelado antes do provedor: janela, evidência, posse ou exclusividade mudou.', true) ? 'skipped' : 'unknown'
+    }
     if (result.success && result.messageId) {
       const settled = await sequelize.transaction(async (transaction) => {
         const [updated] = await SmartSend.update(
@@ -915,14 +996,15 @@ export class SmartCampaignSender {
     send: SmartSend,
     claim: ProductGroupDelivery,
     reason: string,
-  ): Promise<void> {
-    await sequelize.transaction(async (transaction) => {
+    skip = false,
+  ): Promise<boolean> {
+    return sequelize.transaction(async (transaction) => {
       const keys = deliveryKeys(send)
       await advisoryLock(transaction, keys.account)
       await advisoryLock(transaction, keys.destination)
       const [released] = await SmartSend.update(
         {
-          status: SMART_SEND_STATUS.PENDING,
+          status: skip ? SMART_SEND_STATUS.SKIPPED : SMART_SEND_STATUS.PENDING,
           leaseOwner: null,
           leaseExpiresAt: null,
           lastError: reason,
@@ -937,7 +1019,10 @@ export class SmartCampaignSender {
           transaction,
         },
       )
-      if (released !== 1) throw new Error('A tarefa perdeu sua posse antes do cancelamento seguro.')
+      if (released !== 1) {
+        if (skip) return false
+        throw new Error('A tarefa perdeu sua posse antes do cancelamento seguro.')
+      }
       const deleted = await ProductGroupDelivery.destroy({
         where: {
           id: claim.id,
@@ -947,13 +1032,14 @@ export class SmartCampaignSender {
         transaction,
       })
       if (deleted !== 1) throw new Error('A reserva de entrega mudou antes do cancelamento seguro.')
-      await SmartPlan.update(
+      if (!skip) await SmartPlan.update(
         { status: SMART_PLAN_STATUS.PAUSED },
         {
           where: { id: plan.id, userId: send.userId, status: SMART_PLAN_STATUS.SCHEDULED },
           transaction,
         },
       )
+      return true
     })
   }
 

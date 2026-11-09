@@ -168,7 +168,7 @@ test('analysis uses fine-grained multi-niche results, evidence warnings, caching
             seasonalScore: 40,
           },
         ],
-        warnings: ['Confirmar capacidade do reservatório.'],
+        political: false, warnings: ['Confirmar capacidade do reservatório.'],
       }
     },
   })
@@ -202,7 +202,7 @@ test('observed search matches inform classification and are part of the semantic
       prompts.push(request.prompt)
       return {
         fits: [{ slug: 'masculino', score: 75, reason: 'Uso compatível.', category: 'acessório', seasonalScore: 50 }],
-        warnings: [],
+        political: false, warnings: [],
       }
     },
   })
@@ -227,7 +227,7 @@ test('analysis has hard item and concurrency bounds and never invents a missing 
       calls++
       return {
         fits: [{ slug: 'pet', score: 90, reason: 'Pet.', category: 'pet', seasonalScore: 50 }],
-        warnings: [],
+        political: false, warnings: [],
       }
     },
   })
@@ -267,7 +267,7 @@ test('analysis shares the niche prompt across bounded product batches and preser
                 seasonalScore: 50,
               },
             ],
-            warnings: [],
+            political: false, warnings: [],
           },
         })),
       }
@@ -294,7 +294,7 @@ test('analysis batch leaves enough output headroom for strict structured respons
     async generate(request) {
       assert.equal(request.maxOutputTokens, 3_800)
       const productData = JSON.parse(request.prompt).productData
-      return { items: productData.map(({ id }) => ({ id, analysis: { fits: [{ slug: 'pet', score: 90, reason: 'Uso direto para gatos.', category: 'pet', seasonalScore: 50 }], warnings: [] } })) }
+      return { items: productData.map(({ id }) => ({ id, analysis: { fits: [{ slug: 'pet', score: 90, reason: 'Uso direto para gatos.', category: 'pet', seasonalScore: 50 }], political: false, warnings: [] } })) }
     },
   })
   const [result] = await intelligence.analyze([offer('Arranhador para gatos'), offer('Outro arranhador')], ['pet'], '2026-10-15')
@@ -317,7 +317,7 @@ test('analysis shrinks oversized or malformed structured batches before failing 
             id,
             analysis: {
               fits: [{ slug: 'pet', score: 90, reason: 'Uso direto para pets.', category: 'pet', seasonalScore: 50 }],
-              warnings: [],
+              political: false, warnings: [],
             },
           })),
         }
@@ -373,7 +373,7 @@ test('domain schema requires the requested audience count and excludes unrequest
   const intelligence = new SmartCampaignIntelligence({
     async generate(request) {
       const fit = (slug) => ({ slug, score: 20, reason: 'Pouca afinidade.', category: 'geral', seasonalScore: 10 })
-      const valid = { fits: [fit('domestica'), fit('masculino')], warnings: [] }
+      const valid = { fits: [fit('domestica'), fit('masculino')], political: false, warnings: [] }
       const wrap = (analysis) => request.schemaName.endsWith('_batch')
         ? { items: JSON.parse(request.prompt).productData.map(({ id }) => ({ id, analysis })) }
         : analysis
@@ -389,7 +389,7 @@ test('domain schema requires the requested audience count and excludes unrequest
 
 test('schema failures report structured output and safe validation paths', async () => {
   const intelligence = new SmartCampaignIntelligence({ async generate() {
-    return { fits: [{ slug: 'pet', score: 200, reason: 'PRIVATE PRODUCT TEXT', category: 'pet', seasonalScore: 50 }], warnings: [] }
+    return { fits: [{ slug: 'pet', score: 200, reason: 'PRIVATE PRODUCT TEXT', category: 'pet', seasonalScore: 50 }], political: false, warnings: [] }
   } })
   await assert.rejects(intelligence.analyze([offer('Produto')], ['pet'], '2026-10-22'), (error) => {
     assert.equal(error.details.category, 'structured_output')
@@ -405,12 +405,13 @@ test('provider contract makes every audience and product a required named field'
   const intelligence = new SmartCampaignIntelligence({ async generate(request) {
     calls++
     assert.ok(request.providerSchema, 'analysis must provide a schema enforcing audience identity')
-    const analysis = { fits: { masculino: fit, domestica: fit }, warnings: [] }
+    const analysis = { fits: { masculino: fit, domestica: fit }, political: true, warnings: [] }
     const single = !request.schemaName.endsWith('_batch')
     const ids = single ? [] : JSON.parse(request.prompt).productData.map(({ id }) => id)
     const wrap = (value) => single ? value : { products: Object.fromEntries(ids.map(id => [id, value])) }
+    assert.equal(request.providerSchema.safeParse(wrap({ fits: analysis.fits, warnings: [] })).success, false, 'New classification must explicitly assess political content')
     for (const fits of [{ domestica: fit }, { domestica: fit, natal: fit }, { ...analysis.fits, natal: fit }]) {
-      assert.equal(request.providerSchema.safeParse(wrap({ fits, warnings: [] })).success, false)
+      assert.equal(request.providerSchema.safeParse(wrap({ fits, political: false, warnings: [] })).success, false)
     }
     if (!single) {
       assert.equal(request.providerSchema.safeParse({ products: { [ids[0]]: analysis } }).success, false)
@@ -423,6 +424,7 @@ test('provider contract makes every audience and product a required named field'
     const results = await intelligence.analyze(batch, ['domestica', 'masculino'], '2026-10-22')
     assert.deepEqual(results.map(r=>r.index), batch.map((_,i)=>i))
     assert.ok(results.every(r=>r.fits.map(f=>f.slug).join(',') === 'domestica,masculino'))
+    assert.ok(results.every(r=>r.political === true))
   }
   assert.equal(calls, 2)
 })

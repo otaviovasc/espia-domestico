@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import type { SmartAudiencePolicy } from '@/database/models/SmartAudience'
 import type { OfferInput } from '@/dtos/campaign'
 
@@ -18,74 +19,14 @@ type EligibilityOffer = Pick<
   | 'extensionEvidence'
 >
 
-function normalize(text: string): string {
-  return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().replace(/\s+/g, ' ')
+// One audited implementation is shared with browser collection and vendored for
+// deployment. It inspects independent product fields, never seller metadata.
+const { politicalMention } = createRequire(__filename)('../../vendor/affiliate-hub/extractor.js') as {
+  politicalMention: (offer: Pick<OfferInput, 'title' | 'description'>) => unknown
 }
 
-function words(pattern: string): RegExp {
-  return new RegExp(`(?<![\\p{L}\\p{N}])(?:${pattern})(?![\\p{L}\\p{N}])`, 'u')
-}
-
-// Best-effort lexical exclusion, not a political classification of people or sellers.
-// Only explicit title/description text is inspected, independently per field. Ambiguous
-// names/acronyms alone (Lula, PT, PL, Moro, etc.) are not evidence. Lula requires a nearby
-// political cue; culinary/generic uses and substring matches are deliberately retained.
-const EXPLICIT_POLITICAL = words(
-  [
-    'politic[ao]s?',
-    'eleic(?:ao|oes)',
-    'eleitoral',
-    'campanha eleitoral',
-    'partido politico',
-    'partido dos trabalhadores',
-    'partido liberal',
-    'bolsonaro',
-    'bolsonarismo',
-    'bolsonarista[s]?',
-    'lulismo',
-    'lulista[s]?',
-    'luiz inacio lula da silva',
-    'dilma rousseff',
-    'fernando henrique cardoso',
-    'sergio moro',
-    'alexandre de moraes',
-    'donald trump',
-    'joe biden',
-    'impeachment',
-    'comunismo',
-    'fascismo',
-    'socialismo',
-  ].join('|'),
-)
-const LULA_CONTEXT = words(
-  [
-    'lula(?:[\\s,.:;!?-]+[\\p{L}\\p{N}]+){0,3}[\\s,.:;!?-]+(?:presidente|presidencial|governo|pt|ladrao)',
-    '(?:presidente|presidencial|governo|voto|vote|fora|faz o l|pt)(?:[\\s,.:;!?-]+[\\p{L}\\p{N}]+){0,3}[\\s,.:;!?-]+lula',
-  ].join('|'),
-)
-const LULA_SLOGAN = words('lula (?:livre|13)')
-const MERCHANDISE = words('camiseta|camisa|caneca|adesivo|bandeira|botton|bone')
-const CULINARY = words(
-  'isca|pesca|receita|empanad[ao]s?|molho|congelad[ao]s?|frutos do mar|conservantes|unidades',
-)
-
-export function hasExplicitPoliticalMention(
-  offer: Pick<OfferInput, 'title' | 'description'>,
-): boolean {
-  return [offer.title, offer.description].some((field) => {
-    if (!field) return false
-    const text = normalize(field).replace(
-      /\bpolitica de (?:privacidade|trocas?|devoluc(?:ao|oes)|garantia|frete|reembolso)\b/g,
-      '',
-    )
-    return (
-      EXPLICIT_POLITICAL.test(text) ||
-      LULA_CONTEXT.test(text) ||
-      (LULA_SLOGAN.test(text) &&
-        !CULINARY.test(text) &&
-        (MERCHANDISE.test(text) || /^(?:lula livre|lula 13)[.!]?$/u.test(text.trim())))
-    )
-  })
+export function hasExplicitPoliticalMention(offer: Pick<OfferInput, 'title' | 'description'>): boolean {
+  return Boolean(politicalMention(offer))
 }
 
 // Keep the existing collected-rate precedence and percent-string interpretation.

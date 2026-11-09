@@ -149,6 +149,8 @@ test('provider uncertainty becomes UNKNOWN and retains the durable delivery clai
       },
     },
   })
+  // Isolate settlement; preflight is verified by deadline and real daily-flow tests.
+  service.readyForProvider = async () => true
   try {
     const outcome = await service.callProvider(
       {
@@ -206,6 +208,8 @@ test('provider acceptance fences the task and settles both records as SENT', asy
       },
     },
   })
+  // Isolate settlement; preflight is verified by deadline and real daily-flow tests.
+  service.readyForProvider = async () => true
   try {
     const outcome = await service.callProvider(
       {

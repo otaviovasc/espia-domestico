@@ -27,6 +27,8 @@ export const ExtensionEvidenceSchema = z.object({
     rating: z.number().min(0).max(5).optional(),
     soldCount: z.number().int().nonnegative().optional(),
     soldCountIsLowerBound: z.boolean().optional(),
+    bestSeller: z.boolean().optional(),
+    timeLimited: z.boolean().optional(),
   }).optional(),
   searchMatch: match.optional(),
   selection: match.extend({

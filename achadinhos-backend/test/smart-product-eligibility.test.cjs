@@ -78,6 +78,13 @@ test('political filter uses explicit independent product fields and conservative
     'História do Partido dos Trabalhadores',
     'Lula 13',
     'Camiseta Lula livre',
+    'Caneca Trump',
+    'Livro Milei',
+    'Adesivo comunista',
+    'Camiseta MST',
+    'Caneca Tabata Amaral',
+    'Camiseta Haddad',
+    'Adesivo petista',
   ])
     assert.equal(political({ title }), true, title)
   for (const title of [

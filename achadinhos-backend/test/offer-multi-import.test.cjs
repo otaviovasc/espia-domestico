@@ -24,6 +24,16 @@ const mlCard = (id, extra = {}) => ({
   ...extra,
 })
 const mlPayload = (cards) => ({ schemaVersion: 1, cards })
+
+test('multi-file Mercado Livre deduplication matches ID formatting without rewriting ledger identities', () => {
+  const result = new OfferImportService().parsePayloads([
+    { name: 'one.json', json: [{ ...offer('one'), source: 'mercadolivre', productId: 'mlb-12345678', affiliateUrl: 'https://meli.la/a' }] },
+    { name: 'two.json', json: [{ ...offer('two'), source: 'mercadolivre', productId: ' MLB 12345678 ', affiliateUrl: 'https://meli.la/b' }] },
+  ])
+  assert.equal(result.offers.length, 1)
+  assert.equal(result.duplicateCount, 1)
+  assert.equal(result.offers[0].productId, 'mlb-12345678')
+})
 function controller(evaluator) {
   return new CampaignController(
     {},

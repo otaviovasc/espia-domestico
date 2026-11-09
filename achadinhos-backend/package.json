@@ -4,6 +4,10 @@
   "description": "Scoped WhatsApp product-offer broadcaster backend (UAZAPI)",
   "main": "dist/server.js",
   "scripts": {
+    "daily:login": "node scripts/daily-login.cjs",
+    "daily:sync-extractor": "node scripts/sync-affiliate-extractor.cjs",
+    "test:daily:integration": "npm run build && node --test test/daily-automation.integration.cjs",
+    "test:daily:browser": "npm run build && node --test test/daily-collector.browser.cjs",
     "dev": "ts-node-dev -r tsconfig-paths/register --respawn src/server.ts",
     "dev:worker": "ts-node-dev -r tsconfig-paths/register --respawn src/worker.ts",
     "build": "tsc -p tsconfig.json && tsc-alias",
@@ -60,6 +64,7 @@
     "multer": "^2.4.0",
     "pg": "^8.16.3",
     "pino": "^9.7.0",
+    "playwright": "1.65.0",
     "reflect-metadata": "^0.2.2",
     "sequelize": "^6.37.7",
     "tsconfig-paths": "^4.2.0",

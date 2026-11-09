@@ -3,6 +3,7 @@ import { OfferSchema, OfferInput, normalizeRawOffer } from '@/dtos/campaign'
 import { BadRequestError } from '@/middleware/Error/AppError'
 import { getIngestor, detectIngestor } from '@/ingestors/registry'
 import type { IngestWarning } from '@/ingestors/SourceIngestor'
+import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
 
 export interface ImportResult {
   offers: OfferInput[]
@@ -177,7 +178,7 @@ export class OfferImportService {
       errors.push(...parsed.errors.map((error) => ({ ...error, ...origin(error.index) })))
       parsed.offers.forEach((offer, position) => {
         const source = offer.source?.trim().toLowerCase()
-        const productId = offer.productId?.trim()
+        const productId = source === 'mercadolivre' ? normalizedMercadoLivreProductId(offer.productId) ?? offer.productId?.trim() : offer.productId?.trim()
         const identities = [`url:${offer.affiliateUrl.trim()}`]
         if (productId) identities.push(`product:${JSON.stringify([source ?? '', productId])}`)
         const itemOrigin = origin(parsed.offerIndexes[position])

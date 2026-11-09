@@ -1,0 +1,22 @@
+{
+  "project": "espia",
+  "projectId": "efaf3efb-97d8-4edb-8035-9f15e9a1ec63",
+  "services": [
+    {
+      "name": "achadinhos-frontend",
+      "id": "9a0b4932-98dd-4bcf-a70b-61deb3f1e8f2"
+    },
+    {
+      "name": "achadinhos-worker",
+      "id": "a6f070c7-eb85-45b2-bb55-7fa8672dcde5"
+    },
+    {
+      "name": "Postgres",
+      "id": "d5ee1cc5-a545-4807-9723-ec3e0fd2fe3d"
+    },
+    {
+      "name": "achadinhos-backend",
+      "id": "ddeb5fc0-16d3-437d-9149-74072277ec93"
+    }
+  ]
+}

@@ -47,6 +47,8 @@ import { recordSmartOperation } from '@/utils/smartOperationAudit'
 import { env } from '@/config/env'
 import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
 import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
+import { dailyDemandScore, dailyEvidenceReasons, dailySelectionReasons } from '@/utils/dailyProductSelection'
+import { hasDailyProductConflict, dailyOfferAliases } from '@/services/dailyNovelty'
 
 const MIN_SMART_FIT = 70
 
@@ -244,7 +246,8 @@ export function buildSmartSchedule(
     cursor = Math.ceil(cursor / 60_000) * 60_000
   }
   // The worker treats endTime as exclusive, so no approved slot may equal it.
-  const availableSeconds = Math.floor((end.getTime() - cursor - 1) / 1000)
+  const endBuffer = Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)
+  const availableSeconds = Math.floor((end.getTime() - cursor - endBuffer) / 1000)
   const capacity = Math.max(0, Math.floor(availableSeconds / policy.minGapSeconds) + 1)
   if (count > capacity) {
     throw ConflictError(
@@ -252,6 +255,10 @@ export function buildSmartSchedule(
     )
   }
   if (count === 1) return [new Date(cursor)]
+  if (policy.spreadAcrossWindow) {
+    const span = Math.min(availableSeconds, (count - 1) * policy.maxGapSeconds)
+    return Array.from({ length: count }, (_, index) => new Date(cursor + Math.floor(index * span / (count - 1)) * 1000))
+  }
   const feasibleMax = Math.min(policy.maxGapSeconds, Math.floor(availableSeconds / (count - 1)))
   const slots = [new Date(cursor)]
   for (let index = 1; index < count; index++) {
@@ -687,7 +694,9 @@ export class SmartCampaignService {
     }
   }
 
-  async createPlan(userId: number, input: CreateSmartPlanInput) {
+  async createPlan(userId: number, input: CreateSmartPlanInput, dailyAutomation?: {
+    runId: string; localDate: string; minimumItems: number; startTime: string; endTime: string
+  }) {
     const audiences = await this.audienceRows(userId, input.audienceSlugs)
     if (audiences.some((audience) => !audience.enabled)) {
       throw BadRequestError('Ative todos os públicos escolhidos antes de criar o plano')
@@ -717,7 +726,10 @@ export class SmartCampaignService {
       }
       // File audience is a weak prior, not a forced destination. Include strong
       // lexical evidence from another selected niche; AI still scores the candidate.
-      return [...new Set<NicheSlug>([...slugs, ...likelyAudienceSlugs(offer, input.audienceSlugs as NicheSlug[])])].sort()
+      const otherSlugs = dailyAutomation
+        ? (input.audienceSlugs as NicheSlug[]).filter(slug => NICHE_CUES[slug].test(`${offer.title} ${offer.description ?? ''}`))
+        : likelyAudienceSlugs(offer, input.audienceSlugs as NicheSlug[])
+      return [...new Set<NicheSlug>([...slugs, ...otherSlugs])].sort()
     })
     const observedAt = parsed.offers.map(observedAtFor)
     const settings = {
@@ -737,6 +749,7 @@ export class SmartCampaignService {
         startNow: input.startNow ?? false,
       },
       audienceProfiles: audienceSnapshot(audiences),
+      ...(dailyAutomation ? { dailyAutomation } : {}),
     }
     const plan = await sequelize.transaction(async (transaction) => {
       await this.advisoryLock(transaction, `smart-analysis-budget:${userId}`)
@@ -754,6 +767,7 @@ export class SmartCampaignService {
             settings: input.settings ?? {},
             campaignStartTime: input.campaignStartTime ?? '09:00',
             ...(input.startNow ? { startNow: true } : {}),
+            ...(dailyAutomation ? { dailyAutomation } : {}),
           }),
         )
         .digest('hex')
@@ -1022,9 +1036,13 @@ export class SmartCampaignService {
         // Do not spend an AI request on an offer that no selected audience can use.
         // buildItems retains these offers as deterministic REJECTED rows, without
         // inventing an AI fit or converting missing commission evidence to zero.
-        if (audiences.every((audience) => !evaluateSmartProductEligibility(
-          input.offers[index], planSettings.audiences[audience.slug] ?? {}, audience.policy,
-        ).eligible)) continue
+        if (audiences.every((audience) => {
+          const policy = planSettings.audiences[audience.slug] ?? audience.policy
+          return !evaluateSmartProductEligibility(input.offers[index], policy, audience.policy).eligible
+            || (policy.dailySelection && dailyEvidenceReasons(input.offers[index], policy.dailySelection).length > 0)
+            || (policy.dailySelection && (!isVerifiedOffer(input.offers[index]) || !hasCommissionEvidence(input.offers[index])
+              || !isEvidenceFresh(input.observedAt[index], new Date(), policy.freshnessHours)))
+        })) continue
         const scopedSlugs = input.offerAudienceSlugs?.[index]?.length
         ? input.offerAudienceSlugs[index]!
           : likelyAudienceSlugs(input.offers[index], plan.audienceSlugs as NicheSlug[])
@@ -1154,6 +1172,7 @@ export class SmartCampaignService {
     fit: number,
     seasonal: number,
     observedAt: string | null,
+    policy?: SmartAudiencePolicy,
   ) {
     const offerDiscount = discount(offer)
     const rate = commissionRate(offer)
@@ -1167,7 +1186,10 @@ export class SmartCampaignService {
       : 999
     const freshness = Math.max(0, 100 - ageHours * (100 / DEFAULT_POLICY.freshnessHours))
     const assortment = marketplaceSignalScore(offer)
-    const total =
+    const demand = dailyDemandScore(offer)
+    const total = policy?.dailySelection
+      ? 0.50 * fit + 0.25 * demand + 0.15 * offerValue + 0.05 * freshness + 0.03 * seasonal + 0.02 * commissionOpportunity
+      :
       0.4 * fit +
       0.2 * offerValue +
       0.15 * commissionOpportunity +
@@ -1182,6 +1204,7 @@ export class SmartCampaignService {
         offerValue: Math.round(offerValue),
         commissionOpportunity: Math.round(commissionOpportunity),
         seasonalFit: seasonal,
+        ...(policy?.dailySelection ? { observedDemand: demand } : {}),
         freshness: Math.round(freshness),
         assortmentContribution: assortment,
       },
@@ -1204,6 +1227,7 @@ export class SmartCampaignService {
       global?: SmartCampaignTiming
     }
     const allowedRoutes = new Map<number, Set<string>>()
+    const dailyRouting = Object.values(settings.audiences).some(policy => policy.dailySelection)
     offers.forEach((offer, index) => {
       const ranked = [...(analyses[String(index)]?.fits ?? [])].sort(
         (left, right) => right.score - left.score,
@@ -1215,7 +1239,7 @@ export class SmartCampaignService {
         (fit, fitIndex) =>
           fitIndex > 0 && fit.score >= 85 && primary && primary.score - fit.score <= 10,
       )
-      if (secondary) allowed.add(secondary.slug)
+      if (secondary && !dailyRouting) allowed.add(secondary.slug)
       const natalFit = ranked.find((fit) => fit.slug === 'natal')
       if (
         allowed.has('natal') &&
@@ -1257,28 +1281,27 @@ export class SmartCampaignService {
         const analysis = analyses[String(index)]
           const fit = analysis?.fits.find((entry) => entry.slug === audience.slug)
           const hardReasons = evaluateSmartProductEligibility(offer, policy, audience.policy).reasons
+          if ((policy.excludePolitical || audience.policy.excludePolitical) && analysis?.political === true) hardReasons.push('Conteúdo político identificado na análise')
+          if (policy.dailySelection) hardReasons.push(...dailyEvidenceReasons(offer, policy.dailySelection))
+          if (!isVerifiedOffer(offer)) hardReasons.push('Atribuição afiliada não verificada')
+          if (!hasCommissionEvidence(offer)) hardReasons.push('Comissão não informada na coleta')
+          if (!observations[index]) hardReasons.push('Horário de observação ausente')
+          if (observations[index] && !isEvidenceFresh(observations[index], firstSendAt, policy.freshnessHours)) hardReasons.push('Evidência da oferta está antiga; atualize o produto')
           if (!fit && !hardReasons.length) return
         const scored = this.commercialScore(
           offer,
             fit?.score ?? 0,
             fit?.seasonalScore ?? 0,
           observations[index],
+          policy,
         )
+        if (policy.dailySelection) {
+          for (const reason of dailySelectionReasons(offer, fit?.score ?? 0, scored.total, policy.dailySelection)) {
+            if (!hardReasons.includes(reason)) hardReasons.push(reason)
+          }
+        }
           const warnings = [...(analysis?.warnings ?? [])]
           if (!analysis) warnings.push('Não avaliado pela IA: excluído pelos filtros de todos os públicos.')
-        if (!isVerifiedOffer(offer)) hardReasons.push('Atribuição afiliada não verificada')
-        if (!hasCommissionEvidence(offer)) hardReasons.push('Comissão não informada na coleta')
-        if (!observations[index]) hardReasons.push('Horário de observação ausente')
-        if (
-          observations[index] &&
-          !isEvidenceFresh(
-            observations[index],
-            firstSendAt,
-            policy.freshnessHours,
-          )
-        ) {
-          hardReasons.push('Evidência da oferta está antiga; atualize o produto')
-        }
           if (fit && fit.score < MIN_SMART_FIT) hardReasons.push('Baixa afinidade com o público')
           if (fit && !allowedRoutes.get(index)?.has(audience.slug)) {
           hardReasons.push('Priorizado para outro público para evitar repetição')
@@ -1292,6 +1315,7 @@ export class SmartCampaignService {
             product: offer,
             score: scored.total,
               fitScore: fit?.score,
+              political: analysis?.political,
               estimatedCommission: collectedSmartCommissionRate(offer) === null ? undefined : scored.estimatedCommission,
             freshnessHours: scored.freshnessHours,
               reason: hardReasons.length ? hardReasons.join('; ') : fit!.reason,
@@ -1354,6 +1378,30 @@ export class SmartCampaignService {
             !isEvidenceFresh(candidate.observedAt, tentativeSlots[index], policy.freshnessHours))) continue
           chosen.push(item)
           audienceCategoryCounts.set(categoryKey, count + 1)
+        }
+        // Diversity is a preference for daily plans, never an artificial quality
+        // shortage. Fill only to the required minimum using already-qualified
+        // reserves, rechecking the exact schedule and evidence for every choice.
+        const dailyMinimum = (plan.settings.dailyAutomation as { minimumItems?: number } | undefined)?.minimumItems ?? 0
+        const minimumTarget = Math.min(dailyMinimum, maximum, audienceTarget)
+        if (chosen.length < minimumTarget) {
+          const chosenIds = new Set(chosen.map(item => item.id))
+          for (const item of dayCandidates) {
+            if (chosen.length >= minimumTarget) break
+            if (chosenIds.has(item.id)) continue
+            const tentative = [...chosen, item]
+            let candidateSlots: Date[]
+            try {
+              candidateSlots = buildSmartSchedule(date, tentative.length, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt)
+            } catch (error) {
+              if (!(error instanceof AppError) || error.statusCode !== 409) throw error
+              break
+            }
+            if (tentative.some((candidate, index) => !isEvidenceFresh(candidate.observedAt, candidateSlots[index], policy.freshnessHours))) continue
+            item.warnings = [...new Set([...item.warnings, 'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
+            chosen.push(item)
+            chosenIds.add(item.id)
+          }
         }
         const slots = buildSmartSchedule(
           date,
@@ -1512,12 +1560,15 @@ export class SmartCampaignService {
         audiences: Record<string, SmartAudiencePolicy>
         global?: SmartCampaignTiming
       }
-      if (input.campaignStartTime) {
+      const daily = plan.settings.dailyAutomation as { startTime: string; endTime: string } | undefined
+      if (input.campaignStartTime !== undefined) {
         const latestEnd = plan.audienceSlugs
           .map((slug) => settings.audiences[slug]?.endTime ?? '21:00')
           .sort()[0]
-        if (input.campaignStartTime < '09:00' || input.campaignStartTime >= latestEnd)
-          throw BadRequestError(`O início da campanha deve ficar entre 09:00 e ${latestEnd}.`)
+        const floor = daily?.startTime ?? '09:00'
+        const end = daily?.endTime && daily.endTime < latestEnd ? daily.endTime : latestEnd
+        if (input.campaignStartTime < floor || input.campaignStartTime >= end)
+          throw BadRequestError(`O início da campanha deve ficar entre ${floor} e ${end}.`)
         settings.global = { ...settings.global, campaignStartTime: input.campaignStartTime }
         plan.settings = settings
       }
@@ -1534,7 +1585,7 @@ export class SmartCampaignService {
       const currentPolicies = new Map(currentAudiences.map((audience) => [audience.slug, audience.policy]))
       const start = plan.startDate
       const end = addDays(start, plan.days - 1)
-      const items = (plan.items as SmartPlanItem[]).map((item) => {
+      const items = (structuredClone(plan.items) as SmartPlanItem[]).map((item) => {
         const patch = updates.get(item.id)
         if (!patch) return item
         const next = { ...item, ...patch }
@@ -1547,6 +1598,8 @@ export class SmartCampaignService {
           const currentPolicy = currentPolicies.get(next.audienceSlug)
           if (!currentPolicy) throw BadRequestError('Público não encontrado')
           const gateFailures = evaluateSmartProductEligibility(next.product, policy ?? {}, currentPolicy).reasons
+          if ((policy?.excludePolitical || currentPolicy.excludePolitical) && next.political === true) gateFailures.push('conteúdo político identificado na análise')
+          if (policy?.dailySelection) gateFailures.push(...dailySelectionReasons(next.product, next.fitScore ?? 0, next.score, policy.dailySelection))
           if (!isVerifiedOffer(next.product))
             gateFailures.push('atribuição afiliada não verificada')
           if (!hasCommissionEvidence(next.product)) gateFailures.push('comissão não informada')
@@ -1562,23 +1615,48 @@ export class SmartCampaignService {
       const known = new Set((plan.items as SmartPlanItem[]).map((item) => item.id))
       if ([...updates.keys()].some((id) => !known.has(id)))
         throw BadRequestError('Item do plano não encontrado')
-      if (input.campaignStartTime) {
+      if (daily) {
+        const seen = new Set<string>()
+        for (const item of items.filter(item => item.state === 'SELECTED')) {
+          const aliases = dailyOfferAliases(item.product)
+          if (aliases.some(alias => seen.has(alias))) {
+            item.state = 'RESERVE'
+            item.scheduledAt = undefined
+            item.warnings = [...new Set([...(item.warnings ?? []), 'Produto já selecionado para outro público neste plano diário.'])]
+          } else aliases.forEach(alias => seen.add(alias))
+        }
+      }
+      if (input.campaignStartTime !== undefined || input.startNow !== undefined || input.items.length > 0) {
+        const immediate = settings.global?.startNow
+          ? immediateTiming(plan.startDate, plan.audienceSlugs.map(slug => settings.audiences[slug].timezone))
+          : undefined
+        for (const item of items) if (item.state !== 'SELECTED') item.scheduledAt = undefined
         for (const slug of plan.audienceSlugs) {
           const basePolicy = settings.audiences[slug]
           if (!basePolicy) continue
-          const policy = { ...basePolicy, startTime: input.campaignStartTime }
+          const configuredStart = settings.global?.campaignStartTime ?? basePolicy.startTime
+          const policy = { ...basePolicy,
+            startTime: daily?.startTime && daily.startTime > configuredStart ? daily.startTime : configuredStart,
+            endTime: daily?.endTime && daily.endTime < basePolicy.endTime ? daily.endTime : basePolicy.endTime,
+          }
           const dates = [...new Set(items
             .filter((item) => item.audienceSlug === slug && item.state === 'SELECTED')
             .map((item) => item.date))]
           for (const date of dates) {
+            const requestedStart = immediate?.date === date ? immediate.time : policy.startTime
+            const dayPolicy = { ...policy, startTime: daily?.startTime && daily.startTime > requestedStart ? daily.startTime : requestedStart }
             const dayItems = items
               .filter((item) => item.audienceSlug === slug && item.state === 'SELECTED' && item.date === date)
               .sort(compareSmartOrder)
             const earliest = date === getSmartLocalDate(new Date(), policy.timezone)
-              ? new Date(Date.now() + policy.minGapSeconds * 1000)
+              ? new Date(Date.now() + (daily || immediate ? 0 : policy.minGapSeconds * 1000))
               : undefined
-            const slots = buildSmartSchedule(date, dayItems.length, policy, `${plan.uuid}:${slug}:${date}:review`, earliest)
-            dayItems.forEach((item, index) => { item.scheduledAt = slots[index].toISOString() })
+            const slots = buildSmartSchedule(date, dayItems.length, dayPolicy, `${plan.uuid}:${slug}:${date}:review`, earliest)
+            dayItems.forEach((item, index) => {
+              if (!isEvidenceFresh(new Date(item.observedAt), slots[index], policy.freshnessHours))
+                throw ConflictError(`Atualize a evidência de oferta antes de agendar "${item.product.title}"`)
+              item.scheduledAt = slots[index].toISOString()
+            })
           }
         }
       }
@@ -1597,7 +1675,7 @@ export class SmartCampaignService {
     })
   }
 
-  async approve(userId: number, uuid: string, revision?: number) {
+  async approve(userId: number, uuid: string, revision?: number, options: { automatic?: boolean } = {}) {
     if (revision === undefined)
       throw BadRequestError('Informe a revisão atual para aprovar o plano')
     const audiences = await this.ensureAudiences(userId)
@@ -1646,10 +1724,10 @@ export class SmartCampaignService {
       if (plan.status === SMART_PLAN_STATUS.SCHEDULED) return
       if (plan.status !== SMART_PLAN_STATUS.REVIEW)
         throw ConflictError('O plano não está mais em revisão')
-      if (plan.revision !== revision) throw ConflictError('O plano foi alterado; atualize a tela')
+      if (plan.revision !== revision) throw new AppError('O plano foi alterado; atualize a tela', 409, 'SMART_PLAN_REVISION_CONFLICT')
       const freshScope = await this.connections.getConnectionScope(userId)
       if (freshScope !== connectionScope)
-        throw ConflictError('A conexão mudou durante a aprovação; tente novamente')
+        throw new AppError('A conexão mudou durante a aprovação; tente novamente', 409, 'SMART_CONNECTION_CHANGED')
       const freshBindings = await SmartAudience.findAll({
         where: { userId, slug: usedSlugs },
         transaction,
@@ -1659,7 +1737,13 @@ export class SmartCampaignService {
         freshBindings.length !== usedSlugs.length ||
         freshBindings.some((audience) => !audience.enabled || !audience.destinations.length)
       ) {
-        throw ConflictError('Os vínculos de público mudaram; revise o plano')
+        throw new AppError('Os vínculos de público mudaram; revise o plano', 409, 'SMART_BINDINGS_CHANGED')
+      }
+      // Preserve audience ownership as well as the combined group set. Adding
+      // overlap or swapping existing groups must invalidate this preflight.
+      if (freshBindings.some(audience => audience.destinations.some(destination =>
+        destinationOwners.get(destination.groupId) !== audience.slug))) {
+        throw new AppError('Os grupos de cada público mudaram; revise o plano', 409, 'SMART_BINDINGS_CHANGED')
       }
       for (const audience of freshBindings) selectedAudiences.set(audience.slug, audience)
       const freshGroupIds = [
@@ -1668,7 +1752,7 @@ export class SmartCampaignService {
         ),
       ].sort()
       if (freshGroupIds.join('\0') !== [...requestedGroups].sort().join('\0')) {
-        throw ConflictError('Os grupos vinculados mudaram; revise o plano')
+        throw new AppError('Os grupos vinculados mudaram; revise o plano', 409, 'SMART_BINDINGS_CHANGED')
       }
       for (const groupId of [...requestedGroups].sort()) {
         await this.advisoryLock(
@@ -1688,15 +1772,16 @@ export class SmartCampaignService {
         campaign.groups.some((group) => requestedGroups.includes(group.id)),
       )
       if (conflicting.length) {
-        throw ConflictError(
-          `Pause as campanhas manuais ativas: ${conflicting.map((item) => item.name).join(', ')}`,
-        )
+        throw new AppError(`Pause as campanhas manuais ativas: ${conflicting.map((item) => item.name).join(', ')}`, 409, 'SMART_MANUAL_CAMPAIGN_CONFLICT')
       }
       const settings = structuredClone(plan.settings) as {
         audiences: Record<string, SmartAudiencePolicy>
         global?: SmartCampaignTiming
       }
-      const selected = (plan.items as SmartPlanItem[]).filter((item) => item.state === 'SELECTED')
+      // Mutate an independent snapshot so Sequelize compares against untouched
+      // JSONB values when persisting trimming, conflict removal and scheduling.
+      const approvalItems = structuredClone(plan.items) as SmartPlanItem[]
+      const selected = approvalItems.filter((item) => item.state === 'SELECTED')
       if (!selected.length) throw BadRequestError('Selecione ao menos um produto antes de aprovar')
       const today = getSmartLocalDate(new Date(), plan.timezone)
       if (selected.some((item) => item.date < today)) {
@@ -1705,6 +1790,11 @@ export class SmartCampaignService {
       const rows: CreationAttributes<SmartSend>[] = []
       validateAudienceDailyCaps(selected, settings.audiences)
       const approvalNow = new Date()
+      const daily = plan.settings.dailyAutomation as { minimumItems?: number; startTime?: string; endTime?: string } | undefined
+      const dailySelectedIdentities = new Set<string>()
+      if (daily && options.automatic && plan.audienceSlugs.some(slug => selected.filter(item => item.audienceSlug === slug).length < (daily.minimumItems ?? 1))) {
+        throw new AppError('Todos os públicos precisam de produtos elegíveis suficientes para aprovação automática.', 409, 'DAILY_INVENTORY_SHORTAGE')
+      }
       if (settings.global?.startNow) {
         const earlyStart = immediateTiming(plan.startDate, usedSlugs.map((slug) => settings.audiences[slug].timezone), approvalNow)
         settings.global = { ...settings.global, earlyStart }
@@ -1721,13 +1811,55 @@ export class SmartCampaignService {
             selected.filter((item) => item.audienceSlug === slug).map((item) => item.date),
           ),
         ]) {
-          const dayItems = selected
+          let dayItems = selected
             .filter((item) => item.audienceSlug === slug && item.date === date)
             .sort(compareSmartOrder)
-          const dayPolicy = { ...policy, startTime: explicitSmartStart(settings.global, date, policy.startTime) }
+          if (policy.dailySelection && dayItems.some(item => dailySelectionReasons(item.product, item.fitScore ?? 0, item.score, policy.dailySelection!).length)) {
+            throw BadRequestError('A seleção diária contém produtos abaixo dos critérios de qualidade; revise o plano')
+          }
+          if ((policy.excludePolitical || audience.policy.excludePolitical) && dayItems.some(item => item.political === true)) throw BadRequestError('A seleção contém conteúdo político identificado na análise')
+          const explicitStart = explicitSmartStart(settings.global, date, policy.startTime)
+          const dayPolicy = { ...policy,
+            startTime: daily?.startTime && daily.startTime > explicitStart ? daily.startTime : explicitStart,
+            endTime: daily?.endTime && daily.endTime < policy.endTime ? daily.endTime : policy.endTime,
+          }
           let earliest: Date | undefined
           if (date === getSmartLocalDate(approvalNow, policy.timezone)) {
-            earliest = settings.global?.startNow ? approvalNow : new Date(approvalNow.getTime() + policy.minGapSeconds * 1000)
+            earliest = settings.global?.startNow || plan.settings.dailyAutomation ? approvalNow : new Date(approvalNow.getTime() + policy.minGapSeconds * 1000)
+          }
+          if (daily) {
+            const minimum = options.automatic ? daily.minimumItems ?? 1 : 1
+            let conflicts = 0
+            for (const item of dayItems) {
+              const identities = dailyOfferAliases(item.product)
+              if (identities.some(identity => dailySelectedIdentities.has(identity))
+                || await hasDailyProductConflict(userId, plan.id, plan.uuid, item.product, transaction)) {
+                item.state = 'RESERVE'
+                item.scheduledAt = undefined
+                item.warnings = [...new Set([...(item.warnings ?? []), 'Produto reservado ou entregue por outro plano; removido da seleção diária.'])]
+                selected.splice(selected.indexOf(item), 1)
+                conflicts++
+              } else identities.forEach(identity => dailySelectedIdentities.add(identity))
+            }
+            dayItems = dayItems.filter(item => item.state === 'SELECTED')
+            if (dayItems.length < minimum) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409,
+              conflicts ? 'DAILY_NOVELTY_CONFLICT' : 'DAILY_INVENTORY_SHORTAGE')
+            const first = Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0)
+            const roundedFirst = Math.ceil(first / 60_000) * 60_000
+            const seconds = Math.floor((smartZonedInstant(date, dayPolicy.endTime, policy.timezone).getTime() - roundedFirst - Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)) / 1000)
+            const capacity = Math.max(0, Math.floor(seconds / policy.minGapSeconds) + 1)
+            if (capacity < minimum) throw new AppError('Não há janela suficiente para a seleção diária.', 409, 'LATE_ANALYSIS')
+            if (dayItems.length > capacity) {
+              const ranked = [...dayItems].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
+              if (ranked.filter(item => item.pinned).length > capacity) throw new AppError('A seleção fixa excede a janela restante.', 409, 'LATE_ANALYSIS')
+              const retained = new Set(ranked.slice(0, capacity).map(item => item.id))
+              for (const item of dayItems.filter(item => !retained.has(item.id))) {
+                item.state = 'RESERVE'
+                item.scheduledAt = undefined
+                selected.splice(selected.indexOf(item), 1)
+              }
+              dayItems = dayItems.filter(item => retained.has(item.id))
+            }
           }
           const slots = buildSmartSchedule(
             date,
@@ -1861,9 +1993,7 @@ export class SmartCampaignService {
         }
       }
       await SmartSend.bulkCreate(rows, { transaction })
-      // Nested item scheduling changed in memory; assign fresh objects so
-      // Sequelize reliably marks the JSONB snapshot dirty.
-      plan.items = (plan.items as Record<string, unknown>[]).map((item) => ({ ...item }))
+      plan.items = approvalItems
       plan.status = SMART_PLAN_STATUS.SCHEDULED
       plan.approvedAt = new Date()
       plan.revision += 1
@@ -1877,6 +2007,7 @@ export class SmartCampaignService {
           revision: plan.revision,
           groupIds: requestedGroups,
           sendCount: rows.length,
+          approvalMode: options.automatic ? 'automatic' : 'operator',
         },
         transaction,
       )
@@ -1958,8 +2089,10 @@ export class SmartCampaignService {
       const today = getSmartLocalDate(now, plan.timezone)
       const pending = sends.filter((send) => send.status === SMART_SEND_STATUS.PENDING && send.localDate === today)
       if (!pending.length) throw ConflictError('Não há envios pendentes para hoje')
-      const earlyStart = immediateTiming(today, pending.map((send) => send.timezone), now)
-      const nextSlot = Math.ceil(now.getTime() / 60_000) * 60_000
+      const daily = plan.settings.dailyAutomation as { startTime?: string } | undefined
+      const nextSlot = Math.max(Math.ceil(now.getTime() / 60_000) * 60_000,
+        daily?.startTime ? smartZonedInstant(today, daily.startTime, plan.timezone).getTime() : 0)
+      const earlyStart = immediateTiming(today, pending.map((send) => send.timezone), new Date(nextSlot))
       const itemTimes = new Map<string, string>()
       let changed = 0
       for (const groupId of [...new Set(pending.map((send) => send.groupId))]) {

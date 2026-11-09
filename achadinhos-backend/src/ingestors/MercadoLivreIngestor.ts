@@ -19,6 +19,7 @@ interface MlCard {
   position?: number
   productId?: string | null
   title?: string | null
+  description?: string | null
   productUrl?: string | null
   commissionedUrl?: string | null
   commissionedUrlStatus?: string | null
@@ -32,6 +33,7 @@ interface MlCard {
   imageUrls?: Array<string | null> | null
   // "completo" export: fields nested under `visible`.
   visible?: {
+    description?: string | null
     pricing?: MlPricing | null
     commissionPercent?: string | null
     text?: string | null
@@ -57,17 +59,27 @@ function isMlPayload(payload: unknown): payload is MlPayload {
   )
 }
 
-function visibleSignals(text: string | null | undefined) {
+export function visibleSignals(text: string | null | undefined) {
   if (!text) return undefined
   const ratingMatch = text.match(/classifica[cç][aã]o\s*(\d(?:[.,]\d+)?)\s*de\s*5\s*estrelas/i)
-  const soldMatch = text.match(/(?:mais de\s*)?\+?([\d.]+)\s+(?:produtos?\s+)?vendidos/i)
+    ?? text.match(/(?:^|\s)([0-4][.,]\d|5(?:[.,]0)?)\s*\|\s*\+?[\d.,]+\s*(?:milh(?:ão|ões|ao|oes)|mil|k)?\s+(?:produtos?\s+)?vendidos\b/i)
+  const soldMatch = text.match(/(?:mais de\s*)?\+?([\d.,]+)\s*(milh(?:ão|ões|ao|oes)|mil|k)?\s+(?:produtos?\s+)?vendidos\b/i)
   const rating = ratingMatch ? Number(ratingMatch[1].replace(',', '.')) : undefined
-  const soldCount = soldMatch ? Number(soldMatch[1].replace(/\./g, '')) : undefined
-  if (rating === undefined && soldCount === undefined) return undefined
+  const rawCount = soldMatch?.[1]
+  const scaledCount = rawCount && soldMatch?.[2]
+    ? Number((/^\d{1,3}(?:\.\d{3})+(?:,\d+)?$/.test(rawCount) ? rawCount.replace(/\./g, '') : rawCount).replace(',', '.'))
+    : rawCount ? Number(rawCount.replace(/\./g, '').replace(',', '.')) : undefined
+  const multiplier = !soldMatch?.[2] ? 1 : /^milh/i.test(soldMatch[2]) ? 1_000_000 : 1_000
+  const soldCount = scaledCount === undefined ? undefined : scaledCount * multiplier
+  const bestSeller = /\bmais vendidos?\b/i.test(text)
+  const timeLimited = /oferta rel[aâ]mpago|termina em\s+\d{1,2}:\d{2}|restam\s+\d+\s*(?:minutos?|horas?)/i.test(text)
+  if (rating === undefined && soldCount === undefined && !bestSeller && !timeLimited) return undefined
   return {
+    ...(bestSeller ? { bestSeller: true } : {}),
+    ...(timeLimited ? { timeLimited: true } : {}),
     ...(rating !== undefined && Number.isFinite(rating) && rating <= 5 ? { rating } : {}),
     ...(soldCount !== undefined && Number.isSafeInteger(soldCount)
-      ? { soldCount, soldCountIsLowerBound: /mais de|\+/i.test(soldMatch?.[0] ?? '') }
+      ? { soldCount, soldCountIsLowerBound: /mais de|\+|mil|k/i.test(soldMatch?.[0] ?? '') }
       : {}),
   }
 }
@@ -112,6 +124,12 @@ export class MercadoLivreIngestor implements SourceIngestor {
         warnings.push({ index, productId, message: 'Sem título — item ignorado' })
         return
       }
+      // Keep observed product prose separate from title and aggregate card text.
+      // Root is the compact-export form; visible is the full-export fallback.
+      const observedDescription = [card.description, card.visible?.description]
+        .find((value): value is string => typeof value === 'string' && value.trim().length > 0)?.trim()
+      const description = observedDescription?.slice(0, 2000)
+      if (observedDescription && observedDescription.length > 2000) warnings.push({ index, productId, message: 'Descrição observada limitada a 2000 caracteres.' })
 
       const pricing = card.pricing ?? card.visible?.pricing ?? undefined
       const discountedPrice = pricing?.currentAmount ?? undefined
@@ -190,6 +208,7 @@ export class MercadoLivreIngestor implements SourceIngestor {
 
       const parsed = OfferSchema.safeParse({
         title,
+        description,
         discountedPrice,
         originalPrice: pricing?.originalAmount ?? undefined,
         discountPercent: pricing?.discountPercent ?? undefined,

@@ -1,0 +1,544 @@
+import { createHash, randomUUID } from 'node:crypto'
+import { Op, QueryTypes } from 'sequelize'
+import { injectable, inject } from 'tsyringe'
+import { sequelize } from '@/database'
+import { env } from '@/config/env'
+import {
+  dailyWindow,
+  dailyItemTarget,
+  dailyMinimumItems,
+  dailyRemainingCapacity,
+  type DailyAutomationConfig,
+} from '@/config/dailyAutomation'
+import { AppError } from '@/middleware/Error/AppError'
+import { SmartAudience } from '@/database/models/SmartAudience'
+import { Campaign, CAMPAIGN_STATUS_ENUM } from '@/database/models/Campaign'
+import { SmartPlan, SMART_PLAN_STATUS } from '@/database/models/SmartPlan'
+import { ProductGroupDelivery } from '@/database/models/ProductGroupDelivery'
+import { SmartSend, SMART_SEND_STATUS } from '@/database/models/SmartSend'
+import { SmartCampaignService } from '@/services/SmartCampaignService'
+import {
+  DailyCollectionError,
+  DailyProductCollector,
+  DAILY_AUDIENCES,
+  type DailyPayload,
+} from '@/services/DailyProductCollector'
+import { logger } from '@/utils/logger'
+import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
+
+interface DailyRun {
+  id: string
+  user_id: number
+  local_date: string
+  request_id: string
+  config: DailyAutomationConfig
+  status: string
+  payloads: DailyPayload[] | null
+  plan_uuid: string | null
+  attempts: number
+  lease_token: string
+}
+
+export function dailyRequestId(userId: number, date: string): string {
+  const hex = createHash('sha256').update(`daily-automation:v1:${userId}:${date}`).digest('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+}
+
+@injectable()
+export class DailyAutomationService {
+  private readonly abort = new AbortController()
+
+  constructor(
+    @inject(SmartCampaignService) private readonly smart: SmartCampaignService,
+    @inject(DailyProductCollector) private readonly collector: DailyProductCollector,
+  ) {}
+
+  stop(): void {
+    this.abort.abort()
+  }
+
+  private async save(run: DailyRun, status: string, error: string | null = null): Promise<void> {
+    await sequelize.query(
+      `UPDATE daily_automation_runs
+      SET status=:status, last_error=:error, lease_token=NULL, lease_until=NULL,
+          attempts=attempts + CASE WHEN :error IS NOT NULL AND :status IN ('RETRY','FAILED') THEN 1 ELSE 0 END,
+          next_attempt_at=CASE WHEN :status IN ('ANALYZING','ANALYSIS_HOLD') THEN NOW()
+            ELSE NOW() + INTERVAL '15 minutes' END, updated_at=NOW()
+      WHERE id=:id AND lease_token=:token`,
+      {
+        replacements: { status, error, id: run.id, token: run.lease_token },
+      },
+    )
+  }
+
+  private async checkpointPayload(run: DailyRun, payload: DailyPayload): Promise<void> {
+    if (!Array.isArray(payload.json.cards) || !payload.json.cards.length) return
+    await this.requireLease(run)
+    const payloads = [
+      ...(run.payloads ?? []).filter(
+        (value) => value.targetAudienceSlug !== payload.targetAudienceSlug,
+      ),
+      payload,
+    ]
+    const complete = DAILY_AUDIENCES.every((slug) =>
+      payloads.some((value) => value.targetAudienceSlug === slug),
+    )
+    await sequelize.query(
+      `UPDATE daily_automation_runs SET payloads=CAST(:payloads AS JSONB),
+      attempts=CASE WHEN :complete THEN 0 ELSE attempts END, updated_at=NOW() WHERE id=:id AND lease_token=:token`,
+      {
+        replacements: {
+          id: run.id,
+          token: run.lease_token,
+          payloads: JSON.stringify(payloads),
+          complete,
+        },
+      },
+    )
+    run.payloads = payloads
+    if (complete) run.attempts = 0
+  }
+
+  private async checkpointPlan(run: DailyRun, plan: SmartPlan): Promise<void> {
+    await sequelize.query(
+      `UPDATE daily_automation_runs SET plan_uuid=:uuid,
+      attempts=CASE WHEN plan_uuid IS NULL THEN 0 ELSE attempts END, updated_at=NOW() WHERE id=:id AND lease_token=:token`,
+      {
+        replacements: { uuid: plan.uuid, id: run.id, token: run.lease_token },
+      },
+    )
+    if (!run.plan_uuid) run.attempts = 0
+    run.plan_uuid = plan.uuid
+  }
+
+  private async requireLease(run: DailyRun): Promise<void> {
+    if (this.abort.signal.aborted) throw new DailyCollectionError('STOPPED')
+    const rows = await sequelize.query<{ id: string }>(
+      `UPDATE daily_automation_runs
+      SET lease_until=NOW() + INTERVAL '30 minutes'
+      WHERE id=:id AND lease_token=:token AND lease_until>NOW() RETURNING id`,
+      {
+        replacements: { id: run.id, token: run.lease_token },
+        type: QueryTypes.SELECT,
+      },
+    )
+    if (!rows.length) throw new DailyCollectionError('STOPPED')
+  }
+
+  private async exclusions(userId: number): Promise<string[]> {
+    const [deliveries, sends] = await Promise.all([
+      ProductGroupDelivery.findAll({
+        where: { userId },
+        attributes: ['offerProductId', 'offerSource'],
+      }),
+      SmartSend.findAll({
+        where: {
+          userId,
+          status: {
+            [Op.in]: [
+              SMART_SEND_STATUS.PENDING,
+              SMART_SEND_STATUS.SENDING,
+              SMART_SEND_STATUS.SENT,
+              SMART_SEND_STATUS.UNKNOWN,
+            ],
+          },
+        },
+        attributes: ['offer'],
+      }),
+    ])
+    const values = [
+      ...deliveries
+        .filter((row) => row.offerSource?.trim().toLowerCase() === 'mercadolivre')
+        .map((row) => row.offerProductId),
+      ...sends
+        .filter((row) => row.offer.source?.trim().toLowerCase() === 'mercadolivre')
+        .map((row) => row.offer.productId),
+    ]
+    return [
+      ...new Set(
+        values
+          .map((id) => normalizedMercadoLivreProductId(id))
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ]
+  }
+
+  async tick(config: DailyAutomationConfig, now = new Date()): Promise<void> {
+    if (this.abort.signal.aborted) return
+    // A restart may load tomorrow's configuration before today's saved run has
+    // completed. Its persisted window, weekdays and approval choices still win.
+    const currentDate = dailyWindow(config, now).date
+    const existing = await sequelize.query<{ config: DailyAutomationConfig }>(
+      'SELECT config FROM daily_automation_runs WHERE user_id=:userId AND local_date=:date',
+      { replacements: { userId: config.userId, date: currentDate }, type: QueryTypes.SELECT },
+    )
+    config = existing[0]?.config ?? config
+    const window = dailyWindow(config, now)
+    if (!window.due) return
+    await sequelize.query(
+      `INSERT INTO daily_automation_runs (user_id, local_date, request_id, config)
+      VALUES (:userId, :date, :requestId, CAST(:config AS JSONB)) ON CONFLICT (user_id, local_date) DO NOTHING`,
+      {
+        replacements: {
+          userId: config.userId,
+          date: window.date,
+          requestId: dailyRequestId(config.userId, window.date),
+          config: JSON.stringify(config),
+        },
+      },
+    )
+    const token = randomUUID()
+    const rows = await sequelize.query<DailyRun>(
+      `UPDATE daily_automation_runs
+      SET lease_token=:token, lease_until=NOW() + INTERVAL '30 minutes', updated_at=NOW()
+      WHERE user_id=:userId AND local_date=:date
+        AND status IN ('COLLECTING', 'ANALYZING', 'ANALYSIS_HOLD', 'RETRY')
+        AND (lease_until IS NULL OR lease_until<NOW()) AND next_attempt_at<=NOW()
+      RETURNING *`,
+      {
+        replacements: { userId: config.userId, date: window.date, token },
+        type: QueryTypes.SELECT,
+      },
+    )
+    const run = rows[0]
+    if (!run) return
+    try {
+      if (!env.AI_ENABLED) {
+        await this.save(run, 'CONFIG_REQUIRED', 'AI_DISABLED')
+        return
+      }
+      // Retire only automation-owned, unapproved plans from earlier dates. A
+      // concurrent operator change wins; never refetch its revision to cancel it.
+      const previous = await sequelize.query<{ uuid: string; revision: number }>(
+        `SELECT p.uuid, p.revision FROM smart_plans p
+        JOIN daily_automation_runs r ON p.user_id=r.user_id AND p.input->>'requestId'=r.request_id::text
+        WHERE r.user_id=:userId AND r.local_date < :date AND r.config->>'autoApprove'='true'
+          AND p.status IN ('ANALYZING','REVIEW') LIMIT 20`,
+        {
+          replacements: { userId: run.user_id, date: run.local_date },
+          type: QueryTypes.SELECT,
+        },
+      )
+      for (const plan of previous) {
+        try {
+          await this.smart.cancel(run.user_id, plan.uuid, plan.revision)
+        } catch (error) {
+          if (!(error instanceof AppError) || error.statusCode !== 409) throw error
+          logger.info(
+            { dailyRunId: run.id, planUuid: plan.uuid },
+            'Daily cleanup deferred after a concurrent plan change',
+          )
+        }
+      }
+      const ownedPlan = await SmartPlan.findOne({
+        where: { userId: run.user_id, 'input.requestId': run.request_id },
+      })
+      if (
+        ownedPlan &&
+        [
+          SMART_PLAN_STATUS.SCHEDULED,
+          SMART_PLAN_STATUS.PAUSED,
+          SMART_PLAN_STATUS.COMPLETED,
+          SMART_PLAN_STATUS.CANCELLED,
+        ].includes(ownedPlan.status)
+      ) {
+        await this.checkpointPlan(run, ownedPlan)
+        await this.save(run, ownedPlan.status)
+        return
+      }
+      if (
+        run.config.autoApprove &&
+        run.config.requireFullWindow &&
+        dailyRemainingCapacity(run.config, now) < dailyMinimumItems(run.config)
+      ) {
+        if (
+          ownedPlan &&
+          [SMART_PLAN_STATUS.ANALYZING, SMART_PLAN_STATUS.REVIEW].includes(ownedPlan.status)
+        )
+          await this.smart.cancel(run.user_id, ownedPlan.uuid, ownedPlan.revision)
+        await this.save(run, 'EXPIRED', 'LATE_ANALYSIS')
+        return
+      }
+      if (
+        !ownedPlan &&
+        (await SmartPlan.count({
+          where: {
+            userId: run.user_id,
+            status: {
+              [Op.in]: [
+                SMART_PLAN_STATUS.ANALYZING,
+                SMART_PLAN_STATUS.REVIEW,
+                SMART_PLAN_STATUS.SCHEDULED,
+                SMART_PLAN_STATUS.PAUSED,
+              ],
+            },
+          },
+        })) >= 2
+      ) {
+        await this.save(run, 'OPERATOR_ATTENTION', 'ACTIVE_PLAN_LIMIT')
+        return
+      }
+      const audiences = await SmartAudience.findAll({
+        where: { userId: run.user_id, slug: [...DAILY_AUDIENCES] },
+      })
+      if (
+        audiences.length !== 2 ||
+        audiences.some(
+          (audience) =>
+            !audience.enabled ||
+            !audience.destinations.length ||
+            audience.policy.timezone !== run.config.timezone ||
+            !audience.profile.keywords.length,
+        )
+      ) {
+        await this.save(run, 'CONFIG_REQUIRED', 'AUDIENCE_CONFIGURATION')
+        return
+      }
+      const groups = audiences.flatMap((audience) =>
+        audience.destinations.map((destination) => destination.groupId),
+      )
+      if (new Set(groups).size !== groups.length) {
+        await this.save(run, 'CONFIG_REQUIRED', 'AUDIENCE_GROUP_OVERLAP')
+        return
+      }
+      const legacy = await Campaign.findAll({
+        where: {
+          userId: run.user_id,
+          status: { [Op.in]: [CAMPAIGN_STATUS_ENUM.SCHEDULED, CAMPAIGN_STATUS_ENUM.RUNNING] },
+        },
+        attributes: ['groups'],
+      })
+      if (legacy.some((campaign) => campaign.groups.some((group) => groups.includes(group.id)))) {
+        await this.save(run, 'OPERATOR_ATTENTION', 'SMART_MANUAL_CAMPAIGN_CONFLICT')
+        return
+      }
+      const missing = DAILY_AUDIENCES.filter(
+        (slug) =>
+          !run.payloads?.some(
+            (payload) =>
+              payload.targetAudienceSlug === slug &&
+              Array.isArray(payload.json.cards) &&
+              payload.json.cards.length,
+          ),
+      )
+      if (missing.length) {
+        const completedIds = (run.payloads ?? []).flatMap((payload) =>
+          Array.isArray(payload.json.cards)
+            ? payload.json.cards
+                .map((card) =>
+                  normalizedMercadoLivreProductId((card as { productId?: string }).productId),
+                )
+                .filter((id): id is string => Boolean(id))
+            : [],
+        )
+        const excludeProductIds = [
+          ...new Set([...(await this.exclusions(run.user_id)), ...completedIds]),
+        ]
+        if (excludeProductIds.length + run.config.candidateLimit * missing.length > 50_000) {
+          await this.save(run, 'CONFIG_REQUIRED', 'HISTORY_LIMIT')
+          return
+        }
+        const payloads = await this.collector.collect(
+          missing.map((slug) => {
+            const audience = audiences.find((value) => value.slug === slug)!
+            const policy = audience.policy
+            return {
+              slug,
+              options: {
+                limit: run.config.candidateLimit,
+                keywords: audience.profile.keywords.slice(0, 20),
+                matchMode: 'any',
+                matchStyle: 'word',
+                excludeProductIds,
+                quality: { minRating: run.config.minRating, minSoldCount: run.config.minSoldCount },
+                excludePolitical: true,
+                minPrice: policy.minPrice,
+                maxPrice: policy.maxPrice,
+                commission: {
+                  minPercent: policy.minCommissionPercent,
+                  minEstimatedBrl: policy.minEstimatedCommission,
+                },
+              },
+            }
+          }),
+          this.abort.signal,
+          (payload) => this.checkpointPayload(run, payload),
+        )
+        await this.requireLease(run)
+        for (const payload of payloads) await this.checkpointPayload(run, payload)
+        // An incomplete audience stays held; never silently schedule just one niche.
+        if (
+          !DAILY_AUDIENCES.every((slug) =>
+            run.payloads?.some(
+              (payload) =>
+                payload.targetAudienceSlug === slug &&
+                Array.isArray(payload.json.cards) &&
+                payload.json.cards.length,
+            ),
+          )
+        ) {
+          throw new DailyCollectionError('COLLECTION_INCOMPLETE')
+        }
+      }
+      await this.requireLease(run)
+      if (!dailyWindow(run.config).due || dailyWindow(run.config).date !== run.local_date) {
+        await this.save(run, 'EXPIRED', 'WINDOW_CLOSED')
+        return
+      }
+      if (
+        run.config.autoApprove &&
+        run.config.requireFullWindow &&
+        dailyRemainingCapacity(run.config) < dailyMinimumItems(run.config)
+      ) {
+        await this.save(run, 'EXPIRED', 'LATE_ANALYSIS')
+        return
+      }
+      // Recover the crash window after plan creation but before checkpointing its UUID.
+      let plan = await SmartPlan.findOne({
+        where: { userId: run.user_id, 'input.requestId': run.request_id },
+      })
+      if (!plan) {
+        const created = await this.smart.createPlan(
+          run.user_id,
+          {
+            requestId: run.request_id,
+            date: run.local_date,
+            days: 1,
+            audienceSlugs: [...DAILY_AUDIENCES],
+            payloads: run.payloads!,
+            campaignStartTime: run.config.startTime,
+            settings: {
+              startTime: run.config.startTime,
+              endTime: run.config.endTime,
+              dailyCap: dailyItemTarget(run.config),
+              minGapSeconds: run.config.minIntervalMinutes * 60,
+              maxGapSeconds: run.config.maxIntervalMinutes * 60,
+              spreadAcrossWindow: true,
+              windowEndBufferSeconds: 120,
+              excludePolitical: true,
+              maxStandouts: run.config.maxStandouts,
+              dailySelection: {
+                minRating: run.config.minRating,
+                minSoldCount: run.config.minSoldCount,
+                minFitScore: run.config.minFitScore,
+                minCommercialScore: run.config.minCommercialScore,
+              },
+            },
+          },
+          {
+            runId: run.id,
+            localDate: run.local_date,
+            minimumItems: dailyMinimumItems(run.config),
+            startTime: run.config.startTime,
+            endTime: run.config.endTime,
+          },
+        )
+        plan = await SmartPlan.findOne({ where: { uuid: created.id, userId: run.user_id } })
+        if (!plan) throw new Error('Plan checkpoint unavailable')
+      }
+      await this.checkpointPlan(run, plan)
+      if (plan.status === SMART_PLAN_STATUS.ANALYZING) {
+        await this.save(run, 'ANALYZING')
+      } else if (plan.status === SMART_PLAN_STATUS.REVIEW) {
+        const minimum = dailyMinimumItems(run.config)
+        const hasBothAudiences = DAILY_AUDIENCES.every(
+          (slug) =>
+            plan!.items.filter((item) => item.state === 'SELECTED' && item.audienceSlug === slug)
+              .length >= minimum,
+        )
+        if (!run.config.autoApprove || !hasBothAudiences) {
+          await this.save(
+            run,
+            'REVIEW',
+            hasBothAudiences ? null : 'INSUFFICIENT_QUALIFIED_PRODUCTS',
+          )
+          return
+        }
+        await this.requireLease(run)
+        await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
+        await this.save(run, 'SCHEDULED')
+      } else if (plan.status === SMART_PLAN_STATUS.FAILED) {
+        await this.save(run, 'ANALYSIS_HOLD', 'SMART_ANALYSIS_FAILED')
+      } else {
+        await this.save(run, plan.status)
+      }
+      logger.info(
+        { dailyRunId: run.id, planUuid: plan.uuid, date: run.local_date },
+        'Daily automation checkpoint',
+      )
+    } catch (error) {
+      if (error instanceof DailyCollectionError && error.code === 'STOPPED') {
+        await sequelize
+          .query(
+            `UPDATE daily_automation_runs SET lease_token=NULL, lease_until=NULL, next_attempt_at=NOW(), updated_at=NOW() WHERE id=:id AND lease_token=:token`,
+            {
+              replacements: { id: run.id, token: run.lease_token },
+            },
+          )
+          .catch(() => undefined)
+        return
+      }
+      const appError = error instanceof AppError ? error : null
+      const code =
+        error instanceof DailyCollectionError
+          ? error.code
+          : appError
+            ? appError.code?.replace(/[^A-Z0-9_]/gi, '').slice(0, 64) ||
+              `HTTP_${appError.statusCode}`
+            : 'PIPELINE_FAILED'
+      if (code === 'LATE_ANALYSIS') {
+        const plan = await SmartPlan.findOne({
+          where: { userId: run.user_id, 'input.requestId': run.request_id },
+        })
+        try {
+          if (plan && [SMART_PLAN_STATUS.ANALYZING, SMART_PLAN_STATUS.REVIEW].includes(plan.status))
+            await this.smart.cancel(run.user_id, plan.uuid, plan.revision)
+          await this.save(
+            run,
+            plan?.status === SMART_PLAN_STATUS.SCHEDULED ? 'SCHEDULED' : 'EXPIRED',
+            'LATE_ANALYSIS',
+          )
+        } catch {
+          await this.save(run, 'OPERATOR_ATTENTION', 'DAILY_RETIREMENT_CONFLICT')
+        }
+        return
+      }
+      // Keep completed observations when persistence fails; repair the private
+      // session configuration before rearming, without paying to recollect.
+      if (
+        error instanceof DailyCollectionError &&
+        error.code === 'SESSION_PERSIST_FAILED' &&
+        error.payloads?.length === 2 &&
+        error.payloads.every(
+          (payload) => Array.isArray(payload.json.cards) && payload.json.cards.length,
+        )
+      ) {
+        await sequelize.query(
+          `UPDATE daily_automation_runs SET payloads=CAST(:payloads AS JSONB), updated_at=NOW() WHERE id=:id AND lease_token=:token`,
+          {
+            replacements: {
+              id: run.id,
+              token: run.lease_token,
+              payloads: JSON.stringify(error.payloads),
+            },
+          },
+        )
+      }
+      const status =
+        code === 'AUTH_REQUIRED'
+          ? 'AUTH_REQUIRED'
+          : ['SESSION_PERSIST_FAILED', 'HISTORY_LIMIT'].includes(code)
+            ? 'CONFIG_REQUIRED'
+            : appError && appError.statusCode >= 400 && appError.statusCode < 500
+              ? 'OPERATOR_ATTENTION'
+              : run.attempts >= 2
+                ? 'FAILED'
+                : 'RETRY'
+      await this.save(run, status, code)
+      logger.warn(
+        { dailyRunId: run.id, code },
+        'Daily automation held; inspect daily_automation_runs',
+      )
+    }
+  }
+}

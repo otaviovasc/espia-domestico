@@ -6,6 +6,7 @@ import {
   Model,
 } from 'sequelize'
 import { sequelize } from '@/database'
+import type { DailySelectionPolicy } from '@/utils/dailyProductSelection'
 
 export interface SmartAudienceProfile {
   instructions: string
@@ -24,6 +25,9 @@ export interface SmartAudiencePolicy {
   endTime: string
   minGapSeconds: number
   maxGapSeconds: number
+  spreadAcrossWindow?: boolean
+  windowEndBufferSeconds?: number
+  dailySelection?: DailySelectionPolicy
   maxStandouts: number
   freshnessHours: number
   timezone: string

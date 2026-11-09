@@ -15,6 +15,7 @@ export interface SendResult {
   success: boolean
   messageId?: string
   error?: string
+  cancelledBeforeProvider?: boolean
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
@@ -117,6 +118,7 @@ export class SafeSender {
     private readonly safety: CampaignSafety,
     private readonly messageTemplate?: string | null,
     private readonly sendImages: boolean = true,
+    private readonly beforeProvider?: () => boolean | Promise<boolean>,
   ) {}
 
   /** Enforce the per-hour cap before sending the next message. */
@@ -149,6 +151,11 @@ export class SafeSender {
       const usableImage = this.sendImages
         ? await this.resolveUsableImageUrl(task.offer.imageUrl)
         : null
+
+      if (this.beforeProvider && !await this.beforeProvider()) {
+        return { group: task.group, offer: task.offer, success: false, cancelledBeforeProvider: true,
+          error: 'Envio cancelado antes de contactar o provedor.' }
+      }
 
       let res
       if (usableImage) {
