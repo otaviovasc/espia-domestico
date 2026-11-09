@@ -1,8 +1,8 @@
 # Daily product selection and delivery
 
-Working implementation and research, 2026-11-09. This is local work, not a deployment or proof of unattended delivery.
+Implementation and deployed preview, 2026-11-09. API and worker are deployed, the migration and private session are provisioned, and Railway Chromium access/collection smoke tests pass. Automatic approval remains off; full inventory yield and unattended delivery are unproven.
 
-Local verification during review iteration: backend 196 passed/1 skipped; daily PostgreSQL integration 24 passed; existing Smart PostgreSQL integration 15 passed; focused checks cover classification, description ingestion, political rejection and browser checkpoints. Existing delivery-ledger, catalog, classification-profile and AI-budget integration suites also passed (six tests across four suites). Chromium fixture passed both on the host and inside the rebuilt worker image with networking disabled. Build, type check, lint and diff whitespace checks passed; extension 83 passed plus syntax checks. A separate image check confirmed `/app/.env` and the private session directory were absent. This does not establish Railway acceptance or a provisioned worker login.
+Local verification during review iteration: backend 196 passed/1 skipped; daily PostgreSQL integration 24 passed; existing Smart PostgreSQL integration 15 passed; focused checks cover classification, description ingestion, political rejection and browser checkpoints. Existing delivery-ledger, catalog, classification-profile and AI-budget integration suites also passed (six tests across four suites). Chromium fixture passed both on the host and inside the rebuilt worker image with networking disabled. Build, type check, lint and diff whitespace checks passed; extension 83 passed plus syntax checks. A separate image check confirmed `/app/.env` and the private session directory were absent. Those were local receipts. The deployed acceptance below separately proves Railway runtime and worker login access.
 
 ## User requirements
 
@@ -89,7 +89,7 @@ First test direct Chromium from Railway using a properly provisioned session. Ad
 
 ## Remaining deployment gates
 
-Provision a private worker session; choose the actual user/group bindings; build/test Chromium on Railway; migrate the new table; perform a collection-only dry run; inspect ranked picks and shortages; then enable the configured cycle. No production database changes, deployment, purchase, or WhatsApp send has been performed by this work.
+The API/worker release, daily table migration, private session, exact existing account/group bindings, Railway Chromium fixture and live collection smoke are now complete. The limited smoke produced one verified masculino affiliate offer and no domestica offers: among 216 discovered domestica snapshots, 97 were excluded by history, and all five remaining keyword-matched snapshots failed the existing commission range. This does not measure the default 100-candidate run. Next, inspect ranked inventory from the scheduled preview and measure qualifying yield and total browser/AI cost. No paid classifier dry run, purchase or WhatsApp send has yet occurred.
 
 ## Reviewed operation refinements
 
