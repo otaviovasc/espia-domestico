@@ -571,7 +571,7 @@ test('operator can approve a qualified partial day while automatic approval and 
     const policies = Object.fromEntries(audiences.map(a => [a.slug, { ...a.policy, spreadAcrossWindow: true, windowEndBufferSeconds: 120,
       dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 80, minCommercialScore: 60 } }]))
     const count = mode === 'reviewLate' ? 27 : mode === 'cadenceLate' ? 29 : 5
-    const items = ['domestica', 'masculino'].flatMap((slug, audience) => Array.from({ length: count }, (_, index) => ({
+    const items = ['domestica', 'masculino'].flatMap((slug, audience) => Array.from({ length: mode === 'cadenceLate' ? count + 1 : count }, (_, index) => ({
       id: randomUUID(), audienceSlug: slug, date, state: 'SELECTED', fitScore: 95, score: 95, reason: 'Qualified partial selection',
       category: `category-${index}`, warnings: [], standout: false, observedAt: new Date().toISOString(),
       product: { title: `${slug} ${index}`, productId: `MLB${92000000 + f.user.id * 10000 + audience * 1000 + index}`,
@@ -647,6 +647,15 @@ test('operator can approve a qualified partial day while automatic approval and 
         items: [{ ...structuredClone(plan.items.find(item => item.state === 'SELECTED')), observedAt: new Date(Date.now() - 25 * 3600000).toISOString() }] })
       await assert.rejects(smart.updatePlan(f.user.id, stale.uuid, { revision: stale.revision, campaignStartTime: '08:00', items: [] }), /Atualize a evidência/)
       await smart.cancel(f.user.id, stale.uuid, stale.revision)
+      const yesterday = new Date(new Date(`${date}T12:00:00Z`).getTime() - 86400000).toISOString().slice(0, 10)
+      const multi = await SmartPlan.create({ userId: f.user.id, status: 'REVIEW', startDate: yesterday, days: 2, timezone: f.config.timezone,
+        audienceSlugs: ['domestica'], input: {}, settings: { audiences: { domestica: policies.domestica }, global: { startNow: true } },
+        items: [{ ...structuredClone(plan.items.find(item => item.state === 'SELECTED')), date: yesterday }] })
+      await smart.updatePlan(f.user.id, multi.uuid, { revision: multi.revision, items: [{ id: multi.items[0].id, date }] })
+      await multi.reload()
+      assert.equal(multi.items[0].date, date, 'An old immediate-start flag must not prevent moving manual items to today')
+      await assert.rejects(smart.updatePlan(f.user.id, multi.uuid, { revision: multi.revision, startNow: true, items: [] }), /apenas para hoje/)
+      await smart.cancel(f.user.id, multi.uuid, multi.revision)
     }
     if (mode === 'advance') {
       await smart.updatePlan(f.user.id, plan.uuid, { revision: plan.revision, campaignStartTime: '09:00', items: [] })
@@ -788,4 +797,29 @@ test('real daily collection-to-approval-to-sender honors late capacity and catch
   assert.equal(lateResult.sent, 0)
   assert.equal(calls, 1)
   assert.equal(pending.status, 'COMPLETED')
+})
+
+test('daily UNKNOWN retry outside the envelope preserves its no-repeat ledger', async (t) => {
+  const date='2026-11-09'
+  t.mock.timers.enable({apis:['Date'],now:new Date(`${date}T21:43:00Z`).getTime()})
+  const f=await setup()
+  const {SmartCampaignService}=require('../dist/services/SmartCampaignService')
+  const {offerIdentity}=require('../dist/utils/offerIdentity')
+  const audience=await SmartAudience.findOne({where:{userId:f.user.id,slug:'domestica'}})
+  const plan=await SmartPlan.create({userId:f.user.id,status:'PAUSED',startDate:date,days:1,timezone:f.config.timezone,audienceSlugs:['domestica'],input:{},items:[],settings:{audiences:{domestica:audience.policy},dailyAutomation:{localDate:date,startTime:'08:00',endTime:'19:00'}}})
+  const product={title:'Panela QA',source:'mercadolivre',productId:'MLB987654321',currency:'BRL',discountedPrice:100,affiliateUrl:'https://meli.la/unknown-qa'}
+  const send=await SmartSend.create({userId:f.user.id,planId:plan.id,audienceSlug:'domestica',groupId:'domestica@g.us',groupName:'domestica',connectionScope:'daily-unknown-qa',offerIdentity:offerIdentity(product),offer:product,scheduledAt:new Date(`${date}T21:38:00Z`),localDate:date,timezone:f.config.timezone,evidenceObservedAt:new Date(`${date}T09:00:00Z`),status:'UNKNOWN',attempts:1})
+  const ledger=await ProductGroupDelivery.create({userId:f.user.id,connectionScope:send.connectionScope,offerIdentity:send.offerIdentity,offerSource:'mercadolivre',offerProductId:product.productId,offerUrl:product.affiliateUrl,offerTitle:product.title,groupId:send.groupId,groupName:send.groupName,campaignId:null,planUuid:plan.uuid,status:'SENDING'})
+  const old=new Date(`${date}T21:30:00Z`)
+  await sequelize.query('UPDATE smart_sends SET updated_at=:old WHERE id=:id',{replacements:{id:send.id,old}})
+  await sequelize.query('UPDATE product_group_deliveries SET heartbeat_at=:old WHERE id=:id',{replacements:{id:ledger.id,old}})
+  const smart=new SmartCampaignService({}, {}, {}, {}, {async getConnectionScope(){return send.connectionScope}})
+  for(const instant of [`${date}T21:43:00Z`,'2026-11-10T08:30:00Z']) {
+    t.mock.timers.setTime(new Date(instant).getTime())
+    await assert.rejects(smart.resolveUnknown(f.user.id,send.uuid,'retry'),{code:'DAILY_RETRY_OUTSIDE_WINDOW'})
+    assert.equal((await send.reload()).status,'UNKNOWN')
+    assert.equal((await ledger.reload()).status,'SENDING')
+  }
+  await smart.resolveUnknown(f.user.id,send.uuid,'skip')
+  assert.equal((await ledger.reload()).status,'SENT','Explicit skip conservatively retains the duplicate barrier')
 })

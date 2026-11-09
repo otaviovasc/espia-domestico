@@ -1627,7 +1627,7 @@ export class SmartCampaignService {
         }
       }
       if (input.campaignStartTime !== undefined || input.startNow !== undefined || input.items.length > 0) {
-        const immediate = settings.global?.startNow
+        const immediate = settings.global?.startNow && plan.startDate === getSmartLocalDate(new Date(), plan.timezone)
           ? immediateTiming(plan.startDate, plan.audienceSlugs.map(slug => settings.audiences[slug].timezone))
           : undefined
         for (const item of items) if (item.state !== 'SELECTED') item.scheduledAt = undefined
@@ -1645,12 +1645,29 @@ export class SmartCampaignService {
           for (const date of dates) {
             const requestedStart = immediate?.date === date ? immediate.time : policy.startTime
             const dayPolicy = { ...policy, startTime: daily?.startTime && daily.startTime > requestedStart ? daily.startTime : requestedStart }
-            const dayItems = items
+            let dayItems = items
               .filter((item) => item.audienceSlug === slug && item.state === 'SELECTED' && item.date === date)
               .sort(compareSmartOrder)
             const earliest = date === getSmartLocalDate(new Date(), policy.timezone)
               ? new Date(Date.now() + (daily || immediate ? 0 : policy.minGapSeconds * 1000))
               : undefined
+            if (daily) {
+              const first = Math.ceil(Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0) / 60_000) * 60_000
+              const available = smartZonedInstant(date, dayPolicy.endTime, policy.timezone).getTime() - first - Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)
+              const capacity = Math.max(0, Math.floor(available / (policy.minGapSeconds * 1000)) + 1)
+              if (dayItems.length > capacity) {
+                const ranked = [...dayItems].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
+                if (ranked.filter(item => item.pinned).length > capacity) throw ConflictError('A seleção fixa excede a janela restante.')
+                const retained = new Set(ranked.slice(0, capacity).map(item => item.id))
+                for (const item of dayItems.filter(item => !retained.has(item.id))) {
+                  item.state = 'RESERVE'
+                  item.scheduledAt = undefined
+                  item.warnings = [...new Set([...(item.warnings ?? []), 'Janela restante insuficiente; item movido para reserva.'])]
+                }
+                dayItems = dayItems.filter(item => retained.has(item.id))
+              }
+            }
+            if (!dayItems.length) continue
             const slots = buildSmartSchedule(date, dayItems.length, dayPolicy, `${plan.uuid}:${slug}:${date}:review`, earliest)
             dayItems.forEach((item, index) => {
               if (!isEvidenceFresh(new Date(item.observedAt), slots[index], policy.freshnessHours))
@@ -2351,6 +2368,15 @@ export class SmartCampaignService {
           throw ConflictError('O envio atingiu o limite de tentativas')
         }
         const next = new Date(Date.now() + Math.max(300, policy.minGapSeconds) * 1000)
+        const daily = plan.settings.dailyAutomation as { localDate?: string; startTime?: string; endTime?: string } | undefined
+        if (daily) {
+          const parts = zonedParts(next, policy.timezone)
+          const time = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`
+          if (getSmartLocalDate(next, policy.timezone) !== (daily.localDate ?? plan.startDate)
+            || time < (daily.startTime ?? policy.startTime) || time >= (daily.endTime ?? policy.endTime)) {
+            throw new AppError('A janela diária não permite outra tentativa; resolva o resultado incerto como enviado ou ignorado.', 409, 'DAILY_RETRY_OUTSIDE_WINDOW')
+          }
+        }
         if (!isEvidenceFresh(send.evidenceObservedAt, next, policy.freshnessHours)) {
           throw ConflictError(
             'A oferta expirou; importe dados atualizados antes de tentar novamente',

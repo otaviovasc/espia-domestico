@@ -10,7 +10,7 @@ The completed T3 browser login does not export HttpOnly cookies or provision wor
 
 ## Deployment configuration
 
-Reuse the dedicated worker. For self-hosted Chromium, select root directory `achadinhos-backend` and Railway config `railway.daily-worker.json`. Mount a private volume at `/data`; provision the session file privately outside the image. The API keeps its scheduler/daily orchestration disabled.
+Reuse the dedicated worker. For self-hosted Chromium, select root directory `achadinhos-backend`, Dockerfile path `Dockerfile.worker`, and start command `npm run worker` in the worker service settings. Railway CLI 5.71 rejects changing the deprecated Config-as-Code path; `railway.daily-worker.json` is retained as a reference descriptor. Upload the matching source before adding its volume, because attaching a volume can trigger a rebuild. Mount a private volume at `/data`; provision the session file privately outside the image. The API keeps its scheduler/daily orchestration disabled.
 
 Worker variables:
 
