@@ -11,6 +11,7 @@ test('Muse evidence keeps product image identities and reclassifies when the ima
     requests.push(request)
     assert.match(request.prompt, /shortCaption/)
     assert.equal(request.images.length, 1)
+    assert.equal(request.maxOutputTokens, 2400, 'Mandatory reasoning needs room before the JSON answer')
     return request.providerSchema.parse({ fits: { domestica: fit }, political: false, warnings: [], shortCaption: 'PRATICIDADE PARA COZINHAR TODOS OS DIAS' })
   } })
   const offer = { title: 'Panela', discountedPrice: 100, affiliateUrl: 'https://example.invalid/synthetic', imageUrl: image }
