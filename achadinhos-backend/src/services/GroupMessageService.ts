@@ -8,6 +8,7 @@ import type { CampaignOffer } from '@/database/models/Campaign'
 import { OfferSchema } from '@/dtos/campaign'
 import { BadRequestError } from '@/middleware/Error/AppError'
 import { logger } from '@/utils/logger'
+import { MlAuthChallengeService } from './MlAuthChallengeService'
 
 export interface GroupMessageDTO {
   id: number
@@ -78,6 +79,7 @@ interface NormalizedIncoming {
   mediaType: string | null
   mediaUrl: string | null
   timestamp: Date
+  timestampVerified: boolean
 }
 
 function normalizeIncoming(raw: unknown): NormalizedIncoming | null {
@@ -113,9 +115,9 @@ function normalizeIncoming(raw: unknown): NormalizedIncoming | null {
 
   const mediaType = asString(pick(msg, 'mediaType', 'messageType', 'type'))
   const mediaUrl = asString(pick(msg, 'mediaUrl', 'url', 'fileURL', 'file'))
-  const timestamp = parseTimestamp(
-    pick(msg, 'messageTimestamp', 'timestamp', 'date', 't', 'moment'),
-  )
+  const rawTimestamp = pick(msg, 'messageTimestamp', 'timestamp', 'date', 't', 'moment')
+  const timestamp = parseTimestamp(rawTimestamp)
+  const timestampVerified = rawTimestamp !== undefined && Number.isFinite(timestamp.getTime()) && (typeof rawTimestamp === 'number' || typeof rawTimestamp === 'string' && (Number.isFinite(Number(rawTimestamp)) || Number.isFinite(new Date(rawTimestamp).getTime())))
   const groupName = asString(pick(msg, 'chatName', 'groupName', 'subject'))
 
   return {
@@ -131,6 +133,7 @@ function normalizeIncoming(raw: unknown): NormalizedIncoming | null {
       mediaType && !/^(text|chat|conversation|extendedtext)$/i.test(mediaType) ? mediaType : null,
     mediaUrl,
     timestamp,
+    timestampVerified,
   }
 }
 
@@ -153,6 +156,7 @@ export class GroupMessageService {
   constructor(
     @inject(UazapiClient) private uazapi: UazapiClient,
     @inject(ConnectionService) private connectionService: ConnectionService,
+    @inject(MlAuthChallengeService) private mlChallenges: MlAuthChallengeService,
   ) {}
 
   /**
@@ -167,6 +171,10 @@ export class GroupMessageService {
     for (const raw of candidates) {
       const n = normalizeIncoming(raw)
       if (!n) continue
+      if (n.text && /^\d{6}$/.test(n.text.trim())) {
+        try { if (await this.mlChallenges.acceptIncoming(connectionScope, n)) continue }
+        catch { logger.warn('Temporary-code ingestion unavailable; code omitted from chat persistence'); continue }
+      }
       try {
         if (n.messageId) {
           const [, created] = await GroupMessage.findOrCreate({

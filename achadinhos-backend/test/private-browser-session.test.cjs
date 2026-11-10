@@ -1,0 +1,27 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const fs = require('node:fs/promises')
+const path = require('node:path')
+const os = require('node:os')
+const { browserSessionHash, checkpointBrowserSession } = require('../dist/services/PrivateBrowserSession')
+
+test('a stale browser cannot overwrite a newer operator login; successful rotations stay private', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'session-fence-'))
+  const file = path.join(directory, 'state.json')
+  const state = value => ({ cookies: [{ name: 'fixture', value, domain: '.mercadolivre.com.br', path: '/', expires: -1, secure: true, httpOnly: true, sameSite: 'Lax' }], origins: [] })
+  try {
+    assert.equal((await checkpointBrowserSession(file, null, state('initial-login'))).saved, true)
+    assert.equal((await checkpointBrowserSession(file, null, state('concurrent-initial-login'))).saved, false)
+    const old = JSON.stringify(state('old-browser'))
+    await fs.writeFile(file, old, { mode: 0o600 })
+    const fresh = JSON.stringify(state('operator-new-login'))
+    await fs.writeFile(file, fresh)
+    assert.equal((await checkpointBrowserSession(file, browserSessionHash(old), state('stale-refresh'))).saved, false)
+    assert.equal(await fs.readFile(file, 'utf8'), fresh)
+    const saved = await checkpointBrowserSession(file, browserSessionHash(fresh), state('rotated-current-login'))
+    assert.equal(saved.saved, true)
+    assert.equal(saved.hash, browserSessionHash(await fs.readFile(file, 'utf8')))
+    assert.equal((await fs.stat(file)).mode & 0o777, 0o600)
+    assert.equal((await fs.readdir(directory)).length, 1)
+  } finally { await fs.rm(directory, { recursive: true, force: true }) }
+})

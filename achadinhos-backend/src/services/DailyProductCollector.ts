@@ -1,8 +1,8 @@
-import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { chromium, type Browser, type BrowserContext } from 'playwright'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
+import { browserSessionHash, checkpointBrowserSession } from './PrivateBrowserSession'
 
 export const DAILY_AUDIENCES = ['domestica', 'masculino'] as const
 export type DailyAudienceSlug = (typeof DAILY_AUDIENCES)[number]
@@ -42,8 +42,11 @@ export class DailyProductCollector {
     const statePath = process.env.DAILY_BROWSER_STATE_PATH
     if (!statePath) throw new DailyCollectionError('AUTH_REQUIRED')
     let storageState: Awaited<ReturnType<BrowserContext['storageState']>>
+    let sessionHash: string
     try {
-      storageState = JSON.parse(await readFile(statePath, 'utf8'))
+      const raw = await readFile(statePath, 'utf8')
+      storageState = JSON.parse(raw)
+      sessionHash = browserSessionHash(raw)
     } catch {
       throw new DailyCollectionError('AUTH_REQUIRED')
     }
@@ -173,13 +176,11 @@ export class DailyProductCollector {
         // Checkpoint only after a successful authenticated audience collection,
         // retaining rotated state even if a later audience fails. Never replace
         // the login file with an unverified challenge/error page's state.
-        const temporary = `${statePath}.${randomUUID()}.tmp`
         try {
           const state = await context.storageState({ indexedDB: true })
-          await writeFile(temporary, JSON.stringify(state), { mode: 0o600, flag: 'wx' })
-          await rename(temporary, statePath)
+          const saved = await checkpointBrowserSession(statePath, sessionHash, state)
+          if (saved.saved) sessionHash = saved.hash
         } catch {
-          await unlink(temporary).catch(() => undefined)
           throw new DailyCollectionError('SESSION_PERSIST_FAILED', payloads)
         }
       }

@@ -95,7 +95,11 @@ test('real SDK wire accepts malformed optional evidence without discarding requi
     const schema = body.response_format.json_schema.schema
     assert.equal(body.model, 'meta/muse-ember')
     assert.ok(schema.required.includes('political'))
-    assert.ok(!schema.required.includes('captionEvidence'))
+    assert.ok(schema.required.includes('captionEvidence'))
+    assert.equal(schema.properties.captionEvidence.type, 'object')
+    assert.deepEqual(schema.properties.captionEvidence.required, ['source', 'fact'])
+    assert.equal(schema.properties.captionEvidence.properties.source.type, 'string')
+    assert.equal(schema.properties.captionEvidence.properties.fact.type, 'string')
     return new Response(JSON.stringify({ id: 'synthetic-muse-evidence', object: 'chat.completion', created: 1, model: body.model,
       choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify({ fits: { domestica: fit }, political: true, warnings: [], shortCaption: 'Praticidade para cozinhar', captionEvidence: { source: 'title', fact: 'x'.repeat(161) } }) } }],
       usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },

@@ -8,6 +8,9 @@ import { readDailyAutomationConfig, dailyWindow } from '@/config/dailyAutomation
 import { logger } from '@/utils/logger'
 import { env } from '@/config/env'
 import { AffiliateSalesObserver, affiliateSalesErrorCode } from '@/services/AffiliateSalesObserver'
+import { DailySessionRefresher } from '@/services/DailySessionRefresher'
+import { MlLoginRecovery } from '@/services/MlLoginRecovery'
+import { MlAuthChallengeService } from '@/services/MlAuthChallengeService'
 
 const POLL_INTERVAL_MS = 30_000
 
@@ -19,6 +22,7 @@ let analyzingGeneration: number | null = null
 let collectingGeneration: number | null = null
 let alertingGeneration: number | null = null
 let dailyAutomation: DailyAutomationService | null = null
+let sessionRefresher: DailySessionRefresher | null = null
 
 /**
  * Lightweight in-process scheduler. Every 30s it asks the CampaignService to
@@ -45,6 +49,10 @@ export function startScheduler(): void {
   }
   const daily = dailyAutomation
   const sales = env.DAILY_SALES_OBSERVATION_ENABLED ? new AffiliateSalesObserver() : null
+  const login = dailyConfig ? container.resolve(MlLoginRecovery) : null
+  const challenges = dailyConfig ? container.resolve(MlAuthChallengeService) : null
+  sessionRefresher = dailyConfig && login ? new DailySessionRefresher(page => login.recover(page, dailyConfig!)) : null
+  const sessions = sessionRefresher
   const isCurrent = (): boolean => generation === currentGeneration && timer !== null
 
   const tick = async (): Promise<void> => {
@@ -86,6 +94,11 @@ export function startScheduler(): void {
           try { await sales.tick(dailyConfig) }
           catch (error) { const code = affiliateSalesErrorCode(error); logger.warn({ code }, 'Affiliate sales observation failed'); void problem(code) }
         })
+        .then(async () => {
+          if (!sessions || !isCurrent()) return
+          try { await challenges?.expire(); await sessions.tick() }
+          catch (error) { const code = error instanceof Error && /^ML_SESSION_[A-Z_]+$/.test(error.message) ? error.message : 'ML_SESSION_REFRESH_FAILED'; logger.warn({ code }, 'Mercado Livre session refresh failed'); if (isCurrent()) void problem(code) }
+        })
         .finally(() => {
           if (collectingGeneration === currentGeneration) collectingGeneration = null
         })
@@ -116,6 +129,8 @@ export function stopScheduler(): void {
   generation++
   dailyAutomation?.stop()
   dailyAutomation = null
+  sessionRefresher?.stop()
+  sessionRefresher = null
   if (timer) {
     clearInterval(timer)
     timer = null

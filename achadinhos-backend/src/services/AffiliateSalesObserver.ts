@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { chromium, type Browser, type Page } from 'playwright'
+import { chromium, type Browser, type Page, type Response } from 'playwright'
 import { dailyWindow, dailyDateOffset, type DailyAutomationConfig } from '@/config/dailyAutomation'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
 import { AffiliateSalesState, resolveAffiliateSaleDate, type SalesReportRange } from './AffiliateSalesState'
+import { browserSessionHash, checkpointBrowserSession } from './PrivateBrowserSession'
 
 interface ObservedSalesRow { cells: string[]; productLinks: string[] }
 export interface AffiliateSale {
@@ -72,18 +73,69 @@ export function affiliateSalesErrorCode(error: unknown): string {
   const codes: Record<string, string> = {
     AUTH_REQUIRED: 'AFFILIATE_SALES_AUTH_REQUIRED', SALES_REPORT_SCHEMA_CHANGED: 'AFFILIATE_SALES_SCHEMA_CHANGED',
     SALES_PAGINATION_STALLED: 'AFFILIATE_SALES_PAGINATION_STALLED', SALES_REPORT_INCOMPLETE: 'AFFILIATE_SALES_INCOMPLETE',
+    SALES_ROWS_NOT_LOADED: 'AFFILIATE_SALES_ROWS_NOT_LOADED', SALES_REPORT_NOT_LOADED: 'AFFILIATE_SALES_REPORT_NOT_LOADED',
     SALES_STATE_INTEGRITY_FAILED: 'AFFILIATE_SALES_STATE_INVALID',
   }
   return codes[message] ?? (error instanceof Error && error.name === 'TimeoutError' ? 'AFFILIATE_SALES_TIMEOUT' : 'AFFILIATE_SALES_OBSERVATION_FAILED')
 }
 
-async function waitForLoadedSales(page: Page): Promise<void> {
-  // Headers, a selected preset and absent pagination do not prove data has loaded.
-  // No live empty-state marker has been verified: preserve prior data instead of certifying zero.
-  await page.waitForFunction(() => [...document.querySelectorAll('table tbody tr')].some(row => {
-    const cells = [...row.querySelectorAll('td')].map(cell => (cell as HTMLElement).innerText.trim())
-    return cells.length === 5 && /#\s*\d{8,30}\b/.test(cells[0]) && /R\$/.test(cells[2]) && Boolean(cells[4])
-  }), undefined, { timeout: 10_000 })
+interface LoadedSalesReport {
+  page: number; perPage: number; total: number
+  items: Array<{ order: string; status: string }>
+}
+
+/** Observe only the page's own requests. Never replay the private report API. */
+function observeSalesReports(page: Page, range: SalesReportRange): { wait: (number: number) => Promise<LoadedSalesReport> } {
+  const from = new Date(`${range.from}T00:00:00-03:00`).getTime()
+  const until = new Date(`${dailyDateOffset(range.to, 1)}T00:00:00-03:00`).getTime()
+  // Response metadata encodes calendar boundaries at UTC midnight; request dates use -03:00.
+  const responseRange = `${Date.parse(`${range.from}T00:00:00Z`)}--${Date.parse(`${dailyDateOffset(range.to, 1)}T00:00:00Z`)}`
+  const reports = new Map<number, LoadedSalesReport>()
+  const receive = async (response: Response): Promise<void> => {
+    const url = new URL(response.url())
+    if (url.origin !== 'https://www.mercadolivre.com.br' || url.pathname !== '/affiliate-program/api/dashboard/sales/general' || !response.ok()) return
+    const queryRange = url.searchParams.get('filter_time_range')?.split('--').map(value => new Date(value).getTime())
+    if (queryRange?.length !== 2 || queryRange[0] !== from || queryRange[1] !== until) return
+    const body = await response.json()
+    const { page: number, items_per_page: perPage, total_results: total, item_list: items } = body
+    if (body.filter_time_range !== responseRange || !Number.isSafeInteger(number) || number < 1 ||
+      !Number.isSafeInteger(perPage) || perPage < 1 || !Number.isSafeInteger(total) || total < 0 || !Array.isArray(items) ||
+      items.length !== Math.min(perPage, Math.max(0, total - (number - 1) * perPage))) return
+    const parsed: LoadedSalesReport['items'] = []
+    for (const item of items) {
+      // Direct rows expose purchaseId; indirect rows display id instead (verified live).
+      const order = item.purchaseId ?? item.id
+      if ((!Number.isSafeInteger(order) && typeof order !== 'string') || !/^\d{8,30}$/.test(String(order)) || typeof item.status !== 'string' || !item.status.trim()) return
+      const status = item.status === 'IN_REVIEW' ? 'EM REVISÃO' : ['CANCELLED', 'CANCELED'].includes(item.status) ? 'CANCELADA' : item.status
+      parsed.push({ order: String(order), status })
+    }
+    reports.set(number, { page: number, perPage, total, items: parsed })
+  }
+  page.on('response', response => { void receive(response).catch(() => undefined) })
+  return { wait: async number => {
+    const deadline = Date.now() + 15_000
+    while (!reports.has(number) && !page.isClosed() && Date.now() < deadline) await page.waitForTimeout(100)
+    const report = reports.get(number)
+    if (!report) throw new Error('SALES_REPORT_NOT_LOADED')
+    return report
+  } }
+}
+
+async function waitForLoadedSales(page: Page, report: LoadedSalesReport): Promise<void> {
+  // The response certifies empty reports and page totals. DOM rows must match its identities
+  // and statuses, so loading placeholders or previous-period rows cannot certify freshness.
+  if (!report.items.length) return
+  try {
+    await page.waitForFunction(expected => {
+      const rows = [...document.querySelectorAll('table tbody tr')]
+      const normalize = (value: string): string => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toUpperCase()
+      return rows.length === expected.length && rows.every((row, index) => {
+        const cells = [...row.querySelectorAll('td')].map(cell => (cell as HTMLElement).innerText.trim())
+        return cells.length === 5 && cells[0].match(/#\s*(\d{8,30})\b/)?.[1] === expected[index].order &&
+          /R\$/.test(cells[2]) && (normalize(cells[4]) === normalize(expected[index].status) || expected[index].status === 'CANCELADA' && normalize(cells[4]).startsWith('CANCELADA '))
+      })
+    }, report.items, { timeout: 10_000 })
+  } catch { throw new Error('SALES_ROWS_NOT_LOADED') }
 }
 
 /** Observational ledger only. It cannot approve, change rankings or send messages. */
@@ -113,55 +165,57 @@ export class AffiliateSalesObserver {
     const timeout = setTimeout(() => { void browser?.close().catch(() => undefined) }, 90_000)
     try {
       browser = await chromium.launch({ headless: true, timeout: 30_000 })
-      const context = await browser.newContext({ storageState: JSON.parse(await readFile(statePath, 'utf8')),
+      const sessionRaw = await readFile(statePath, 'utf8')
+      const context = await browser.newContext({ storageState: JSON.parse(sessionRaw),
         userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version()} Safari/537.36`,
         locale: 'pt-BR', timezoneId: 'America/Sao_Paulo' })
       await context.route('**/*', route => ['image', 'media', 'font'].includes(route.request().resourceType()) ? route.abort() : route.continue())
       const page = await context.newPage()
+      const observedAt = new Date().toISOString()
+      const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(observedAt))
+      const reportRange = { from: dailyDateOffset(localDate, -90), to: dailyDateOffset(localDate, -1) }
+      const responses = observeSalesReports(page, reportRange)
       await page.goto('https://www.mercadolivre.com.br/afiliados/dashboard', { waitUntil: 'domcontentloaded', timeout: 45_000 })
       if (!new URL(page.url()).pathname.startsWith('/afiliados') || await page.locator('input[type="password"]').count()) throw new Error('AUTH_REQUIRED')
       const table = page.locator('table').first()
       await table.waitFor({ timeout: 20_000 })
-      await waitForLoadedSales(page)
-      // This UI selection was verified on the authenticated dashboard. No private API replay.
+      // A default week with no sales must not prevent switching to the full report.
       const selectedPeriod = page.locator('main button').filter({ hasText: /^Últimos 90 dias$/ }).first()
       if (!await selectedPeriod.count() || !await selectedPeriod.isVisible()) {
-        const previousPeriodView = await page.evaluate(() => JSON.stringify([...document.querySelectorAll('table tbody, .andes-pagination')].map(node => node.textContent)))
         await page.locator('main button').filter({ hasText: /\d.+\/(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|^últimos\s+\d+\s+dias$|^este\s+mês$|^hoje$|^ontem$/i }).first().click({ timeout: 5000 })
         await page.getByText('Últimos 90 dias', { exact: true }).click({ timeout: 5000 })
         await selectedPeriod.waitFor({ timeout: 5000 })
-        await page.waitForFunction(previous => Boolean((document.querySelector('table tbody') as HTMLElement | null)?.innerText.trim()) && JSON.stringify([...document.querySelectorAll('table tbody, .andes-pagination')].map(node => node.textContent)) !== previous, previousPeriodView, { timeout: 10_000 })
       }
-      // Tracking requests may never go idle; the explicit table transition above certifies reload.
-      await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => undefined)
-      const headers = await table.locator('th').allTextContents()
-      if (headers.map(x => x.trim()).join('|') !== 'Produtos|Loja|Valor da venda|Ganho por venda|Estado') throw new Error('SALES_REPORT_SCHEMA_CHANGED')
-      const observedAt = new Date().toISOString()
-      const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(observedAt))
-      const reportRange = { from: dailyDateOffset(localDate, -90), to: dailyDateOffset(localDate, -1) }
       const sales: AffiliateSale[] = []
       let malformedRows = 0, complete = false
       const seenPages = new Set<string>()
+      let expectedTotal: number | undefined, expectedPerPage: number | undefined
       for (let index = 0; index < 10; index++) {
-        await waitForLoadedSales(page)
-        const raw = await table.locator('tbody tr').evaluateAll(rows => rows.map(row => ({
+        const report = await responses.wait(index + 1)
+        expectedTotal ??= report.total
+        expectedPerPage ??= report.perPage
+        if (report.total !== expectedTotal || report.perPage !== expectedPerPage) throw new Error('SALES_REPORT_INCOMPLETE')
+        await waitForLoadedSales(page, report)
+        if (report.items.length) {
+        const headers = await table.locator('th').allTextContents()
+        if (headers.map(x => x.trim()).join('|') !== 'Produtos|Loja|Valor da venda|Ganho por venda|Estado') throw new Error('SALES_REPORT_SCHEMA_CHANGED')
+        }
+        const raw = report.items.length ? await table.locator('tbody tr').evaluateAll(rows => rows.map(row => ({
           cells: [...row.querySelectorAll('td')].map(cell => (cell as HTMLElement).innerText.trim()),
           productLinks: [...row.querySelectorAll('a[href]')].map(a => (a as HTMLAnchorElement).href),
-        })))
+        }))) : []
         const fingerprint = createHash('sha256').update(JSON.stringify(raw)).digest('hex')
         if (seenPages.has(fingerprint)) throw new Error('SALES_PAGINATION_STALLED')
         seenPages.add(fingerprint)
         for (const row of raw) { const sale = affiliateSale(row, userId, observedAt, reportRange); if (sale) sales.push(sale); else malformedRows++ }
+        if ((index + 1) * report.perPage >= report.total) { complete = sales.length + malformedRows === report.total; break }
         const next = page.locator('.andes-pagination__button--next a, .andes-pagination__button--next button').first()
-        const disabled = await next.count() ? await next.evaluate(node => Boolean(node.closest('[aria-disabled="true"], .andes-pagination__button--disabled'))) : false
-        if (!await next.count() || !await next.isVisible() || !await next.isEnabled() || disabled) { complete = true; break }
-        const previousPage = await table.locator('tbody').innerText()
+        // A late-rendered pagination control cannot certify completion or skip page 2.
+        await next.waitFor({ state: 'visible', timeout: 10_000 })
         await next.click({ timeout: 5000 })
-        await page.waitForFunction(previous => Boolean((document.querySelector('table tbody') as HTMLElement | null)?.innerText.trim()) && (document.querySelector('table tbody') as HTMLElement).innerText !== previous, previousPage, { timeout: 10_000 })
-        await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => undefined)
       }
       // Only a successfully authenticated/parsed report can replace rotated login state.
-      await atomicJson(statePath, await context.storageState({ indexedDB: true }))
+      await checkpointBrowserSession(statePath, browserSessionHash(sessionRaw), await context.storageState({ indexedDB: true }))
       const state = new AffiliateSalesState(directory, userId)
       const result = await state.publish({ generationId: randomUUID(), userId, observedAt, reportRange, complete: complete && malformedRows === 0,
         malformedRows, rows: sales.length + malformedRows, sales })

@@ -19,6 +19,15 @@ export class DailyAutomationAlerts {
     @inject(UazapiClient) private readonly provider: UazapiClient,
   ) {}
 
+  async enqueueLoginCode(config: DailyAutomationConfig, date: string, challengeId: string): Promise<void> {
+    if (!config.alertGroupId || !/^[a-f0-9-]{36}$/.test(challengeId)) throw new Error('ML_AUTH_GROUP_REQUIRED')
+    const body = `🔐 Mercado Livre pediu confirmação por e-mail.\nResponda neste grupo apenas com o código de 6 dígitos enviado ao e-mail da conta.\nEsta solicitação expira em 5 minutos e aceita uma única resposta. Não envie sua senha.\nSolicitação: ${challengeId.slice(0, 8)}`
+    await sequelize.query(`INSERT INTO daily_automation_alerts(id,user_id,event_key,group_id,body)
+      VALUES(:id,:userId,:key,:groupId,:body) ON CONFLICT(user_id,event_key) DO NOTHING`, {
+      replacements: { id: randomUUID(), userId: config.userId, key: `ml-auth:${challengeId}`, groupId: config.alertGroupId, body },
+    })
+  }
+
   async enqueue(config: DailyAutomationConfig, date: string, key: string, code: string, detail = ''): Promise<void> {
     if (!config.alertGroupId) return
     // Caller supplies typed codes/counts only. Never include an exception, request,
@@ -86,7 +95,8 @@ export class DailyAutomationAlerts {
         await sequelize.query("UPDATE daily_automation_alerts SET preflight_attempts=preflight_attempts+1, next_attempt_at=NOW()+LEAST(900,30*POWER(2,LEAST(preflight_attempts,5)))*INTERVAL '1 second',updated_at=NOW() WHERE id=:id AND status='PENDING'", { replacements: { id: alert.id } })
         continue
       }
-      const claimed = await sequelize.query<{ id: string }>("UPDATE daily_automation_alerts SET status='SENDING',updated_at=NOW() WHERE id=:id AND status='PENDING' RETURNING id", { replacements: { id: alert.id }, type: QueryTypes.SELECT })
+      const claimed = await sequelize.query<{ id: string }>(`UPDATE daily_automation_alerts a SET status='SENDING',updated_at=NOW() WHERE id=:id AND status='PENDING'
+        AND (event_key NOT LIKE 'ml-auth:%' OR EXISTS(SELECT 1 FROM ml_auth_challenges c WHERE a.event_key='ml-auth:'||c.id::text AND c.status='WAITING' AND c.expires_at>NOW())) RETURNING a.id`, { replacements: { id: alert.id }, type: QueryTypes.SELECT })
       if (!claimed.length) continue
       try {
         const result = await this.provider.sendText(credentials, { number: alert.group_id, text: alert.body, linkPreview: false })

@@ -37,7 +37,7 @@ export const MAX_SMART_ANALYSIS_ITEMS = 100
 export const SMART_AI_CONCURRENCY = 3
 export const SMART_AI_RETRIES = 0
 export const SMART_AI_ANALYSIS_BATCH_SIZE = 4
-export const SMART_ANALYSIS_POLICY_VERSION = 'v7-caption-evidence'
+export const SMART_ANALYSIS_POLICY_VERSION = 'v8-caption-evidence-typed-wire'
 const MAX_SEMANTIC_CACHE_ITEMS = 500
 const ANALYSIS_MODEL = env.SMART_CLASSIFICATION_MODEL
 const KEYWORD_MODEL = env.SMART_KEYWORD_MODEL
@@ -82,13 +82,33 @@ export class OpenRouterStructuredClient implements SmartCampaignAIClient {
         'SMART_AI_UNAVAILABLE',
       )
     }
-    const [{ generateObject }, { createOpenRouter }] = await Promise.all([
+    const [{ generateObject, zodSchema, jsonSchema }, { createOpenRouter }] = await Promise.all([
       import('ai'),
       import('@openrouter/ai-sdk-provider'),
     ])
     const openrouter = createOpenRouter({ apiKey: env.OPENROUTER_KEY })
     const inputCeiling = env.AI_INPUT_COST_USD_PER_MILLION
     const outputCeiling = env.AI_OUTPUT_COST_USD_PER_MILLION
+    const domainSchema = request.providerSchema ?? request.schema
+    const wire = structuredClone(await zodSchema(domainSchema).jsonSchema)
+    if (request.model === 'meta/muse-ember' && request.schemaName.startsWith('smart_product_niche_analysis')) {
+      // Provider grammars require typed, required fields. Domain parsing stays lenient
+      // so malformed optional copy never discards otherwise valid classification.
+      const constrain = (node: unknown): void => {
+        if (!node || typeof node !== 'object') return
+        const object = node as { properties?: Record<string, unknown>; required?: string[] }
+        if (object.properties?.captionEvidence !== undefined) {
+          object.properties.captionEvidence = { type: 'object', properties: { source: { type: 'string' }, fact: { type: 'string' } }, required: ['source', 'fact'], additionalProperties: false }
+          object.required = [...new Set([...(object.required ?? []), 'captionEvidence'])]
+        }
+        for (const child of Object.values(object.properties ?? {})) constrain(child)
+      }
+      constrain(wire)
+    }
+    const schema = jsonSchema(wire, { validate: async value => {
+      const parsed = domainSchema.safeParse(value)
+      return parsed.success ? { success: true, value: parsed.data } : { success: false, error: parsed.error }
+    } })
     const result = await generateObject({
       model: openrouter(request.model, {
         reasoning: request.model === 'meta/muse-ember'
@@ -108,7 +128,7 @@ export class OpenRouterStructuredClient implements SmartCampaignAIClient {
         },
         usage: { include: true },
       }),
-      schema: request.providerSchema ?? request.schema,
+      schema,
       schemaName: request.schemaName,
       system: request.system,
       ...(request.images?.length ? {
