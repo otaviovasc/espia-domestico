@@ -3,7 +3,11 @@ const assert = require('node:assert/strict')
 process.env.SMART_CLASSIFICATION_MODEL = 'meta/muse-ember'
 process.env.SMART_COPY_MODEL = 'meta/muse-ember'
 process.env.SMART_KEYWORD_MODEL = 'meta/muse-ember'
-const { SmartCampaignIntelligence, smartProductImage, safeSmartCaption, groundedSmartCaption } = require('../dist/services/SmartCampaignIntelligence')
+process.env.AI_ENABLED = 'true'
+process.env.OPENROUTER_KEY = 'synthetic-muse-contract-key'
+process.env.AI_INPUT_COST_USD_PER_MILLION = '0.2'
+process.env.AI_OUTPUT_COST_USD_PER_MILLION = '0.8'
+const { SmartCampaignIntelligence, OpenRouterStructuredClient, smartProductImage, safeSmartCaption, groundedSmartCaption } = require('../dist/services/SmartCampaignIntelligence')
 const image = 'https://http2.mlstatic.com/D_NQ_NP_123456-MLB99999999999_112026-O.webp'
 const fit = { score: 90, reason: 'Uso direto na cozinha.', category: 'Cozinha', seasonalScore: 30 }
 
@@ -82,6 +86,31 @@ test('missing or malformed optional caption evidence preserves fit and political
   }
 })
 
+test('real SDK wire accepts malformed optional evidence without discarding required political/fit fields', async () => {
+  const originalFetch = globalThis.fetch
+  let transports = 0
+  globalThis.fetch = async (_url, init) => {
+    transports++
+    const body = JSON.parse(init.body)
+    const schema = body.response_format.json_schema.schema
+    assert.equal(body.model, 'meta/muse-ember')
+    assert.ok(schema.required.includes('political'))
+    assert.ok(!schema.required.includes('captionEvidence'))
+    return new Response(JSON.stringify({ id: 'synthetic-muse-evidence', object: 'chat.completion', created: 1, model: body.model,
+      choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify({ fits: { domestica: fit }, political: true, warnings: [], shortCaption: 'Praticidade para cozinhar', captionEvidence: { source: 'title', fact: 'x'.repeat(161) } }) } }],
+      usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    const client = new OpenRouterStructuredClient()
+    const [result] = await new SmartCampaignIntelligence({ generate: request => client.generate(request) }).analyze([{ title: 'Panela', discountedPrice: 100, affiliateUrl: 'https://example.invalid' }], ['domestica'], '2026-11-11')
+    assert.equal(transports, 1)
+    assert.equal(result.shortCaption, '')
+    assert.equal(result.political, true)
+    assert.equal(result.fits[0].score, 90)
+  } finally { globalThis.fetch = originalFetch }
+})
+
 test('caption numbers preserve decimal and thousands values and accessories cannot invert negation', () => {
   const offer = { title: 'Liquidificador', discountedPrice: 100, affiliateUrl: 'https://example.invalid' }
   const check = (description, caption, fact = description) => groundedSmartCaption(caption, { source: 'description', fact }, { ...offer, description })
@@ -94,8 +123,10 @@ test('caption numbers preserve decimal and thousands values and accessories cann
     assert.equal(check(description, 'Inclui pilhas'), '', description)
   }
   assert.equal(check('Não inclui pilhas', 'Inclui pilhas', 'inclui pilhas'), '')
-  assert.equal(check('Inclui pilhas', 'Inclui pilhas para uso'), '')
+  assert.equal(check('Inclui pilhas', 'Inclui pilhas para uso'), 'Inclui pilhas para uso')
   assert.equal(check('Inclui pilhas para uso diário', 'Inclui pilhas para uso diário'), 'Inclui pilhas para uso diário')
+  assert.equal(check('Inclui tampa de vidro', 'Inclui tampa de vidro para cozinhar'), 'Inclui tampa de vidro para cozinhar')
+  assert.equal(check('Ideal para mexer com colher; acompanha tampa', 'Panela que acompanha tampa e colher'), '')
 })
 
 test('a trailing singleton retains p4 and overlong optional copy does not erase political/fit results', async () => {

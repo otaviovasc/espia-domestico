@@ -85,10 +85,10 @@ export function reconcileAffiliateSales(previous: AffiliateSale[], observed: Aff
   return { sales: [...ledger.values()].sort((a, b) => a.key.localeCompare(b.key)), changes, collisions, identicalDuplicateRows }
 }
 
-export function summarizeAffiliateSales(sales: AffiliateSale[], range?: SalesReportRange) {
+export function summarizeAffiliateSales(sales: AffiliateSale[], range?: SalesReportRange, latestObservedAt?: string) {
   const totals = Object.fromEntries(['pending', 'cancelled', 'settled', 'unknown', 'ambiguous'].map(status =>
     [status, { orders: 0, knownCommissionCents: 0, missingCommissionOrders: 0 }])) as Record<SalesStatus, { orders: number; knownCommissionCents: number; missingCommissionOrders: number }>
-  let unresolvedOutsideCoverage = 0, unknownSaleDate = 0
+  let unresolvedOutsideCoverage = 0, unresolvedNotInLatestCapture = 0, unknownSaleDate = 0
   const unknownStatuses: Record<string, number> = Object.create(null)
   const demand = { observedPurchases: 0, ambiguousPurchases: 0, pendingPurchases: 0, indirectPurchases: 0,
     products: Object.create(null) as Record<string, number>, priceBands: { affordable: 0, middle: 0, premium: 0, unknown: 0 },
@@ -100,7 +100,9 @@ export function summarizeAffiliateSales(sales: AffiliateSale[], range?: SalesRep
     else totals[status].missingCommissionOrders++
     if (status === 'unknown') unknownStatuses[sale.status] = (unknownStatuses[sale.status] ?? 0) + 1
     if (!sale.saleDate) unknownSaleDate++
-    if (range && sale.saleDate && sale.saleDate < range.from && ['pending', 'unknown', 'ambiguous'].includes(status)) unresolvedOutsideCoverage++
+    const unresolved = ['pending', 'unknown', 'ambiguous'].includes(status)
+    if (range && unresolved && (sale.saleDate ?? sale.lastSeenAt.slice(0, 10)) < range.from) unresolvedOutsideCoverage++
+    if (unresolved && latestObservedAt && new Date(sale.lastSeenAt).getTime() < new Date(latestObservedAt).getTime()) unresolvedNotInLatestCapture++
     // A real purchase is useful immediately. Approval is a commission-accounting state, not a prerequisite for demand.
     const ambiguousDemand = status === 'ambiguous' && Boolean(sale.observationStatuses?.length) && sale.observationStatuses!.every(value => affiliateSalesStatus(value) !== 'cancelled')
     if (status !== 'cancelled' && (status !== 'ambiguous' || ambiguousDemand)) {
@@ -115,7 +117,7 @@ export function summarizeAffiliateSales(sales: AffiliateSale[], range?: SalesRep
       demand.categories[category] = (demand.categories[category] ?? 0) + 1
     }
   }
-  return { observedOrders: sales.length, totals, demand, unknownStatuses, unknownSaleDate, unresolvedOutsideCoverage,
+  return { observedOrders: sales.length, totals, demand, unknownStatuses, unknownSaleDate, unresolvedOutsideCoverage, unresolvedNotInLatestCapture,
     attribution: 'unknown' as const, paidEarningsKnown: false as const }
 }
 
@@ -192,14 +194,14 @@ export class AffiliateSalesState {
       if (partial.capture.userId !== this.userId || partial.capture.generationId !== attempt.generationId || partial.capture.complete) throw new Error('SALES_STATE_INTEGRITY_FAILED')
       latestPartial = { generationId: partial.capture.generationId, observedAt: partial.capture.observedAt, unverified: true,
         rows: partial.capture.rows, malformedRows: partial.capture.malformedRows,
-        summary: summarizeAffiliateSales(reconcileAffiliateSales([], partial.capture.sales).sales, partial.capture.reportRange) }
+        summary: summarizeAffiliateSales(reconcileAffiliateSales([], partial.capture.sales).sales, partial.capture.reportRange, partial.capture.observedAt) }
     }
     const ageHours = generation ? Math.max(0, (now.getTime() - new Date(generation.capture.observedAt).getTime()) / 3_600_000) : null
     return { userId: this.userId, generationId: generation?.capture.generationId ?? null,
       completeness: generation ? 'complete' : legacy.length ? 'legacy_unverified' : 'unavailable', lastCompleteObservedAt: generation?.capture.observedAt ?? null,
       ageHours, stale: ageHours === null || ageHours > 36, attempt,
       attemptStale: attempt?.status === 'running' && now.getTime() - new Date(attempt.startedAt).getTime() > 120_000, latestPartial,
-      summary: generation ? summarizeAffiliateSales(generation.sales, generation.capture.reportRange) : legacy.length ? summarizeAffiliateSales(legacy) : null,
+      summary: generation ? summarizeAffiliateSales(generation.sales, generation.capture.reportRange, generation.capture.observedAt) : legacy.length ? summarizeAffiliateSales(legacy) : null,
       changes: generation?.changes ?? [], collisions: generation?.collisions ?? [],
       note: 'Newly observed is not sold today. Ambiguous non-cancelled identities contribute at least one demand observation, never summed money. Partial observations are separate unverified lower bounds. Commissions are not proven payments or campaign attribution.' }
   }

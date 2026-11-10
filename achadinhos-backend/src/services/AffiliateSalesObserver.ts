@@ -117,7 +117,7 @@ export class AffiliateSalesObserver {
       const selectedPeriod = page.locator('main button').filter({ hasText: /^Últimos 90 dias$/ }).first()
       if (!await selectedPeriod.count() || !await selectedPeriod.isVisible()) {
         const previousPeriodRows = await table.locator('tbody').innerText()
-        await page.locator('main button').filter({ hasText: /\d.+\/(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/i }).first().click({ timeout: 5000 })
+        await page.locator('main button').filter({ hasText: /\d.+\/(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|^últimos\s+\d+\s+dias$|^este\s+mês$|^hoje$|^ontem$/i }).first().click({ timeout: 5000 })
         await page.getByText('Últimos 90 dias', { exact: true }).click({ timeout: 5000 })
         await selectedPeriod.waitFor({ timeout: 5000 })
         await page.waitForFunction(previous => Boolean((document.querySelector('table tbody') as HTMLElement | null)?.innerText.trim()) && (document.querySelector('table tbody') as HTMLElement).innerText !== previous, previousPeriodRows, { timeout: 10_000 })

@@ -57,6 +57,17 @@ test('sale dates resolve inside the report range across year boundaries and othe
   assert.equal(resolveAffiliateSaleDate('29/fev', { from: '2027-02-01', to: '2027-03-01' }), null)
 })
 
+test('unresolved missing-date history remains visible when absent from the latest capture', () => {
+  const old = sale({ saleDate: null, firstSeenAt: '2026-01-01T12:00:00Z', lastSeenAt: '2026-01-02T12:00:00Z' })
+  const recent = sale({ key: 'b'.repeat(64), saleDate: null })
+  const merged = reconcileAffiliateSales([old, recent], []).sales
+  assert.equal(merged[0].lastSeenAt, old.lastSeenAt, 'Absence must never fabricate a fresh observation')
+  const report = summarizeAffiliateSales(merged, { from: '2026-08-12', to: '2026-11-09' }, '2026-11-11T12:00:00Z')
+  assert.equal(report.unresolvedOutsideCoverage, 1)
+  assert.equal(report.unresolvedNotInLatestCapture, 2)
+  assert.equal(report.demand.observedPurchases, 2, 'Missing observations do not invent a cancellation')
+})
+
 test('partial and interrupted writes retain the last complete generation; corrupt pointers fail explicitly', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'affiliate-state-'))
   try {

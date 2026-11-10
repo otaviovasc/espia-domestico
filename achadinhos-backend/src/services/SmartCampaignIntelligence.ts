@@ -261,6 +261,11 @@ function captionNumbers(value: string): Array<number | null> {
     return Number.isFinite(number) ? number : null
   })
 }
+function captionIncludedItems(value: string): string[] {
+  const tail = captionExcerpt(value).match(/\b(?:inclui|inclus[oa]s?|acompanha\w*)\b([^;.!?]*)/)?.[1] ?? ''
+  const nounPhrase = tail.split(/\b(?:para|ideal|que|no|na|em)\b/)[0]
+  return captionText(nounPhrase).split(' ').filter(word => word.length > 2 && !['com', 'uma', 'seu', 'sua', 'dos', 'das', 'nos', 'nas'].includes(word))
+}
 export function groundedSmartCaption(value: unknown, evidence: unknown, offer: OfferInput): string {
   const caption = safeSmartCaption(value)
   const parsed = SmartCaptionEvidenceSchema.safeParse(evidence)
@@ -275,7 +280,10 @@ export function groundedSmartCaption(value: unknown, evidence: unknown, offer: O
   const inclusion = normalized.match(/\b(?:inclui|inclus[oa]s?|acompanha\w*)\b(.*)/)
   // Evidence can omit the preceding negation, so check all supplied product text too.
   if (inclusion && /\b(?:nao|nunca|nem|sem)\b/.test(text)) return ''
-  if (inclusion && (!/\b(?:inclui|inclus[oa]s?|acompanha\w*)\b/.test(fact) || inclusion[1].trim().split(' ').some(word => word.length > 2 && !['para', 'com', 'uma', 'seu', 'sua'].includes(word) && !fact.split(' ').includes(word)))) return ''
+  if (inclusion) {
+    const included = captionIncludedItems(caption), supported = captionIncludedItems(parsed.data.fact)
+    if (!included.length || included.some(word => !supported.includes(word))) return ''
+  }
   const scene = normalized.match(/\b(?:frut\w*|legum\w*|verdur\w*|comida\w*|aliment\w*|bolo\w*|pao|carne\w*|bebida\w*|vinho\w*|cerveja\w*|flor\w*|planta\w*)\b/g) ?? []
   if (scene.some(word => !text.split(' ').includes(word))) return ''
   const tokens = normalized.split(' ').filter(word => word.length > 2 && !['para', 'com', 'sua', 'seu', 'dos', 'das', 'uma', 'por', 'nas', 'nos'].includes(word))

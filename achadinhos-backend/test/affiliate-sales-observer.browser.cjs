@@ -7,7 +7,7 @@ const { chromium } = require('playwright')
 const { AffiliateSalesObserver } = require('../dist/services/AffiliateSalesObserver')
 const { AffiliateSalesState } = require('../dist/services/AffiliateSalesState')
 
-test('Chromium waits for delayed report pages, records collisions and preserves the last good generation after login expiry', async () => {
+for (const initialPeriod of ['2 até 8/nov', 'Últimos 7 dias']) test(`Chromium waits for delayed report pages from ${initialPeriod}, records collisions and preserves the last good generation after login expiry`, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sales-browser-'))
   const statePath = path.join(directory, 'daily-auth/session.json')
   await fs.mkdir(path.dirname(statePath), { recursive: true })
@@ -44,7 +44,7 @@ test('Chromium waits for delayed report pages, records collisions and preserves 
           }
           assert.equal(url.pathname, '/afiliados/dashboard')
           if (loginExpired) return route.fulfill({ status: 302, headers: { location: 'https://www.mercadolivre.com.br/login' }, body: '' })
-          return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<main><button id="period" onclick="document.querySelector('#choice').hidden=false">2 até 8/nov</button>
+          return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<main><button id="period" onclick="document.querySelector('#choice').hidden=false">${initialPeriod}</button>
             <button id="choice" hidden onclick="load(1);document.querySelector('#period').textContent='Últimos 90 dias';this.hidden=true">Últimos 90 dias</button>
             <table><thead><tr>${['Produtos','Loja','Valor da venda','Ganho por venda','Estado'].map(x=>'<th>'+x+'</th>').join('')}</tr></thead><tbody>${row('999999999999', '999999999')}</tbody></table>
             <div class="andes-pagination__button--next" id="next"><button onclick="load(2)">Próxima</button></div>
