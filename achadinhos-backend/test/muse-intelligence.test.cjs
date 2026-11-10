@@ -65,6 +65,37 @@ test('caption evidence rejects props, title echoes, unsupported numbers and imag
   assert.equal(groundedSmartCaption('Praticidade no preparo diário', { source: 'image', fact: 'Liquidificador' }, blender), '')
   assert.equal(groundedSmartCaption('Praticidade no preparo diário', { source: 'title', fact: 'Não existe no título' }, blender), '')
   assert.equal(groundedSmartCaption('Praticidade no preparo diário', { source: 'title', fact: 'Liquidificador' }, blender), 'Praticidade no preparo diário')
+  assert.equal(groundedSmartCaption('Capacidade de 5 litros', { source: 'title', fact: '5' }, { ...blender, title: 'Garrafa de 500ml' }), '')
+  assert.equal(groundedSmartCaption('Praticidade no preparo diário', { source: 'title', fact: 'a' }, blender), '')
+})
+
+test('missing or malformed optional caption evidence preserves fit and political classification', async () => {
+  for (const evidence of [undefined, null, { source: 'description', fact: 'x'.repeat(161) }, { source: 'other', fact: 'Unknown' }, { source: 'title', fact: 'Panela', extra: 'ignored' }, 3]) {
+    const intelligence = new SmartCampaignIntelligence({ async generate(request) {
+      return request.providerSchema.parse({ fits: { domestica: fit }, political: true, warnings: [], shortCaption: 'Praticidade para cozinhar', ...(evidence === undefined ? {} : { captionEvidence: evidence }) })
+    } })
+    const [result] = await intelligence.analyze([{ title: 'Panela', discountedPrice: 100, affiliateUrl: 'https://example.invalid' }], ['domestica'], '2026-11-11')
+    assert.equal(result.political, true)
+    assert.equal(result.fits[0].score, 90)
+    assert.equal(result.shortCaption, '')
+    assert.equal(result.captionEvidence, undefined)
+  }
+})
+
+test('caption numbers preserve decimal and thousands values and accessories cannot invert negation', () => {
+  const offer = { title: 'Liquidificador', discountedPrice: 100, affiliateUrl: 'https://example.invalid' }
+  const check = (description, caption, fact = description) => groundedSmartCaption(caption, { source: 'description', fact }, { ...offer, description })
+  assert.equal(check('Capacidade de 1,5 litros', 'Capacidade de 5 litros para preparar'), '')
+  assert.equal(check('Capacidade de 1,5 litros', 'Capacidade de 1.5 litros para preparar'), 'Capacidade de 1.5 litros para preparar')
+  assert.equal(check('Capacidade de 1,5 litros', 'Capacidade de 5 litros para preparar', 'Capacidade de 1 5 litros'), '')
+  assert.equal(check('Potência de 1.000 watts', 'Potência de 1 watt no preparo'), '')
+  assert.equal(check('Potência de 1.000 watts', 'Potência de 1000 watts no preparo'), 'Potência de 1000 watts no preparo')
+  for (const description of ['Não inclui pilhas', 'Não acompanha pilhas', 'Sem pilhas inclusas', 'Nunca inclui pilhas', 'Pilhas não inclusas']) {
+    assert.equal(check(description, 'Inclui pilhas'), '', description)
+  }
+  assert.equal(check('Não inclui pilhas', 'Inclui pilhas', 'inclui pilhas'), '')
+  assert.equal(check('Inclui pilhas', 'Inclui pilhas para uso'), '')
+  assert.equal(check('Inclui pilhas para uso diário', 'Inclui pilhas para uso diário'), 'Inclui pilhas para uso diário')
 })
 
 test('a trailing singleton retains p4 and overlong optional copy does not erase political/fit results', async () => {

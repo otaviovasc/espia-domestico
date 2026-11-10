@@ -16,7 +16,7 @@ const Sale = z.object({
   saleDate: IsoDate.nullable().optional(), saleValueBRL: z.number().finite().nullable(),
   commissionBRL: z.number().finite().nullable(), commissionRatePercent: z.number().min(0).max(100).nullable().optional(),
   units: z.number().int().positive().nullable().optional(), status: z.string().max(80),
-  observationAmbiguous: z.boolean().optional(), attribution: z.enum(['direct', 'indirect', 'unknown']),
+  observationAmbiguous: z.boolean().optional(), observationStatuses: z.array(z.string().max(80)).optional(), attribution: z.enum(['direct', 'indirect', 'unknown']),
   firstSeenAt: z.string().datetime(), lastSeenAt: z.string().datetime(),
 })
 const Capture = z.object({
@@ -27,11 +27,11 @@ const Capture = z.object({
 export type SalesCapture = z.infer<typeof Capture>
 export type SalesStatus = 'pending' | 'cancelled' | 'settled' | 'unknown' | 'ambiguous'
 
-/** Only labels verified on this account are recognized. Unknown never means paid. */
+/** Known pending label and explicit cancellation/return labels. Unknown never means paid. */
 export function affiliateSalesStatus(value: string): SalesStatus {
   const status = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ').toUpperCase()
   if (status === 'EM REVISAO') return 'pending'
-  if (['CANCELADA', 'CANCELADA POR DEVOLUCAO'].includes(status)) return 'cancelled'
+  if (['CANCELADA', 'CANCELADO', 'CANCELADA POR DEVOLUCAO', 'DEVOLVIDA', 'DEVOLVIDO', 'REEMBOLSADA', 'REEMBOLSADO'].includes(status)) return 'cancelled'
   return 'unknown'
 }
 
@@ -51,7 +51,7 @@ export function resolveAffiliateSaleDate(label: string | null, range: SalesRepor
 
 function observationIdentity(sale: AffiliateSale): string {
   return JSON.stringify([sale.productId, sale.title, sale.saleDateLabel, sale.saleDate, sale.saleValueBRL,
-    sale.commissionBRL, sale.commissionRatePercent, sale.units, sale.status, sale.attribution, sale.observedCategory])
+    sale.commissionBRL, sale.commissionRatePercent, sale.units, sale.status, sale.attribution, sale.observedCategory, sale.observationStatuses])
 }
 
 export function reconcileAffiliateSales(previous: AffiliateSale[], observed: AffiliateSale[]) {
@@ -70,11 +70,13 @@ export function reconcileAffiliateSales(previous: AffiliateSale[], observed: Aff
     const choices = [...group.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, sale]) => sale)
     const old = ledger.get(key)
     // Conflicting rows could be line items or status variants. Do not silently add or pick a winner.
-    const sale = { ...choices[0], observationAmbiguous: choices.length > 1, firstSeenAt: old?.firstSeenAt ?? choices[0].firstSeenAt }
+    const sale = { ...choices[0], observationAmbiguous: choices.length > 1,
+      observationStatuses: choices.length > 1 ? [...new Set(choices.map(choice => choice.status))].sort() : undefined,
+      firstSeenAt: old?.firstSeenAt ?? choices[0].firstSeenAt }
     if (choices.length > 1) collisions.push({ key, productId: sale.productId, variants: choices })
     if (!old || observationIdentity(old) !== observationIdentity(sale) || Boolean(old.observationAmbiguous) !== sale.observationAmbiguous) {
-      const fieldsChanged = old ? (['status', 'commissionBRL', 'saleValueBRL', 'saleDate', 'commissionRatePercent', 'units', 'observedCategory', 'observationAmbiguous'] as const)
-        .filter(field => old[field] !== sale[field]) : ['observedPurchase']
+      const fieldsChanged = old ? (['status', 'commissionBRL', 'saleValueBRL', 'saleDate', 'commissionRatePercent', 'units', 'observedCategory', 'observationAmbiguous', 'observationStatuses'] as const)
+        .filter(field => JSON.stringify(old[field]) !== JSON.stringify(sale[field])) : ['observedPurchase']
       changes.push({ key, productId: sale.productId, kind: old ? 'changed' : 'newly_observed', fieldsChanged, previousStatus: old?.status ?? null,
         status: sale.status, previousCommissionBRL: old?.commissionBRL ?? null, commissionBRL: sale.commissionBRL })
     }
@@ -88,7 +90,7 @@ export function summarizeAffiliateSales(sales: AffiliateSale[], range?: SalesRep
     [status, { orders: 0, knownCommissionCents: 0, missingCommissionOrders: 0 }])) as Record<SalesStatus, { orders: number; knownCommissionCents: number; missingCommissionOrders: number }>
   let unresolvedOutsideCoverage = 0, unknownSaleDate = 0
   const unknownStatuses: Record<string, number> = Object.create(null)
-  const demand = { observedPurchases: 0, pendingPurchases: 0, indirectPurchases: 0,
+  const demand = { observedPurchases: 0, ambiguousPurchases: 0, pendingPurchases: 0, indirectPurchases: 0,
     products: Object.create(null) as Record<string, number>, priceBands: { affordable: 0, middle: 0, premium: 0, unknown: 0 },
     categories: Object.create(null) as Record<string, number> }
   for (const sale of sales) {
@@ -100,14 +102,16 @@ export function summarizeAffiliateSales(sales: AffiliateSale[], range?: SalesRep
     if (!sale.saleDate) unknownSaleDate++
     if (range && sale.saleDate && sale.saleDate < range.from && ['pending', 'unknown', 'ambiguous'].includes(status)) unresolvedOutsideCoverage++
     // A real purchase is useful immediately. Approval is a commission-accounting state, not a prerequisite for demand.
-    if (status !== 'cancelled' && status !== 'ambiguous') {
+    const ambiguousDemand = status === 'ambiguous' && Boolean(sale.observationStatuses?.length) && sale.observationStatuses!.every(value => affiliateSalesStatus(value) !== 'cancelled')
+    if (status !== 'cancelled' && (status !== 'ambiguous' || ambiguousDemand)) {
       demand.observedPurchases++
-      if (status === 'pending') demand.pendingPurchases++
-      if (sale.attribution === 'indirect') demand.indirectPurchases++
+      if (ambiguousDemand) demand.ambiguousPurchases++
+      if (status === 'pending' || ambiguousDemand && sale.observationStatuses!.every(value => affiliateSalesStatus(value) === 'pending')) demand.pendingPurchases++
+      if (!ambiguousDemand && sale.attribution === 'indirect') demand.indirectPurchases++
       demand.products[sale.productId] = (demand.products[sale.productId] ?? 0) + 1
-      const price = sale.saleValueBRL === null || !sale.units ? null : sale.saleValueBRL / sale.units
+      const price = ambiguousDemand || sale.saleValueBRL === null || !sale.units ? null : sale.saleValueBRL / sale.units
       demand.priceBands[price === null ? 'unknown' : price <= 100 ? 'affordable' : price > 500 ? 'premium' : 'middle']++
-      const category = sale.observedCategory || 'unknown'
+      const category = ambiguousDemand ? 'unknown' : sale.observedCategory || 'unknown'
       demand.categories[category] = (demand.categories[category] ?? 0) + 1
     }
   }
@@ -176,18 +180,27 @@ export class AffiliateSalesState {
     const generation = await this.readGeneration()
     // Old data remains useful immediately, but its separately-written files are not a committed generation.
     const legacy = generation ? [] : await this.baseline()
-    let attempt: unknown = null
-    try { attempt = z.object({ userId: z.literal(this.userId), date: IsoDate, startedAt: z.string().datetime(),
+    const Attempt = z.object({ userId: z.literal(this.userId), date: IsoDate, startedAt: z.string().datetime(),
       status: z.enum(['running', 'complete', 'partial', 'failed']), completedAt: z.string().datetime().optional(),
-      code: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(), generationId: z.string().uuid().optional(),
-    }).parse(JSON.parse(await readFile(path.join(this.directory, 'last-attempt.json'), 'utf8'))) }
+      code: z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/).optional(), generationId: z.string().uuid().optional() })
+    let attempt: z.infer<typeof Attempt> | null = null
+    try { attempt = Attempt.parse(JSON.parse(await readFile(path.join(this.directory, 'last-attempt.json'), 'utf8'))) }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    let latestPartial = null
+    if (attempt?.status === 'partial' && attempt.generationId) {
+      const partial = Generation.parse(JSON.parse(await readFile(path.join(this.directory, 'generations', `${attempt.generationId}.json`), 'utf8')))
+      if (partial.capture.userId !== this.userId || partial.capture.generationId !== attempt.generationId || partial.capture.complete) throw new Error('SALES_STATE_INTEGRITY_FAILED')
+      latestPartial = { generationId: partial.capture.generationId, observedAt: partial.capture.observedAt, unverified: true,
+        rows: partial.capture.rows, malformedRows: partial.capture.malformedRows,
+        summary: summarizeAffiliateSales(reconcileAffiliateSales([], partial.capture.sales).sales, partial.capture.reportRange) }
+    }
     const ageHours = generation ? Math.max(0, (now.getTime() - new Date(generation.capture.observedAt).getTime()) / 3_600_000) : null
     return { userId: this.userId, generationId: generation?.capture.generationId ?? null,
       completeness: generation ? 'complete' : legacy.length ? 'legacy_unverified' : 'unavailable', lastCompleteObservedAt: generation?.capture.observedAt ?? null,
       ageHours, stale: ageHours === null || ageHours > 36, attempt,
+      attemptStale: attempt?.status === 'running' && now.getTime() - new Date(attempt.startedAt).getTime() > 120_000, latestPartial,
       summary: generation ? summarizeAffiliateSales(generation.sales, generation.capture.reportRange) : legacy.length ? summarizeAffiliateSales(legacy) : null,
       changes: generation?.changes ?? [], collisions: generation?.collisions ?? [],
-      note: 'Newly observed is not sold today. Commissions are displayed observations, not proven payments or campaign attribution.' }
+      note: 'Newly observed is not sold today. Ambiguous non-cancelled identities contribute at least one demand observation, never summed money. Partial observations are separate unverified lower bounds. Commissions are not proven payments or campaign attribution.' }
   }
 }

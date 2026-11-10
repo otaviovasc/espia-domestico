@@ -27,6 +27,7 @@ test('under-review and indirect purchases count immediately; a cancellation reve
   assert.equal(summarizeAffiliateSales(merged.sales).demand.observedPurchases, 0)
   assert.equal(reconcileAffiliateSales(merged.sales, [cancelled]).changes.length, 0)
   assert.equal(summarizeAffiliateSales([sale({ status: 'Rótulo novo' })]).totals.unknown.orders, 1)
+  for (const status of ['DEVOLVIDA', 'REEMBOLSADA']) assert.equal(summarizeAffiliateSales([sale({ status })]).demand.observedPurchases, 0)
 })
 
 test('differing same-order rows remain ambiguous without summing money or fabricating two purchases', () => {
@@ -38,8 +39,13 @@ test('differing same-order rows remain ambiguous without summing money or fabric
   const report = summarizeAffiliateSales(result.sales)
   assert.equal(report.totals.ambiguous.orders, 1)
   assert.equal(report.totals.ambiguous.knownCommissionCents, 0)
-  assert.equal(report.demand.observedPurchases, 0)
+  assert.equal(report.demand.observedPurchases, 1)
+  assert.equal(report.demand.ambiguousPurchases, 1)
+  assert.equal(report.demand.products.MLB123456789, 1)
+  assert.equal(report.demand.priceBands.unknown, 1)
   assert.equal(reconcileAffiliateSales(result.sales, [...rows].reverse()).changes.length, 0)
+  const cancelledVariant = reconcileAffiliateSales([], [sale(), sale({ status: 'CANCELADA' })])
+  assert.equal(summarizeAffiliateSales(cancelledVariant.sales).demand.observedPurchases, 0)
 })
 
 test('sale dates resolve inside the report range across year boundaries and otherwise stay unknown', () => {
@@ -58,7 +64,12 @@ test('partial and interrupted writes retain the last complete generation; corrup
     assert.equal((await store.report()).summary, null)
     const initial = capture([sale()])
     await store.publish(initial)
-    await store.publish(capture([], { complete: false, malformedRows: 1, rows: 1 }))
+    const partial = await store.publish(capture([sale({ key: 'b'.repeat(64) })], { complete: false, malformedRows: 1, rows: 2 }))
+    await writeFile(path.join(directory, 'last-attempt.json'), JSON.stringify({ userId: 1, date: '2026-11-10', startedAt: '2026-11-10T12:00:00Z', status: 'partial', generationId: partial.generationId }))
+    const partialReport = await store.report()
+    assert.equal(partialReport.latestPartial.unverified, true)
+    assert.equal(partialReport.latestPartial.summary.demand.observedPurchases, 1)
+    assert.equal(partialReport.summary.demand.observedPurchases, 1, 'Partial counts are separate, never added twice')
     assert.equal((await store.readGeneration()).capture.generationId, initial.generationId)
     await assert.rejects(store.publish(initial), /EEXIST/)
     assert.equal((await store.readGeneration()).capture.generationId, initial.generationId)

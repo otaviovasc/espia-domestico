@@ -28,6 +28,12 @@ test('Chromium waits for delayed report pages, records collisions and preserves 
       const originalPage = context.newPage.bind(context)
       context.newPage = async () => {
         const page = await originalPage()
+        const originalGoto = page.goto.bind(page)
+        page.goto = async (...args) => {
+          const response = await originalGoto(...args)
+          await page.waitForTimeout(800) // The old document is already idle before the report-period click.
+          return response
+        }
         await page.route('**/*', async route => {
           const url = new URL(route.request().url())
           if (url.hostname !== 'www.mercadolivre.com.br') return route.abort()

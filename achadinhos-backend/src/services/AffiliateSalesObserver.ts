@@ -19,6 +19,7 @@ export interface AffiliateSale {
   commissionRatePercent?: number | null
   units?: number | null
   observationAmbiguous?: boolean
+  observationStatuses?: string[]
   status: string
   attribution: 'direct' | 'indirect' | 'unknown'
   firstSeenAt: string
@@ -115,12 +116,14 @@ export class AffiliateSalesObserver {
       // This UI selection was verified on the authenticated dashboard. No private API replay.
       const selectedPeriod = page.locator('main button').filter({ hasText: /^Últimos 90 dias$/ }).first()
       if (!await selectedPeriod.count() || !await selectedPeriod.isVisible()) {
+        const previousPeriodRows = await table.locator('tbody').innerText()
         await page.locator('main button').filter({ hasText: /\d.+\/(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)/i }).first().click({ timeout: 5000 })
         await page.getByText('Últimos 90 dias', { exact: true }).click({ timeout: 5000 })
         await selectedPeriod.waitFor({ timeout: 5000 })
+        await page.waitForFunction(previous => Boolean((document.querySelector('table tbody') as HTMLElement | null)?.innerText.trim()) && (document.querySelector('table tbody') as HTMLElement).innerText !== previous, previousPeriodRows, { timeout: 10_000 })
       }
-      // Wait for pending report loads instead of certifying whatever was visible after a fixed sleep.
-      await page.waitForLoadState('networkidle', { timeout: 10_000 })
+      // Tracking requests may never go idle; the explicit table transition above certifies reload.
+      await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => undefined)
       const headers = await table.locator('th').allTextContents()
       if (headers.map(x => x.trim()).join('|') !== 'Produtos|Loja|Valor da venda|Ganho por venda|Estado') throw new Error('SALES_REPORT_SCHEMA_CHANGED')
       const observedAt = new Date().toISOString()
@@ -143,8 +146,8 @@ export class AffiliateSalesObserver {
         if (!await next.count() || !await next.isVisible() || !await next.isEnabled() || disabled) { complete = true; break }
         const previousPage = await table.locator('tbody').innerText()
         await next.click({ timeout: 5000 })
-        await page.waitForFunction(previous => (document.querySelector('table tbody') as HTMLElement | null)?.innerText !== previous, previousPage, { timeout: 10_000 })
-        await page.waitForLoadState('networkidle', { timeout: 10_000 })
+        await page.waitForFunction(previous => Boolean((document.querySelector('table tbody') as HTMLElement | null)?.innerText.trim()) && (document.querySelector('table tbody') as HTMLElement).innerText !== previous, previousPage, { timeout: 10_000 })
+        await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => undefined)
       }
       // Only a successfully authenticated/parsed report can replace rotated login state.
       await atomicJson(statePath, await context.storageState({ indexedDB: true }))
