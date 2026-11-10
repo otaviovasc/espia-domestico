@@ -10,6 +10,7 @@ import { env } from '@/config/env'
 import { AffiliateSalesObserver, affiliateSalesErrorCode } from '@/services/AffiliateSalesObserver'
 import { DailySessionRefresher } from '@/services/DailySessionRefresher'
 import { MlLoginRecovery } from '@/services/MlLoginRecovery'
+import { AffiliateSalesNotifications } from '@/services/AffiliateSalesNotifications'
 import { MlAuthChallengeService } from '@/services/MlAuthChallengeService'
 
 const POLL_INTERVAL_MS = 30_000
@@ -49,6 +50,7 @@ export function startScheduler(): void {
   }
   const daily = dailyAutomation
   const sales = env.DAILY_SALES_OBSERVATION_ENABLED ? new AffiliateSalesObserver() : null
+  const salesNotices = sales ? new AffiliateSalesNotifications() : null
   const login = dailyConfig ? container.resolve(MlLoginRecovery) : null
   const challenges = dailyConfig ? container.resolve(MlAuthChallengeService) : null
   sessionRefresher = dailyConfig && login ? new DailySessionRefresher(page => login.recover(page, dailyConfig!)) : null
@@ -91,7 +93,7 @@ export function startScheduler(): void {
         .catch(() => { logger.warn('Daily automation tick failed; verify migration and configuration'); void problem('DAILY_AUTOMATION_TICK_FAILED') })
         .then(async () => {
           if (!sales || !isCurrent() || !dailyConfig) return
-          try { await sales.tick(dailyConfig) }
+          try { await sales.tick(dailyConfig); await salesNotices?.tick(dailyConfig) }
           catch (error) { const code = affiliateSalesErrorCode(error); logger.warn({ code }, 'Affiliate sales observation failed'); void problem(code) }
         })
         .then(async () => {

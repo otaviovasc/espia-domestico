@@ -54,6 +54,7 @@ const envSchema = z
     SMART_CLASSIFICATION_MODEL: z.string().trim().min(3).default('deepseek/deepseek-v4.1-flash'),
     SMART_KEYWORD_MODEL: z.string().trim().min(3).default('deepseek/deepseek-v4.1-flash'),
     SMART_COPY_MODEL: z.string().trim().min(3).default('deepseek/deepseek-v4.1-flash'),
+    DAILY_SALES_ALERT_INTERVAL_HOURS: z.coerce.number().refine(value => [3, 6, 12].includes(value), 'Use 3, 6 or 12 hours').default(6),
     DAILY_SALES_OBSERVATION_ENABLED: z.enum(['true', 'false']).default('false').transform(value => value === 'true'),
     AI_DAILY_REQUEST_LIMIT: z.coerce.number().int().min(1).max(100000).default(1000),
     AI_DAILY_INPUT_TOKEN_LIMIT: z.coerce.number().int().min(1000).max(100000000).default(2000000),

@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { chromium, type Browser, type Page, type Response } from 'playwright'
-import { dailyWindow, dailyDateOffset, type DailyAutomationConfig } from '@/config/dailyAutomation'
+import { env } from '@/config/env'
+import { dailyDateOffset, type DailyAutomationConfig } from '@/config/dailyAutomation'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
 import { AffiliateSalesState, resolveAffiliateSaleDate, type SalesReportRange } from './AffiliateSalesState'
 import { browserSessionHash, checkpointBrowserSession } from './PrivateBrowserSession'
@@ -138,24 +139,69 @@ async function waitForLoadedSales(page: Page, report: LoadedSalesReport): Promis
   } catch { throw new Error('SALES_ROWS_NOT_LOADED') }
 }
 
+export function affiliateSalesSlot(now: Date, hours: number): { date: string; key: string; start: Date } {
+  if (![3, 6, 12].includes(hours)) throw new Error('INVALID_SALES_INTERVAL')
+  const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now)
+  const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Sao_Paulo', hourCycle: 'h23', hour: '2-digit' }).format(now))
+  const boundary = String(Math.floor(hour / hours) * hours).padStart(2, '0')
+  return { date, key: `h${hours}-${boundary}`, start: new Date(`${date}T${boundary}:00:00-03:00`) }
+}
+
+async function selectSalesPeriod(page: Page, label: string): Promise<void> {
+  const selected = page.locator('main button').filter({ hasText: new RegExp(`^${label}$`) }).first()
+  if (await selected.count() && await selected.isVisible()) return
+  await page.locator('main button').filter({ hasText: /\d.+\/(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|^últimos\s+\d+\s+dias$|^este\s+mês$|^hoje$|^ontem$/i }).first().click({ timeout: 5000 })
+  await page.getByText(label, { exact: true }).click({ timeout: 5000 })
+  await selected.waitFor({ timeout: 5000 })
+}
+
+async function readSalesPeriod(page: Page, responses: ReturnType<typeof observeSalesReports>, userId: number, observedAt: string, range: SalesReportRange) {
+  const table = page.locator('table').first(), sales: AffiliateSale[] = []
+  let malformedRows = 0, complete = false, expectedTotal: number | undefined, expectedPerPage: number | undefined
+  const seenPages = new Set<string>()
+  for (let index = 0; index < 10; index++) {
+    const report = await responses.wait(index + 1)
+    expectedTotal ??= report.total
+    expectedPerPage ??= report.perPage
+    if (report.total !== expectedTotal || report.perPage !== expectedPerPage) throw new Error('SALES_REPORT_INCOMPLETE')
+    await waitForLoadedSales(page, report)
+    if (report.items.length) {
+      const headers = await table.locator('th').allTextContents()
+      if (headers.map(x => x.trim()).join('|') !== 'Produtos|Loja|Valor da venda|Ganho por venda|Estado') throw new Error('SALES_REPORT_SCHEMA_CHANGED')
+    }
+    const raw = report.items.length ? await table.locator('tbody tr').evaluateAll(rows => rows.map(row => ({
+      cells: [...row.querySelectorAll('td')].map(cell => (cell as HTMLElement).innerText.trim()),
+      productLinks: [...row.querySelectorAll('a[href]')].map(a => (a as HTMLAnchorElement).href),
+    }))) : []
+    const fingerprint = createHash('sha256').update(JSON.stringify(raw)).digest('hex')
+    if (seenPages.has(fingerprint)) throw new Error('SALES_PAGINATION_STALLED')
+    seenPages.add(fingerprint)
+    for (const row of raw) { const sale = affiliateSale(row, userId, observedAt, range); if (sale) sales.push(sale); else malformedRows++ }
+    if ((index + 1) * report.perPage >= report.total) { complete = sales.length + malformedRows === report.total; break }
+    const next = page.locator('.andes-pagination__button--next a, .andes-pagination__button--next button').first()
+    await next.waitFor({ state: 'visible', timeout: 10_000 })
+    await next.click({ timeout: 5000 })
+  }
+  return { sales, malformedRows, complete }
+}
+
 /** Observational ledger only. It cannot approve, change rankings or send messages. */
 export class AffiliateSalesObserver {
   async tick(config: DailyAutomationConfig, now = new Date()): Promise<void> {
-    const date = dailyWindow(config, now).date
-    const time = new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(now)
-    if (time < config.collectTime) return
-    const result = await this.capture(config.userId, date)
+    const slot = affiliateSalesSlot(now, env.DAILY_SALES_ALERT_INTERVAL_HOURS)
+    const result = await this.capture(config.userId, slot.date, { slot: slot.key, includeToday: true })
     if (result && !result.complete) throw new Error('SALES_REPORT_INCOMPLETE')
   }
 
-  async capture(userId: number, date: string): Promise<{ rows: number; newRows: number; complete: boolean } | null> {
+  async capture(userId: number, date: string, options: { slot?: string; includeToday?: boolean } = {}): Promise<{ rows: number; newRows: number; complete: boolean } | null> {
     if (!Number.isSafeInteger(userId) || userId < 1 || !/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('INVALID_SALES_CONTEXT')
+    if (options.slot && !/^[a-z0-9-]{1,60}$/.test(options.slot)) throw new Error('INVALID_SALES_CONTEXT')
     const statePath = process.env.DAILY_BROWSER_STATE_PATH
     if (!statePath) throw new Error('AUTH_REQUIRED')
     const directory = path.join(path.dirname(statePath), '..', 'affiliate-sales', `account-${userId}`)
     await mkdir(directory, { recursive: true, mode: 0o700 })
     // Claim before browsing. A crash/failure cannot trigger a browser allocation every 30 seconds.
-    const attemptPath = path.join(directory, `${date}-last90.attempt`)
+    const attemptPath = path.join(directory, `${date}-${options.slot ?? 'last90'}.attempt`)
     const startedAt = new Date().toISOString()
     const attempt = { userId, date, startedAt, status: 'running' }
     try { await writeFile(attemptPath, JSON.stringify(attempt), { mode: 0o600, flag: 'wx' }) }
@@ -173,46 +219,24 @@ export class AffiliateSalesObserver {
       const page = await context.newPage()
       const observedAt = new Date().toISOString()
       const localDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(observedAt))
-      const reportRange = { from: dailyDateOffset(localDate, -90), to: dailyDateOffset(localDate, -1) }
-      const responses = observeSalesReports(page, reportRange)
+      const historicalRange = { from: dailyDateOffset(localDate, -90), to: dailyDateOffset(localDate, -1) }
+      const todayRange = { from: localDate, to: localDate }
+      const reportRange = { ...historicalRange, to: options.includeToday ? localDate : historicalRange.to }
+      const responses = observeSalesReports(page, historicalRange)
+      const todayResponses = options.includeToday ? observeSalesReports(page, todayRange) : null
       await page.goto('https://www.mercadolivre.com.br/afiliados/dashboard', { waitUntil: 'domcontentloaded', timeout: 45_000 })
       if (!new URL(page.url()).pathname.startsWith('/afiliados') || await page.locator('input[type="password"]').count()) throw new Error('AUTH_REQUIRED')
       const table = page.locator('table').first()
       await table.waitFor({ timeout: 20_000 })
-      // A default week with no sales must not prevent switching to the full report.
-      const selectedPeriod = page.locator('main button').filter({ hasText: /^Últimos 90 dias$/ }).first()
-      if (!await selectedPeriod.count() || !await selectedPeriod.isVisible()) {
-        await page.locator('main button').filter({ hasText: /\d.+\/(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|^últimos\s+\d+\s+dias$|^este\s+mês$|^hoje$|^ontem$/i }).first().click({ timeout: 5000 })
-        await page.getByText('Últimos 90 dias', { exact: true }).click({ timeout: 5000 })
-        await selectedPeriod.waitFor({ timeout: 5000 })
-      }
-      const sales: AffiliateSale[] = []
-      let malformedRows = 0, complete = false
-      const seenPages = new Set<string>()
-      let expectedTotal: number | undefined, expectedPerPage: number | undefined
-      for (let index = 0; index < 10; index++) {
-        const report = await responses.wait(index + 1)
-        expectedTotal ??= report.total
-        expectedPerPage ??= report.perPage
-        if (report.total !== expectedTotal || report.perPage !== expectedPerPage) throw new Error('SALES_REPORT_INCOMPLETE')
-        await waitForLoadedSales(page, report)
-        if (report.items.length) {
-        const headers = await table.locator('th').allTextContents()
-        if (headers.map(x => x.trim()).join('|') !== 'Produtos|Loja|Valor da venda|Ganho por venda|Estado') throw new Error('SALES_REPORT_SCHEMA_CHANGED')
-        }
-        const raw = report.items.length ? await table.locator('tbody tr').evaluateAll(rows => rows.map(row => ({
-          cells: [...row.querySelectorAll('td')].map(cell => (cell as HTMLElement).innerText.trim()),
-          productLinks: [...row.querySelectorAll('a[href]')].map(a => (a as HTMLAnchorElement).href),
-        }))) : []
-        const fingerprint = createHash('sha256').update(JSON.stringify(raw)).digest('hex')
-        if (seenPages.has(fingerprint)) throw new Error('SALES_PAGINATION_STALLED')
-        seenPages.add(fingerprint)
-        for (const row of raw) { const sale = affiliateSale(row, userId, observedAt, reportRange); if (sale) sales.push(sale); else malformedRows++ }
-        if ((index + 1) * report.perPage >= report.total) { complete = sales.length + malformedRows === report.total; break }
-        const next = page.locator('.andes-pagination__button--next a, .andes-pagination__button--next button').first()
-        // A late-rendered pagination control cannot certify completion or skip page 2.
-        await next.waitFor({ state: 'visible', timeout: 10_000 })
-        await next.click({ timeout: 5000 })
+      await selectSalesPeriod(page, 'Últimos 90 dias')
+      const historical = await readSalesPeriod(page, responses, userId, observedAt, historicalRange)
+      let { sales, malformedRows, complete } = historical
+      if (todayResponses) {
+        await selectSalesPeriod(page, 'Hoje')
+        const today = await readSalesPeriod(page, todayResponses, userId, observedAt, todayRange)
+        sales = [...sales, ...today.sales]
+        malformedRows += today.malformedRows
+        complete = complete && today.complete
       }
       // Only a successfully authenticated/parsed report can replace rotated login state.
       await checkpointBrowserSession(statePath, browserSessionHash(sessionRaw), await context.storageState({ indexedDB: true }))

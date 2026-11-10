@@ -10,7 +10,7 @@ The completed T3 browser login does not export HttpOnly cookies or provision wor
 
 ## Deployment configuration
 
-Reuse the dedicated worker. For self-hosted Chromium, select root directory `achadinhos-backend`, Dockerfile path `Dockerfile.worker`, and start command `npm run worker` in the worker service settings. Railway CLI 5.71 rejects changing the deprecated Config-as-Code path; `railway.daily-worker.json` is retained as a reference descriptor. Upload the matching source before adding its volume, because attaching a volume can trigger a rebuild. Mount a private volume at `/data`; provision the session file privately outside the image. The API keeps its scheduler/daily orchestration disabled.
+Reuse the dedicated worker. For self-hosted Chromium, select root directory `achadinhos-backend`, Dockerfile path `Dockerfile.worker`, and start command `node -r tsconfig-paths/register dist/worker.js` in the worker service settings. Railway CLI 5.71 rejects changing the deprecated Config-as-Code path; `railway.daily-worker.json` is retained as a reference descriptor. Upload the matching source before adding its volume, because attaching a volume can trigger a rebuild. Mount a private volume at `/data`; provision the session file privately outside the image. The API keeps its scheduler/daily orchestration disabled.
 
 Worker variables:
 
@@ -148,3 +148,13 @@ Outbox metadata (do not dump message payloads or credentials):
 ```sql
 SELECT status,count(*) FROM daily_automation_alerts WHERE user_id=:user_id GROUP BY status;
 ```
+
+## New-sales summaries
+
+With sales observation enabled, the worker checks every six hours (São Paulo 00:00, 06:00, 12:00, 18:00). `DAILY_SALES_ALERT_INTERVAL_HOURS` supports 3, 6 or 12; default 6. Each bounded capture reads both the last 90 completed days and the verified Hoje view, including today's purchases. A durable interval marker prevents browser retries after restart/failure.
+
+A verified first capture establishes a silent baseline. Later captures enqueue a Loja Geral summary only when newly observed, non-cancelled purchases exist: purchase/product counts, product names, observed sale values and reported commissions, including under-review and indirect sales. Commissions are provisional, not paid earnings. Missing/ambiguous money is explicitly excluded; mixed cancelled/active ambiguities are unresolved. No sale dates or quantities are invented. Every product is included; large summaries are split into bounded messages with one durable event per part. Dashboard reporting can lag, so newly observed does not mean sold in that six-hour period.
+
+Migration `20261110000003-affiliate-sales-notices` stores the notification cursor. Advancing it and inserting the existing alert outbox occur in one transaction. Repeated captures/status changes do not announce a purchase again; uncertain WhatsApp transports retain UNKNOWN and are not replayed. No new-sales message is sent for zero additions or the initial historical import.
+
+The worker's deployed command invokes Node directly. The prior npm startup wrapper reported SIGTERM as an error during normal container replacement; the worker's own signal handlers can now close browsers and exit cleanly.
