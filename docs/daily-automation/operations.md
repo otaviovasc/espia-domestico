@@ -23,7 +23,7 @@ DAILY_BROWSER_STATE_PATH=/data/daily-auth/mercadolivre.json
 
 Replace the template's account ID with the exact existing integer. Defaults: prepare at **19:00 for the next local date** (`planningDaysAhead:1`); send08:00–19:00 São Paulo;20–25 minute nominal cadence;30 products per audience; candidate ceiling250 per audience. Full D+1 readiness requires all30 qualified slots in both audiences, including the first/last slot and gap checks. Rating4.5, accumulated sales100, fit75 and commercial score60 remain hard gates. `planningDaysAhead:0` explicitly preserves the legacy same-day mode. `weekdaysOnly:true` applies to the sending date.
 
-Collecting at or after the preceding day's window end preserves the24-hour evidence limit through the next window. Configuration rejects an earlier D+1 collection time. This provides an overnight repair window, not24hours of unchanged prices. Price observations remain disclosed; they are not live quotes.
+Collecting at or after the preceding day's window end preserves the24-hour evidence limit through the next window. Configuration rejects an earlier D+1 collection time. This provides an overnight repair window, not24hours of unchanged prices. Price observations are retained internally; captions omit the observation timestamp.
 
 Discovery starts with at most50 candidates per audience, classifies them and checks the missing quota. Short audiences receive new keyword pages and new candidates, preserving successful payloads, analyses and append receipts. Empty initial pages also advance keywords. Each browser request supports50 terms; the deterministic audience bank expands through disjoint pages. Discovery stops at readiness,250 candidates per audience, bank exhaustion, or the deadline. A shortage remains a held plan and triggers an operations alert; no unrelated filler or fabricated sales evidence is added.
 
@@ -108,7 +108,7 @@ The final pre-provider window/freshness check also protects ordinary Smart sends
 
 Category limits are a diversity preference. Daily analysis can draw additional already-qualified reserves to reach its minimum, recording a warning; rating, demand, fit, political and freshness gates remain hard requirements. Tight late schedules have less polling/transport slack and can skip slots; D+1 preparation leaves an overnight repair window. Actual per-audience yield, collection duration and memory must be measured from the worker before unattended approval.
 
-Default standout-copy calls are off (`maxStandouts:0`). Captions disclose the observed price's timestamp, and visible flash/countdown deals are excluded. Ordinary intraday price changes remain possible: this version does not re-fetch the product before every send.
+Default standout-copy calls are off (`maxStandouts:0`). Captions omit the observed price's timestamp, and visible flash/countdown deals are excluded. Ordinary intraday price changes remain possible: this version does not re-fetch the product before every send.
 
 
 ## D+1 value, readiness and alerts

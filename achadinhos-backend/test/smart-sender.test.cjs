@@ -201,6 +201,7 @@ test('provider acceptance fences the task and settles both records as SENT', asy
       async sendText(_credentials, request) {
         assert.equal(request.number, '123@g.us')
         assert.match(request.text, /Ração premium/)
+        assert.doesNotMatch(request.text, /Preço consultado em|Confira o valor atual no link/)
         return { messageid: 'provider-accepted-1', status: 'sent' }
       },
       async sendMedia() {
@@ -216,13 +217,15 @@ test('provider acceptance fences the task and settles both records as SENT', asy
         id: 8,
         userId: 11,
         messageIntro: null,
+        timezone: 'America/Sao_Paulo',
+        evidenceObservedAt: new Date('2026-11-09T22:23:00-03:00'),
         offer: {
           title: 'Ração premium',
           discountedPrice: 89.9,
           affiliateUrl: 'https://example.invalid/affiliate',
         },
       },
-      { id: 2 },
+      { id: 2, settings: { dailyAutomation: { localDate: '2026-11-10' } } },
       {
         creds: {
           baseUrl: 'https://provider.invalid',

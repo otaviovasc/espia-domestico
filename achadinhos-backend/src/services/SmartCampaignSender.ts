@@ -827,8 +827,7 @@ export class SmartCampaignSender {
       this.uazapi,
       context.creds,
       safety,
-      templateWithIntro(send.messageIntro) + (plan.settings?.dailyAutomation
-        ? `\n\nPreço consultado em ${new Intl.DateTimeFormat('pt-BR', { timeZone: send.timezone, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }).format(send.evidenceObservedAt)}. Confira o valor atual no link.` : ''),
+      templateWithIntro(send.messageIntro),
       true,
       () => this.readyForProvider(send, plan),
     )

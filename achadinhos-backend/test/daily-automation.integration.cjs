@@ -766,7 +766,7 @@ test('real daily collection-to-approval-to-sender honors late capacity and catch
   assert.equal(pending.items.find(item => item.id === conflicting.id).state, 'RESERVE')
   assert.ok(rows.every(row => row.scheduledAt >= new Date(`${date}T12:20:00Z`) && row.scheduledAt < new Date(`${date}T22:00:00Z`)))
   let calls = 0
-  const provider = { async sendText(_creds, request) { assert.match(request.text, /Preço consultado em/); calls++; return { id: randomUUID(), status: 'sent' } }, async sendMedia() { calls++; return { id: randomUUID(), status: 'sent' } } }
+  const provider = { async sendText(_creds, request) { assert.doesNotMatch(request.text, /Preço consultado em|Confira o valor atual no link/); calls++; return { id: randomUUID(), status: 'sent' } }, async sendMedia() { calls++; return { id: randomUUID(), status: 'sent' } } }
   const sender = new SmartCampaignSender(provider, connections, groupService, { now: () => new Date() })
   const first = rows[0]
   // A different plan delivers after daily collection/approval, before dispatch.
