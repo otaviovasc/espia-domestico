@@ -38,7 +38,7 @@ import { GroupService } from '@/services/GroupService'
 import { NICHE_PRESETS } from '@/services/nichePresets'
 import { OfferImportService } from '@/services/OfferImportService'
 import { SavedProductService } from '@/services/SavedProductService'
-import { SmartCampaignIntelligence } from '@/services/SmartCampaignIntelligence'
+import { SmartCampaignIntelligence, safeSmartCaption } from '@/services/SmartCampaignIntelligence'
 import { listSmartPlanHistory, type SmartPlanHistoryQuery } from '@/services/smartCampaignHistory'
 import { User } from '@/database/models/User'
 import { offerIdentity, offerIdentityAliases } from '@/utils/offerIdentity'
@@ -1406,6 +1406,7 @@ export class SmartCampaignService {
               category: fit?.category,
             warnings,
             standout: false,
+            customMessage: policy.dailySelection ? safeSmartCaption(analysis?.shortCaption) || null : null,
             observedAt: observations[index] ?? new Date(0).toISOString(),
             scores: scored.components,
           }),
@@ -2019,7 +2020,9 @@ export class SmartCampaignService {
               savedProductId: item.product.savedProductId ?? item.savedProductId ?? null,
               offerIdentity: offerIdentity(item.product),
               offer: item.product,
-              messageIntro: item.standout ? item.customMessage?.trim() || null : null,
+              messageIntro: plan.settings.dailyAutomation
+                ? safeSmartCaption(item.customMessage ?? undefined) || null
+                : item.standout ? item.customMessage?.trim() || null : null,
               scheduledAt: new Date(item.scheduledAt),
               localDate: item.date,
               timezone: policy.timezone,

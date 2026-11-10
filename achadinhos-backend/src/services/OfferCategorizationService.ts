@@ -141,7 +141,7 @@ export async function evaluateProfileRelevance(
       const outputCeiling = env.AI_OUTPUT_COST_USD_PER_MILLION
       const result = await generateObject({
         model: openrouter(MODEL, {
-          reasoning: NO_REASONING,
+          reasoning: MODEL === 'meta/muse-ember' ? { effort: 'low', exclude: true } : NO_REASONING,
           provider: {
             allow_fallbacks: true,
             require_parameters: true,

@@ -13,6 +13,30 @@ const fit = { score: 20, reason: 'Pouca afinidade.', category: 'geral', seasonal
 const analysis = { fits: { masculino: fit, domestica: fit }, political: false, warnings: [] }
 const offer = title => ({ title, discountedPrice: 100, affiliateUrl: 'https://example.com/synthetic', commissioned: true, commissionPercent: '10%' })
 
+test('Muse Ember keeps mandatory reasoning within the bounded structured request', async () => {
+  const { z } = require('zod')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body)
+    assert.equal(body.model, 'meta/muse-ember')
+    assert.deepEqual(body.reasoning, { effort: 'low', exclude: true })
+    assert.equal(body.max_tokens, 100)
+    assert.equal(body.provider.data_collection, 'deny')
+    assert.equal(body.provider.max_price.completion, 0.8)
+    const content = body.messages.find(message => message.role === 'user').content
+    assert.equal(content.find(part => part.type === 'image_url').image_url.url, 'https://http2.mlstatic.com/D_NQ_NP_123-MLB456-O.webp')
+    assert.ok(content.some(part => part.type === 'text' && part.text.includes('p0')))
+    return new Response(JSON.stringify({ id: 'muse-contract', object: 'chat.completion', created: 1, model: body.model,
+      choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: '{"ok":true}' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
+  try {
+    const result = await new OpenRouterStructuredClient().generate({ model: 'meta/muse-ember', schema: z.object({ ok: z.boolean() }), schemaName: 'muse_contract', system: 'Return JSON.', prompt: 'ok true', maxOutputTokens: 100, images: [{ id: 'p0', url: 'https://http2.mlstatic.com/D_NQ_NP_123-MLB456-O.webp' }] })
+    assert.deepEqual(result.object, { ok: true })
+  } finally { globalThis.fetch = originalFetch }
+})
+
 test('real SDK sends required product/audience properties and normalizes the provider reply', async () => {
   const originalFetch = globalThis.fetch
   let wireReply

@@ -110,6 +110,18 @@ Category limits are a diversity preference. Daily analysis can draw additional a
 
 Default standout-copy calls are off (`maxStandouts:0`). Captions omit the observed price's timestamp, and visible flash/countdown deals are excluded. Ordinary intraday price changes remain possible: this version does not re-fetch the product before every send.
 
+## Muse Ember and sales observations
+
+Production can pin all four AI model variables to `meta/muse-ember`. Its endpoint requires reasoning; the client uses low reasoning effort with reasoning text excluded, within the existing output-token, request and daily-spend caps. Other models retain their existing reasoning policy. Keep explicit conservative token-price ceilings configured; a reserved amount is not an actual bill.
+
+Muse classification accepts one observed public `http2.mlstatic.com` image per product, tagged with that product's batch ID. Other hosts, credentials, query strings and data URLs are excluded. Missing images retain text classification. Image URLs participate in cache identity; each included image reserves an additional 2,048 input tokens. Existing limits can split a batch before any paid call. This is a conservative allowance, not a measured universal image-token bound: inspect returned usage and qualifying yield. Images do not establish sales, ratings, hidden specifications or political views of buyers/sellers.
+
+The same classification response supplies a factual `shortCaption` of at most 80 characters. New daily plans carry it into the queued message without a separate standout-copy request. Unsafe or absent copy falls back to the ordinary template; old approved sends are not reclassified or rewritten.
+
+`DAILY_SALES_OBSERVATION_ENABLED=true` on the worker captures the authenticated affiliate dashboard's last 90 completed days after the daily collection tick at/after collection time. It runs outside the delivery loop. Private mode-0600 snapshots and an updating ledger live beside the session directory under `../affiliate-sales/account-<id>/`. An exclusive daily attempt marker prevents repeated browser launches after failure; inspect and explicitly remove only that observer's marker to retry a repaired observation. Daily-run/AI/delivery barriers remain separate and must never be cleared for this purpose.
+
+The observer reads the visible table, stores hashed order/product identities, product IDs, displayed sale values/commissions, direct/indirect attribution and original statuses. Revisiting an order updates its status instead of adding revenue again. Buyer data, seller identity, raw order IDs, cookies and credentials are not retained. Schema/pagination failures alert through the existing operations path. The ledger is observational: EM REVISÃO is pending, cancellations are retained, and historical sales are not credited to today's AI or a WhatsApp group. Per-group/caption/model conversion attribution and automated ranking changes require reliable tracking labels and exposure/click data; neither is inferred from a product match.
+
 
 ## D+1 value, readiness and alerts
 

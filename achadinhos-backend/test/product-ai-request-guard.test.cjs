@@ -53,6 +53,17 @@ class MemoryLedger {
   async failUnknown() {}
 }
 
+test('image-token allowances count toward the existing input limit before transport', async () => {
+  let calls = 0
+  const ledger = new MemoryLedger()
+  const guard = new ProductAIRequestGuard(ledger, { ...config, maxInputTokens: 5000 })
+  const input = request(1, async () => { calls++; return { value: {} } })
+  await assert.rejects(guard.run({ ...input, additionalInputTokens: 2048 }), { code: 'AI_INPUT_TOO_LARGE' })
+  assert.equal(calls, 0)
+  assert.equal(ledger.pending.size, 0)
+  await assert.rejects(guard.run({ ...input, additionalInputTokens: -1 }), { code: 'BAD_REQUEST' })
+})
+
 function request(userId, execute, retryAttempt = 1) {
   return {
     context: { userId, operationId: `click-${userId}`, retryAttempt },

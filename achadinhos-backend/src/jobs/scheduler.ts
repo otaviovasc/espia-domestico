@@ -6,6 +6,8 @@ import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
 import { DailyAutomationService } from '@/services/DailyAutomationService'
 import { readDailyAutomationConfig, dailyWindow } from '@/config/dailyAutomation'
 import { logger } from '@/utils/logger'
+import { env } from '@/config/env'
+import { AffiliateSalesObserver } from '@/services/AffiliateSalesObserver'
 
 const POLL_INTERVAL_MS = 30_000
 
@@ -42,6 +44,7 @@ export function startScheduler(): void {
     catch { logger.warn('Daily scheduler problem could not be persisted') }
   }
   const daily = dailyAutomation
+  const sales = env.DAILY_SALES_OBSERVATION_ENABLED ? new AffiliateSalesObserver() : null
   const isCurrent = (): boolean => generation === currentGeneration && timer !== null
 
   const tick = async (): Promise<void> => {
@@ -78,6 +81,11 @@ export function startScheduler(): void {
       collectingGeneration = currentGeneration
       void daily.tick(dailyConfig)
         .catch(() => { logger.warn('Daily automation tick failed; verify migration and configuration'); void problem('DAILY_AUTOMATION_TICK_FAILED') })
+        .then(async () => {
+          if (!sales || !isCurrent() || !dailyConfig) return
+          try { await sales.tick(dailyConfig) }
+          catch { logger.warn('Affiliate sales observation failed; existing delivery and collection stay independent'); void problem('AFFILIATE_SALES_OBSERVATION_FAILED') }
+        })
         .finally(() => {
           if (collectingGeneration === currentGeneration) collectingGeneration = null
         })

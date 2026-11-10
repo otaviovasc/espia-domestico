@@ -32,6 +32,8 @@ export interface GuardedAIRequest<T> {
   semanticInput: unknown
   /** Exact bounded text sent to the provider, used only for conservative estimation. */
   providerInput: string
+  /** Conservative allowance for bounded non-text evidence, included in every quota. */
+  additionalInputTokens?: number
   maxOutputTokens: number
   /** Re-validates persisted JSON before returning it to application code. */
   validate: (value: unknown) => T
@@ -316,7 +318,11 @@ export class ProductAIRequestGuard {
     if (!Number.isInteger(request.maxOutputTokens) || request.maxOutputTokens < 1) {
       throw BadRequestError('Limite de saída da IA inválido.')
     }
-    const inputTokens = estimateAIInputTokens(request.providerInput)
+    const additionalInputTokens = request.additionalInputTokens ?? 0
+    if (!Number.isSafeInteger(additionalInputTokens) || additionalInputTokens < 0) {
+      throw BadRequestError('Reserva de entrada multimodal inválida.')
+    }
+    const inputTokens = estimateAIInputTokens(request.providerInput) + additionalInputTokens
     if (inputTokens > this.config.maxInputTokens) {
       throw new AppError('Entrada excede o limite seguro da IA.', 413, 'AI_INPUT_TOO_LARGE')
     }

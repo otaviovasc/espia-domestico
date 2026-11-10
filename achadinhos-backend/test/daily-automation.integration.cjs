@@ -725,7 +725,7 @@ test('real daily collection-to-approval-to-sender honors late capacity and catch
   const connections = { async getConnectionScope() { return scope }, async requireConnectedContext() { return { scope, creds: { baseUrl: 'https://unused.invalid', token: 'fixture' } } } }
   const intelligence = {
     async analyze(offers, slugs) { return offers.map((offer, index) => ({ index,
-      fits: slugs.map(slug => ({ slug, score: 95, reason: 'Strong actual-use fit', category: `category-${Number(offer.productId.slice(-2)) % 5}`, seasonalScore: 50 })), warnings: [] })) },
+      fits: slugs.map(slug => ({ slug, score: 95, reason: 'Strong actual-use fit', category: `category-${Number(offer.productId.slice(-2)) % 5}`, seasonalScore: 50 })), warnings: [], shortCaption: 'PRATICIDADE NA SUA ROTINA' })) },
     async standoutCopy() { assert.fail('Standout-copy calls default off') },
   }
   const smart = new SmartCampaignService(new OfferImportService(), { async save(_user, offers) { return offers } }, intelligence, groupService, connections)
@@ -761,6 +761,7 @@ test('real daily collection-to-approval-to-sender honors late capacity and catch
   assert.equal((await f.run()).status, 'SCHEDULED')
   const rows = await SmartSend.findAll({ where: { planId: pending.id }, order: [['scheduledAt', 'ASC']] })
   assert.equal(rows.length, 58) // capacity trims 30 to 29 per audience
+  assert.ok(rows.every(row => row.messageIntro === 'PRATICIDADE NA SUA ROTINA'), 'Classification copy reaches queued daily sends without standout calls')
   assert.ok(rows.every(row => row.offer.productId !== conflicting.product.productId))
   await pending.reload()
   assert.equal(pending.items.find(item => item.id === conflicting.id).state, 'RESERVE')
