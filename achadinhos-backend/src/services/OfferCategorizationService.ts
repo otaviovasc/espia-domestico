@@ -120,14 +120,15 @@ export async function evaluateProfileRelevance(
     },
     productData,
   })
+  const maxOutputTokens = Math.min(MODEL === 'meta/muse-ember' ? 1200 : 80, env.AI_MAX_OUTPUT_TOKENS)
   const response = await classificationGuard.run({
     context: context!,
     operation: 'offer_niche_relevance',
     model: MODEL,
-    modelVersion: 'offer_niche_relevance:v2',
+    modelVersion: MODEL === 'meta/muse-ember' ? 'offer_niche_relevance:v3-reasoning' : 'offer_niche_relevance:v2',
     semanticInput,
     providerInput: `${system}\n${prompt}`,
-    maxOutputTokens: 80,
+    maxOutputTokens,
     validate: (value) => RelevanceResponseSchema.parse(value),
     execute: async () => {
       // The latest AI SDK and OpenRouter provider are ESM-only. Keep imports inside the guarded
@@ -159,7 +160,7 @@ export async function evaluateProfileRelevance(
         system,
         prompt,
         abortSignal: AbortSignal.timeout(env.AI_REQUEST_TIMEOUT_MS),
-        maxOutputTokens: 80,
+        maxOutputTokens,
         maxRetries: 0,
       })
       return {
