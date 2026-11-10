@@ -2,8 +2,9 @@ import { container } from 'tsyringe'
 import { CampaignService } from '@/services/CampaignService'
 import { SmartCampaignService } from '@/services/SmartCampaignService'
 import { SmartCampaignSender } from '@/services/SmartCampaignSender'
+import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
 import { DailyAutomationService } from '@/services/DailyAutomationService'
-import { readDailyAutomationConfig } from '@/config/dailyAutomation'
+import { readDailyAutomationConfig, dailyWindow } from '@/config/dailyAutomation'
 import { logger } from '@/utils/logger'
 
 const POLL_INTERVAL_MS = 30_000
@@ -14,6 +15,7 @@ let generation = 0
 let tickingGeneration: number | null = null
 let analyzingGeneration: number | null = null
 let collectingGeneration: number | null = null
+let alertingGeneration: number | null = null
 let dailyAutomation: DailyAutomationService | null = null
 
 /**
@@ -31,23 +33,41 @@ export function startScheduler(): void {
   try { dailyConfig = readDailyAutomationConfig() }
   catch { logger.error('Invalid daily configuration; daily automation disabled while the existing sender stays active') }
   dailyAutomation = dailyConfig ? container.resolve(DailyAutomationService) : null
+  const alerts = dailyConfig ? container.resolve(DailyAutomationAlerts) : null
+  const problem = async (code: string): Promise<void> => {
+    if (!alerts || !dailyConfig) return
+    const window = dailyWindow(dailyConfig)
+    const date = code === 'DAILY_AUTOMATION_TICK_FAILED' ? window.targetDate : window.date
+    try { await alerts.enqueue(dailyConfig, date, `scheduler:${code}`, code) }
+    catch { logger.warn('Daily scheduler problem could not be persisted') }
+  }
   const daily = dailyAutomation
   const isCurrent = (): boolean => generation === currentGeneration && timer !== null
 
   const tick = async (): Promise<void> => {
-    if (!isCurrent() || tickingGeneration !== null) return
+    if (!isCurrent()) return
+    // Own guard: long sends, collection, and AI never suppress alert monitoring.
+    if (alerts && dailyConfig && alertingGeneration === null) {
+      alertingGeneration = currentGeneration
+      void (async () => { try { await alerts.monitor(dailyConfig) } finally { await alerts.dispatch(dailyConfig) } })()
+        .catch(() => logger.warn('Daily alert monitoring failed; verify database and worker health'))
+        .finally(() => { if (alertingGeneration === currentGeneration) alertingGeneration = null })
+    }
+    if (tickingGeneration !== null) return
     tickingGeneration = currentGeneration
     try {
       try {
         await campaignService.runDueScheduled()
       } catch (error) {
         logger.warn({ error }, 'Campaign scheduler tick failed')
+        void problem('CAMPAIGN_SCHEDULER_FAILED')
       }
       if (!isCurrent()) return
       try {
         await smartSender.processDue()
       } catch (error) {
         logger.warn({ error }, 'Smart campaign delivery tick failed')
+        void problem('SMART_DELIVERY_TICK_FAILED')
       }
     } finally {
       if (tickingGeneration === currentGeneration) tickingGeneration = null
@@ -57,7 +77,7 @@ export function startScheduler(): void {
     if (daily && dailyConfig && collectingGeneration === null) {
       collectingGeneration = currentGeneration
       void daily.tick(dailyConfig)
-        .catch(() => logger.warn('Daily automation tick failed; verify migration and configuration'))
+        .catch(() => { logger.warn('Daily automation tick failed; verify migration and configuration'); void problem('DAILY_AUTOMATION_TICK_FAILED') })
         .finally(() => {
           if (collectingGeneration === currentGeneration) collectingGeneration = null
         })
@@ -68,7 +88,7 @@ export function startScheduler(): void {
       analyzingGeneration = currentGeneration
       void smartCampaigns
         .processPendingAnalysis()
-        .catch((error: unknown) => logger.warn({ error }, 'Smart campaign analysis failed'))
+        .catch((error: unknown) => { logger.warn({ error }, 'Smart campaign analysis failed'); void problem('SMART_ANALYSIS_TICK_FAILED') })
         .finally(() => {
           if (analyzingGeneration === currentGeneration) analyzingGeneration = null
         })

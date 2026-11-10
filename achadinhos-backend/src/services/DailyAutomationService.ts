@@ -6,7 +6,7 @@ import { env } from '@/config/env'
 import {
   dailyWindow,
   dailyItemTarget,
-  dailyMinimumItems,
+  dailyRequiredItems,
   dailyRemainingCapacity,
   type DailyAutomationConfig,
 } from '@/config/dailyAutomation'
@@ -16,13 +16,16 @@ import { Campaign, CAMPAIGN_STATUS_ENUM } from '@/database/models/Campaign'
 import { SmartPlan, SMART_PLAN_STATUS } from '@/database/models/SmartPlan'
 import { ProductGroupDelivery } from '@/database/models/ProductGroupDelivery'
 import { SmartSend, SMART_SEND_STATUS } from '@/database/models/SmartSend'
-import { SmartCampaignService } from '@/services/SmartCampaignService'
+import { SmartCampaignService, smartZonedInstant } from '@/services/SmartCampaignService'
 import {
   DailyCollectionError,
   DailyProductCollector,
   DAILY_AUDIENCES,
   type DailyPayload,
 } from '@/services/DailyProductCollector'
+import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
+import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryKeywords } from '@/utils/dailyDiscovery'
+import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
 
@@ -36,6 +39,7 @@ interface DailyRun {
   payloads: DailyPayload[] | null
   plan_uuid: string | null
   attempts: number
+  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>> }
   lease_token: string
 }
 
@@ -51,24 +55,101 @@ export class DailyAutomationService {
   constructor(
     @inject(SmartCampaignService) private readonly smart: SmartCampaignService,
     @inject(DailyProductCollector) private readonly collector: DailyProductCollector,
+    @inject(DailyAutomationAlerts, { isOptional: true }) private readonly alerts?: DailyAutomationAlerts,
   ) {}
 
   stop(): void {
     this.abort.abort()
   }
 
-  private async save(run: DailyRun, status: string, error: string | null = null): Promise<void> {
-    await sequelize.query(
+  private windowExpired(config: DailyAutomationConfig, date: string, now = new Date()): boolean {
+    const local = dailyWindow(config, now).date
+    const time = new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, hourCycle: 'h23', hour: '2-digit', minute: '2-digit' }).format(now)
+    return local > date || (local === date && time >= config.endTime)
+  }
+
+  private async save(run: DailyRun, status: string, error: string | null = null, detail = ''): Promise<void> {
+    const saved = await sequelize.query<{ id: string }>(
       `UPDATE daily_automation_runs
       SET status=:status, last_error=:error, lease_token=NULL, lease_until=NULL,
           attempts=attempts + CASE WHEN :error IS NOT NULL AND :status IN ('RETRY','FAILED') THEN 1 ELSE 0 END,
           next_attempt_at=CASE WHEN :status IN ('ANALYZING','ANALYSIS_HOLD') THEN NOW()
             ELSE NOW() + INTERVAL '15 minutes' END, updated_at=NOW()
-      WHERE id=:id AND lease_token=:token`,
+      WHERE id=:id AND lease_token=:token RETURNING id`,
       {
+        type: QueryTypes.SELECT,
         replacements: { status, error, id: run.id, token: run.lease_token },
       },
     )
+    if (saved.length && error) {
+      try {
+        await this.alerts?.enqueue(run.config, run.local_date, run.plan_uuid ? `${run.plan_uuid}:${error}` : `${run.id}:${status}:${error}`, error, detail)
+      } catch {
+        logger.warn({ dailyRunId: run.id, code: 'ALERT_PERSIST_FAILED' }, 'Daily checkpoint saved; alert persistence failed')
+      }
+    }
+  }
+
+  private async discoveryCheckpoint(run: DailyRun): Promise<void> {
+    await this.requireLease(run)
+    await sequelize.query(`UPDATE daily_automation_runs SET discovery_state=CAST(:state AS JSONB), updated_at=NOW() WHERE id=:id AND lease_token=:token`, {
+      replacements: { id: run.id, token: run.lease_token, state: JSON.stringify(run.discovery_state) },
+    })
+  }
+
+  private async replenish(run: DailyRun, plan: SmartPlan, audiences: SmartAudience[]): Promise<boolean> {
+    // Round payloads are durable before append. Replaying an interrupted append uses
+    // the same request ID and therefore cannot purchase the same analysis twice.
+    const state = run.discovery_state ??= { round: 1 }
+    const round = state.round ?? 1
+    if (state.exhausted || this.windowExpired(run.config, run.local_date)) return false
+    const pooled = (run.payloads ?? []).flatMap(p => Array.isArray(p.json.cards) ? p.json.cards : [])
+    const ids = pooled.map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter((id): id is string => Boolean(id))
+    const history = await this.exclusions(run.user_id)
+    const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
+    const requests = DAILY_AUDIENCES.flatMap(slug => {
+      if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule))) return []
+      const existing = (run.payloads ?? []).filter(p => p.targetAudienceSlug === slug).reduce((n, p) => n + (Array.isArray(p.json.cards) ? p.json.cards.length : 0), 0)
+      const audience = audiences.find(a => a.slug === slug)!
+      const keywords = dailyDiscoveryKeywords(slug, audience.profile.keywords, round + (state.initialRounds?.[slug] ?? 0))
+      const limit = Math.min(DAILY_DISCOVERY_ROUND_SIZE, run.config.candidateLimit - existing)
+      if (limit <= 0 || !keywords.length) return []
+      return [{ slug, options: { limit, keywords, matchMode: 'any', matchStyle: 'word',
+        excludeProductIds: [...new Set([...history, ...ids])], excludePolitical: true,
+        quality: { minRating: run.config.minRating, minSoldCount: run.config.minSoldCount },
+        minPrice: audience.policy.minPrice, maxPrice: audience.policy.maxPrice,
+        commission: { minPercent: audience.policy.minCommissionPercent, minEstimatedBrl: audience.policy.minEstimatedCommission } } }]
+    })
+    if (!state.pending && !requests.length) { state.exhausted = true; await this.discoveryCheckpoint(run); return false }
+    if (!state.collected) {
+      state.pending ??= []
+      await this.discoveryCheckpoint(run)
+      const payloads = await this.collector.collect(requests.filter(r => !state.pending?.some(p => p.targetAudienceSlug === r.slug)), this.abort.signal, async payload => {
+        state.pending = [...(state.pending ?? []).filter(p => p.targetAudienceSlug !== payload.targetAudienceSlug), payload]
+        await this.discoveryCheckpoint(run)
+      })
+      state.pending = [...state.pending, ...payloads.filter(p => !state.pending?.some(old => old.targetAudienceSlug === p.targetAudienceSlug))]
+      state.collected = true
+      await this.discoveryCheckpoint(run)
+    }
+    const pending = state.pending ?? []
+    if (pending.some(p => Array.isArray(p.json.cards) && p.json.cards.length)) {
+      await this.requireLease(run)
+      await this.smart.appendDailyProducts(run.user_id, plan.uuid, plan.revision, pending, dailyRequestId(run.user_id, `${run.request_id}:round:${round}`))
+      // Keep the original extraction timestamps and audience provenance unchanged.
+      run.payloads = [...(run.payloads ?? []).filter(p => !pending.some(next => next.name === p.name && next.targetAudienceSlug === p.targetAudienceSlug && JSON.stringify(next.json) === JSON.stringify(p.json))), ...pending]
+      await sequelize.query(`UPDATE daily_automation_runs SET payloads=CAST(:payloads AS JSONB) WHERE id=:id AND lease_token=:token`, {
+        replacements: { id: run.id, token: run.lease_token, payloads: JSON.stringify(run.payloads) },
+      })
+    }
+    state.round = round + 1
+    delete state.pending
+    delete state.collected
+    // Even empty discovery advances its finite keyword inventory, never the same
+    // zero-result query forever. Exhaustion becomes an explicit held preview.
+    await this.discoveryCheckpoint(run)
+    await this.save(run, pending.length ? 'ANALYZING' : 'REPLENISHING')
+    return true
   }
 
   private async checkpointPayload(run: DailyRun, payload: DailyPayload): Promise<void> {
@@ -165,24 +246,26 @@ export class DailyAutomationService {
 
   async tick(config: DailyAutomationConfig, now = new Date()): Promise<void> {
     if (this.abort.signal.aborted) return
-    // A restart may load tomorrow's configuration before today's saved run has
-    // completed. Its persisted window, weekdays and approval choices still win.
-    const currentDate = dailyWindow(config, now).date
-    const existing = await sequelize.query<{ config: DailyAutomationConfig }>(
-      'SELECT config FROM daily_automation_runs WHERE user_id=:userId AND local_date=:date',
-      { replacements: { userId: config.userId, date: currentDate }, type: QueryTypes.SELECT },
+    // Resume frozen preparation first, including the target morning after restart.
+    const startupWindow = dailyWindow(config, now)
+    const existing = await sequelize.query<{ config: DailyAutomationConfig; local_date: string }>(
+      `SELECT config, local_date FROM daily_automation_runs WHERE user_id=:userId
+       AND status IN ('COLLECTING','ANALYZING','ANALYSIS_HOLD','RETRY','REPLENISHING')
+       ORDER BY local_date ASC LIMIT 1`,
+      { replacements: { userId: config.userId }, type: QueryTypes.SELECT },
     )
     config = existing[0]?.config ?? config
     const window = dailyWindow(config, now)
-    if (!window.due) return
+    const targetDate = existing[0]?.local_date ?? startupWindow.targetDate
+    if (!existing.length && !window.due) return
     await sequelize.query(
       `INSERT INTO daily_automation_runs (user_id, local_date, request_id, config)
       VALUES (:userId, :date, :requestId, CAST(:config AS JSONB)) ON CONFLICT (user_id, local_date) DO NOTHING`,
       {
         replacements: {
           userId: config.userId,
-          date: window.date,
-          requestId: dailyRequestId(config.userId, window.date),
+          date: targetDate,
+          requestId: dailyRequestId(config.userId, targetDate),
           config: JSON.stringify(config),
         },
       },
@@ -192,11 +275,11 @@ export class DailyAutomationService {
       `UPDATE daily_automation_runs
       SET lease_token=:token, lease_until=NOW() + INTERVAL '30 minutes', updated_at=NOW()
       WHERE user_id=:userId AND local_date=:date
-        AND status IN ('COLLECTING', 'ANALYZING', 'ANALYSIS_HOLD', 'RETRY')
+        AND status IN ('COLLECTING', 'ANALYZING', 'ANALYSIS_HOLD', 'RETRY', 'REPLENISHING')
         AND (lease_until IS NULL OR lease_until<NOW()) AND next_attempt_at<=NOW()
       RETURNING *`,
       {
-        replacements: { userId: config.userId, date: window.date, token },
+        replacements: { userId: config.userId, date: targetDate, token },
         type: QueryTypes.SELECT,
       },
     )
@@ -209,10 +292,10 @@ export class DailyAutomationService {
       }
       // Retire only automation-owned, unapproved plans from earlier dates. A
       // concurrent operator change wins; never refetch its revision to cancel it.
-      const previous = await sequelize.query<{ uuid: string; revision: number }>(
-        `SELECT p.uuid, p.revision FROM smart_plans p
+      const previous = await sequelize.query<{ uuid: string; revision: number; config: DailyAutomationConfig; local_date: string }>(
+        `SELECT p.uuid, p.revision, r.config, r.local_date FROM smart_plans p
         JOIN daily_automation_runs r ON p.user_id=r.user_id AND p.input->>'requestId'=r.request_id::text
-        WHERE r.user_id=:userId AND r.local_date < :date AND r.config->>'autoApprove'='true'
+        WHERE r.user_id=:userId AND r.local_date < :date
           AND p.status IN ('ANALYZING','REVIEW') LIMIT 20`,
         {
           replacements: { userId: run.user_id, date: run.local_date },
@@ -220,6 +303,7 @@ export class DailyAutomationService {
         },
       )
       for (const plan of previous) {
+        if (!this.windowExpired(plan.config, plan.local_date, now)) continue
         try {
           await this.smart.cancel(run.user_id, plan.uuid, plan.revision)
         } catch (error) {
@@ -247,9 +331,25 @@ export class DailyAutomationService {
         return
       }
       if (
+        run.config.planningDaysAhead === 1 && run.config.autoApprove && run.config.requireFullWindow &&
+        now.getTime() >= smartZonedInstant(run.local_date, run.config.startTime, run.config.timezone).getTime()
+      ) {
+        // A ready preview still carries its original 08:00 slots. Automatic
+        // approval must not silently rebuild those into a shortened target day.
+        await this.save(run, this.windowExpired(run.config, run.local_date, now) ? 'EXPIRED' : 'REVIEW', 'PREPARATION_DEADLINE_MISSED')
+        return
+      }
+      if (this.windowExpired(run.config, run.local_date, now)) {
+        if (ownedPlan && [SMART_PLAN_STATUS.ANALYZING, SMART_PLAN_STATUS.REVIEW].includes(ownedPlan.status))
+          await this.smart.cancel(run.user_id, ownedPlan.uuid, ownedPlan.revision)
+        await this.save(run, 'EXPIRED', 'WINDOW_CLOSED')
+        return
+      }
+      if (
+        run.config.planningDaysAhead !== 1 &&
         run.config.autoApprove &&
         run.config.requireFullWindow &&
-        dailyRemainingCapacity(run.config, now) < dailyMinimumItems(run.config)
+        dailyRemainingCapacity(run.config, now, run.local_date) < dailyRequiredItems(run.config)
       ) {
         if (
           ownedPlan &&
@@ -338,6 +438,12 @@ export class DailyAutomationService {
           await this.save(run, 'CONFIG_REQUIRED', 'HISTORY_LIMIT')
           return
         }
+        const state = run.discovery_state ??= {}
+        state.initialRounds ??= {}
+        if (missing.some(slug => !dailyDiscoveryKeywords(slug, audiences.find(a => a.slug === slug)!.profile.keywords, state.initialRounds?.[slug] ?? 0).length)) {
+          await this.save(run, 'REVIEW', 'DISCOVERY_KEYWORDS_EXHAUSTED')
+          return
+        }
         const payloads = await this.collector.collect(
           missing.map((slug) => {
             const audience = audiences.find((value) => value.slug === slug)!
@@ -345,8 +451,8 @@ export class DailyAutomationService {
             return {
               slug,
               options: {
-                limit: run.config.candidateLimit,
-                keywords: audience.profile.keywords.slice(0, 20),
+                limit: Math.min(DAILY_DISCOVERY_ROUND_SIZE, run.config.candidateLimit),
+                keywords: dailyDiscoveryKeywords(slug, audience.profile.keywords, state.initialRounds?.[slug] ?? 0),
                 matchMode: 'any',
                 matchStyle: 'word',
                 excludeProductIds,
@@ -377,20 +483,29 @@ export class DailyAutomationService {
             ),
           )
         ) {
+          if (run.config.planningDaysAhead === 1) {
+            for (const slug of missing) {
+              if (!run.payloads?.some(p => p.targetAudienceSlug === slug && Array.isArray(p.json.cards) && p.json.cards.length))
+                state.initialRounds[slug] = (state.initialRounds[slug] ?? 0) + 1
+            }
+            await this.discoveryCheckpoint(run)
+            await this.save(run, 'COLLECTING')
+            return
+          }
           throw new DailyCollectionError('COLLECTION_INCOMPLETE')
         }
       }
       await this.requireLease(run)
-      if (!dailyWindow(run.config).due || dailyWindow(run.config).date !== run.local_date) {
+      if (this.windowExpired(run.config, run.local_date)) {
         await this.save(run, 'EXPIRED', 'WINDOW_CLOSED')
         return
       }
       if (
         run.config.autoApprove &&
         run.config.requireFullWindow &&
-        dailyRemainingCapacity(run.config) < dailyMinimumItems(run.config)
+        dailyRemainingCapacity(run.config, new Date(), run.local_date) < dailyRequiredItems(run.config)
       ) {
-        await this.save(run, 'EXPIRED', 'LATE_ANALYSIS')
+        await this.save(run, run.config.planningDaysAhead === 1 ? 'REVIEW' : 'EXPIRED', 'LATE_ANALYSIS')
         return
       }
       // Recover the crash window after plan creation but before checkpointing its UUID.
@@ -428,7 +543,7 @@ export class DailyAutomationService {
           {
             runId: run.id,
             localDate: run.local_date,
-            minimumItems: dailyMinimumItems(run.config),
+            minimumItems: dailyRequiredItems(run.config),
             startTime: run.config.startTime,
             endTime: run.config.endTime,
           },
@@ -440,21 +555,22 @@ export class DailyAutomationService {
       if (plan.status === SMART_PLAN_STATUS.ANALYZING) {
         await this.save(run, 'ANALYZING')
       } else if (plan.status === SMART_PLAN_STATUS.REVIEW) {
-        const minimum = dailyMinimumItems(run.config)
-        const hasBothAudiences = DAILY_AUDIENCES.every(
-          (slug) =>
-            plan!.items.filter((item) => item.state === 'SELECTED' && item.audienceSlug === slug)
-              .length >= minimum,
-        )
-        if (!run.config.autoApprove || !hasBothAudiences) {
-          await this.save(
-            run,
-            'REVIEW',
-            hasBothAudiences ? null : 'INSUFFICIENT_QUALIFIED_PRODUCTS',
-          )
+        const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
+        if (!coverage.ready) {
+          if (run.config.planningDaysAhead === 1 && await this.replenish(run, plan, audiences)) return
+          await this.save(run, 'REVIEW', 'INSUFFICIENT_QUALIFIED_PRODUCTS', coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; '))
+          return
+        }
+        if (!run.config.autoApprove) {
+          await this.save(run, 'REVIEW')
           return
         }
         await this.requireLease(run)
+        if (run.config.planningDaysAhead === 1 && run.config.requireFullWindow &&
+          Date.now() >= smartZonedInstant(run.local_date, run.config.startTime, run.config.timezone).getTime()) {
+          await this.save(run, 'REVIEW', 'PREPARATION_DEADLINE_MISSED')
+          return
+        }
         await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
         await this.save(run, 'SCHEDULED')
       } else if (plan.status === SMART_PLAN_STATUS.FAILED) {
@@ -508,6 +624,7 @@ export class DailyAutomationService {
       if (
         error instanceof DailyCollectionError &&
         error.code === 'SESSION_PERSIST_FAILED' &&
+        !run.plan_uuid &&
         error.payloads?.length === 2 &&
         error.payloads.every(
           (payload) => Array.isArray(payload.json.cards) && payload.json.cards.length,

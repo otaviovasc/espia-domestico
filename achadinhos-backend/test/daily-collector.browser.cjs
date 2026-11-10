@@ -47,7 +47,7 @@ test('real Chromium runs vendored share/exclusion scripts and closes after both 
   }
   try {
     const payloads = await new DailyProductCollector().collect(['domestica', 'masculino'].map(slug => ({ slug,
-      options: { limit: 1, keywords: ['panela'], excludePolitical: true, excludeProductIds: ['MLB12345678'], quality: { minRating: 4.5, minSoldCount: 100 } },
+      options: { limit: 1, keywords: ['panela', ...Array.from({ length: 49 }, (_, i) => `termo inexistente ${i}`)], excludePolitical: true, excludeProductIds: ['MLB12345678'], quality: { minRating: 4.5, minSoldCount: 100 } },
     })), new AbortController().signal)
     assert.equal(navigations, 2)
     assert.equal(payloads.length, 2)
@@ -57,6 +57,7 @@ test('real Chromium runs vendored share/exclusion scripts and closes after both 
       assert.equal(payload.json.cards[0].commissionedUrlStatus, 'present_on_card')
       assert.equal(payload.json.excludedPreviouslyUsed, index + 1)
       assert.equal(payload.json.search.excludePolitical, true)
+      assert.equal(payload.json.search.keywords.length, 50)
       assert.equal(payload.json.cards[0].raw, undefined)
     }
     const restored = JSON.parse(await fs.readFile(statePath, 'utf8'))

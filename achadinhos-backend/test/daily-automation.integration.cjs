@@ -1,5 +1,10 @@
 // Opt-in: run only against a disposable, migrated local PostgreSQL database.
-const { test, before, after, afterEach } = require('node:test')
+const { test: nodeTest, before, after, afterEach } = require('node:test')
+// Freeze ordinary fixtures independently; explicit timer tests keep their own clock.
+const test = (name, fn) => nodeTest(name, async t => {
+  if (!fn.toString().includes('timers.enable')) t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T10:00:00Z').getTime() })
+  return fn(t)
+})
 const { Op } = require('sequelize')
 const assert = require('node:assert/strict')
 const { randomUUID } = require('node:crypto')
@@ -31,9 +36,8 @@ afterEach(async () => {
 async function setup() {
   const user = await User.create({ name: 'Daily QA', email: `${randomUUID()}@daily.invalid`, passwordHash: 'unused' })
   createdUsers.push(user.id)
-  const config = DailyAutomationConfigSchema.parse({ userId: user.id, collectTime: '00:00', autoApprove: true, requireFullWindow: false })
+  const config = DailyAutomationConfigSchema.parse({ userId: user.id, planningDaysAhead: 0, collectTime: '00:00', autoApprove: true, requireFullWindow: false })
   // The worker's commercial window is explicitly bounded; run QA before 21:00 SP.
-  assert.equal(dailyWindow(config).due, true, 'Run integration QA before 21:00 Sao Paulo time')
   for (const slug of ['domestica', 'masculino']) {
     await SmartAudience.create({ userId: user.id, slug, name: slug, description: 'Daily QA audience', enabled: true,
       destinations: [{ groupId: `${slug}@g.us`, groupName: slug }],
@@ -378,6 +382,7 @@ test('collected root and visible descriptions reach the real classification requ
 })
 
 test('active-plan limits and expired full windows hold before browser or paid work', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T10:00:00Z').getTime() })
   const f = await setup()
   for (let index = 0; index < 2; index++) await f.smart.createPlan(f.user.id, { date: dailyWindow(f.config).date, requestId: randomUUID(), audienceSlugs: ['domestica'], campaignStartTime: '08:00' })
   await f.service.tick(f.config)
@@ -385,7 +390,7 @@ test('active-plan limits and expired full windows hold before browser or paid wo
   assert.equal((await f.run()).last_error, 'ACTIVE_PLAN_LIMIT')
   assert.equal(f.calls.collect, 0)
   const date = new Date().toISOString().slice(0, 10)
-  t.mock.timers.enable({ apis: ['Date'], now: new Date(`${date}T13:00:00Z`).getTime() })
+  t.mock.timers.setTime(new Date(`${date}T13:00:00Z`).getTime())
   const late = await setup()
   late.config.requireFullWindow = true
   await late.service.tick(late.config)
@@ -427,6 +432,7 @@ test('next-day retirement uses real cancellation and preserves a concurrent oper
   await f.service.tick(f.config)
   const yesterday = await f.run()
   await SmartPlan.update({ status: 'REVIEW' }, { where: { uuid: yesterday.plan_uuid } })
+  await f.service.tick(f.config) // Persist the completed analysis as a held preview before rollover.
   const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
   const real = new SmartCampaignService({}, {}, {}, {}, {})
   let race = true
@@ -822,4 +828,113 @@ test('daily UNKNOWN retry outside the envelope preserves its no-repeat ledger', 
   }
   await smart.resolveUnknown(f.user.id,send.uuid,'skip')
   assert.equal((await ledger.reload()).status,'SENT','Explicit skip conservatively retains the duplicate barrier')
+})
+
+test('D+1 freezes tomorrow target and resumes it before replacement startup eligibility', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, autoApprove: false })
+  await f.service.tick(f.config)
+  const run = await f.run()
+  assert.equal(run.local_date, '2026-11-10')
+  assert.equal(run.request_id, dailyRequestId(f.user.id, '2026-11-10'))
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  assert.equal(plan.startDate, '2026-11-10')
+  t.mock.timers.setTime(new Date('2026-11-10T10:00:00Z').getTime())
+  const replacement = DailyAutomationConfigSchema.parse({ userId: f.user.id, collectTime: '21:00' })
+  await new DailyAutomationService(f.smart, f.collector).tick(replacement)
+  assert.equal((await f.run()).local_date, '2026-11-10')
+  assert.equal((await f.run()).config.collectTime, '19:00')
+  assert.equal(f.calls.collect, 1)
+})
+
+test('D+1 replenishment checkpoints round payloads and reuses append identity after failure', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id })
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  await plan.update({ status: 'REVIEW', items: [] })
+  const requestIds = []
+  f.smart.appendDailyProducts = async (_user, _uuid, _revision, payloads, requestId) => {
+    requestIds.push(requestId)
+    assert.equal(payloads.length, 2)
+    if (requestIds.length === 1) throw new Error('simulated lost response')
+    await plan.update({ status: 'ANALYZING' })
+  }
+  let collections = 0
+  f.collector.collect = async requests => {
+    collections++
+    assert.ok(requests.every(r => r.options.limit <= 50 && r.options.keywords.length <= 50))
+    assert.ok(requests.every(r => r.options.excludeProductIds.includes('MLB12345670')))
+    return f.payloads.map((p, i) => ({ ...p, json: { ...p.json, cards: [{ productId: `MLB9999999${i}` }] } }))
+  }
+  await f.service.tick(f.config)
+  assert.equal((await f.run()).status, 'RETRY')
+  await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  await f.service.tick(f.config)
+  assert.equal(collections, 1)
+  assert.equal(requestIds.length, 2)
+  assert.equal(requestIds[0], requestIds[1])
+  assert.equal((await f.run()).discovery_state.round, 2)
+})
+
+test('empty D+1 discovery advances only missing audience keyword pages without paid work', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id })
+  const pages = []
+  f.collector.collect = async requests => {
+    pages.push(requests.map(r => ({ slug: r.slug, keywords: r.options.keywords })))
+    return requests.map(r => r.slug === 'domestica' ? f.payloads[0] : { ...f.payloads[1], json: { cards: [] } })
+  }
+  await f.service.tick(f.config)
+  const run = await f.run()
+  assert.equal(run.discovery_state.initialRounds.masculino, 1)
+  assert.equal(run.discovery_state.initialRounds.domestica, undefined)
+  assert.equal(f.calls.create, 0)
+  await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  await f.service.tick(f.config)
+  assert.deepEqual(pages[1].map(r => r.slug), ['masculino'])
+  assert.notDeepEqual(pages[0][1].keywords, pages[1][0].keywords)
+  assert.equal((await f.run()).discovery_state.initialRounds.masculino, 2)
+  assert.equal(f.calls.create, 0)
+})
+
+test('stale fenced saves produce no alert and alert persistence cannot derail a durable save', async () => {
+  const f = await setup()
+  await f.service.tick(f.config)
+  const run = await f.run()
+  let alerts = 0
+  const service = new DailyAutomationService(f.smart, f.collector, { async enqueue() { alerts++; throw new Error('private error') } })
+  await service.save({ ...run, lease_token: randomUUID() }, 'FAILED', 'PIPELINE_FAILED')
+  assert.equal(alerts, 0)
+  const token = randomUUID()
+  await sequelize.query('UPDATE daily_automation_runs SET lease_token=:token WHERE id=:id', { replacements: { id: run.id, token } })
+  await service.save({ ...run, lease_token: token }, 'FAILED', 'PIPELINE_FAILED')
+  assert.equal(alerts, 1)
+  assert.equal((await f.run()).status, 'FAILED')
+  assert.equal((await f.run()).lease_token, null)
+})
+
+test('D+1 ready preview cannot automatically approve after its first target slot', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, autoApprove: true })
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const { buildSmartSchedule } = require('../dist/services/SmartCampaignService')
+  const slots = buildSmartSchedule(run.local_date, 30, { startTime: '08:00', endTime: '19:00', timezone: f.config.timezone,
+    minGapSeconds: 1200, maxGapSeconds: 1500, dailyCap: 30, spreadAcrossWindow: true, windowEndBufferSeconds: 120 }, 'deadline')
+  const items = ['domestica', 'masculino'].flatMap(audienceSlug => slots.map(slot => ({ state: 'SELECTED', audienceSlug, scheduledAt: slot.toISOString() })))
+  await SmartPlan.update({ status: 'REVIEW', items }, { where: { uuid: run.plan_uuid } })
+  t.mock.timers.setTime(new Date('2026-11-10T11:15:00Z').getTime())
+  await f.service.tick(f.config)
+  const held = await f.run()
+  assert.equal(held.status, 'REVIEW')
+  assert.equal(held.last_error, 'PREPARATION_DEADLINE_MISSED')
+  assert.equal(f.calls.approve, 0)
+  assert.equal(f.calls.collect, 1)
+  assert.equal((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'REVIEW')
 })

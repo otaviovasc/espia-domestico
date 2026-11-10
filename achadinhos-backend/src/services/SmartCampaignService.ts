@@ -48,6 +48,7 @@ import { env } from '@/config/env'
 import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
 import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 import { dailyDemandScore, dailyEvidenceReasons, dailySelectionReasons } from '@/utils/dailyProductSelection'
+import { dailyCommercialValue, dailyMixedPriceOrder } from '@/utils/dailyCommercialValue'
 import { hasDailyProductConflict, dailyOfferAliases } from '@/services/dailyNovelty'
 
 const MIN_SMART_FIT = 70
@@ -122,6 +123,7 @@ interface AudienceConfigSnapshot {
 interface PlanInputPayload {
   requestId?: string
   requestFingerprint?: string
+  dailyAppendRequests?: Record<string, string>
   offers: OfferInput[]
   observedAt: Array<string | null>
   source: string
@@ -897,6 +899,82 @@ export class SmartCampaignService {
     return serializePlan(plan, sends)
   }
 
+  /** Internal automation-only replenishment. Receipts survive worker/revision changes. */
+  async appendDailyProducts(
+    userId: number, uuid: string, revision: number,
+    payloads: NonNullable<CreateSmartPlanInput['payloads']>, requestId: string,
+  ) {
+    if (!requestId?.trim()) throw BadRequestError('Informe a identificação da reposição')
+    const fingerprint = createHash('sha256').update(JSON.stringify(payloads)).digest('hex')
+    const plan = await sequelize.transaction(async (transaction) => {
+      await this.advisoryLock(transaction, `smart-analysis-budget:${userId}`)
+      const found = await this.requirePlan(userId, uuid, transaction)
+      const input = found.input as unknown as PlanInputPayload
+      const automation = (found.settings as { dailyAutomation?: { runId?: string } }).dailyAutomation
+      if (!automation?.runId) throw ConflictError('A reposição exige um plano da automação diária')
+      const previous = input.dailyAppendRequests?.[requestId]
+      if (previous) {
+        if (previous !== fingerprint) throw ConflictError('Esta identificação de reposição já foi usada com outros dados')
+        return found
+      }
+      if (found.revision !== revision) throw ConflictError('O plano foi alterado; atualize a tela')
+      if (found.status !== SMART_PLAN_STATUS.REVIEW) throw ConflictError('A reposição exige um plano em revisão')
+      if (await SmartSend.count({ where: { userId, planId: found.id }, transaction })) {
+        throw ConflictError('Planos que já criaram envios não podem receber reposição')
+      }
+      const parsed = this.imports.parsePayloads(payloads)
+      if (!parsed.offers.length) throw BadRequestError('A importação não contém produtos válidos')
+      const selectedSlugs = new Set(found.audienceSlugs)
+      const seen = new Set(input.offers.flatMap(dailyOfferAliases))
+      const newOffers: OfferInput[] = []
+      const newSlugs: Array<NicheSlug[] | null> = []
+      for (const [index, offer] of parsed.offers.entries()) {
+        const origin = parsed.provenance?.[index]
+        const explicit = (origin?.targetAudienceSlugs ?? []).map(slug => NicheSlugSchema.parse(slug) as NicheSlug)
+        if (explicit.some(slug => !selectedSlugs.has(slug))) {
+          throw BadRequestError('O público de cada arquivo precisa estar incluído na seleção do plano')
+        }
+        const aliases = dailyOfferAliases(offer)
+        if (aliases.some(alias => seen.has(alias))) continue
+        aliases.forEach(alias => seen.add(alias))
+        newOffers.push(offer)
+        const lexical = (found.audienceSlugs as NicheSlug[]).filter(slug => NICHE_CUES[slug].test(`${offer.title} ${offer.description ?? ''}`))
+        newSlugs.push(explicit.length ? [...new Set([...explicit, ...lexical])].sort() : null)
+      }
+      if (input.offers.length + newOffers.length > 500) throw BadRequestError('Planos inteligentes aceitam no máximo 500 produtos por análise')
+      const oldSlugs = input.offers.map((_, index) => input.offerAudienceSlugs?.[index] ?? null)
+      const combinedSlugs = [...oldSlugs, ...newSlugs]
+      for (const slug of found.audienceSlugs) {
+        if (combinedSlugs.filter(slugs => !slugs?.length || slugs.includes(slug as NicheSlug)).length > 250) {
+          throw BadRequestError('A reposição aceita no máximo 250 produtos por público')
+        }
+      }
+      const recentPlans = await SmartPlan.findAll({ attributes: ['input'], where: {
+        userId, createdAt: { [Op.gte]: new Date(Date.now() - 24 * 60 * 60_000) },
+      }, transaction })
+      const recentItems = recentPlans.reduce((total, recent) => total + ((recent.input as unknown as PlanInputPayload).offers?.length ?? 0), 0)
+      if (recentItems + newOffers.length > 2_000) throw new AppError('O limite de 2.000 produtos analisados em 24 horas foi atingido', 429, 'SMART_DAILY_ANALYSIS_LIMIT')
+      found.input = {
+        ...input,
+        offers: [...input.offers, ...newOffers],
+        observedAt: [...input.observedAt, ...newOffers.map(observedAtFor)],
+        offerAudienceSlugs: combinedSlugs,
+        totalSeen: input.totalSeen + parsed.totalSeen,
+        errors: [...input.errors, ...parsed.errors],
+        duplicateCount: input.duplicateCount + (parsed.duplicateCount ?? 0) + parsed.offers.length - newOffers.length,
+        dailyAppendRequests: { ...input.dailyAppendRequests, [requestId]: fingerprint },
+      } as unknown as Record<string, unknown>
+      found.revision += 1
+      if (newOffers.length) {
+        found.status = SMART_PLAN_STATUS.ANALYZING
+        found.progress = { phase: 'QUEUED', completed: Object.keys(input.analysisResults ?? {}).length, total: input.offers.length + newOffers.length }
+      }
+      await found.save({ transaction })
+      return found
+    })
+    return serializePlan(plan)
+  }
+
   private async claimAnalysisPlan(planId?: number): Promise<SmartPlan | null> {
     return sequelize.transaction(async (transaction) => {
       const where = planId
@@ -1187,8 +1265,9 @@ export class SmartCampaignService {
     const freshness = Math.max(0, 100 - ageHours * (100 / DEFAULT_POLICY.freshnessHours))
     const assortment = marketplaceSignalScore(offer)
     const demand = dailyDemandScore(offer)
+    const dailyValue = dailyCommercialValue(offer, fit)
     const total = policy?.dailySelection
-      ? 0.50 * fit + 0.25 * demand + 0.15 * offerValue + 0.05 * freshness + 0.03 * seasonal + 0.02 * commissionOpportunity
+      ? 0.40 * fit + 0.20 * demand + 0.10 * offerValue + 0.20 * dailyValue.score + 0.05 * freshness + 0.03 * seasonal + 0.02 * assortment
       :
       0.4 * fit +
       0.2 * offerValue +
@@ -1202,9 +1281,14 @@ export class SmartCampaignService {
       components: {
         audienceFit: fit,
         offerValue: Math.round(offerValue),
-        commissionOpportunity: Math.round(commissionOpportunity),
+        commissionOpportunity: Math.round(policy?.dailySelection ? dailyValue.score : commissionOpportunity),
         seasonalFit: seasonal,
-        ...(policy?.dailySelection ? { observedDemand: demand } : {}),
+        ...(policy?.dailySelection ? {
+          observedDemand: demand,
+          grossCommissionBrl: Math.round(dailyValue.grossCommissionBrl * 100) / 100,
+          saleEaseIndex: Math.round(dailyValue.saleEaseIndex * 100),
+          adjustedCommissionBrl: Math.round(dailyValue.adjustedCommissionBrl * 100) / 100,
+        } : {}),
         freshness: Math.round(freshness),
         assortmentContribution: assortment,
       },
@@ -1348,7 +1432,8 @@ export class SmartCampaignService {
           date === planningLocalDate && planningNow > configuredDayStart
             ? planningNow
             : undefined
-        const dayCandidates = eligible.filter((item) => !globallySelected.has(item.id))
+        const dayPool = eligible.filter((item) => !globallySelected.has(item.id))
+        const dayCandidates = policy.dailySelection ? dailyMixedPriceOrder(dayPool, capacity) : dayPool
         // Evenly distribute this audience's best remaining offers across the selected dates.
         const remainingDays = plan.days - dayOffset
         const audienceTarget = Math.ceil(
@@ -1361,7 +1446,11 @@ export class SmartCampaignService {
           const category = item.category ?? 'outros'
           const categoryKey = `${date}:${category}`
           const count = audienceCategoryCounts.get(categoryKey) ?? 0
-          if (count >= categoryLimit) continue
+          if (count >= categoryLimit) {
+            if (!policy.dailySelection) continue
+            item.warnings = [...new Set([...item.warnings,
+              'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
+          }
           // Adding a row can change all gaps when the window is nearly full.
           // Recheck the exact deterministic schedule for every chosen offer.
           const tentative = [...chosen, item]
@@ -1414,6 +1503,7 @@ export class SmartCampaignService {
           item.state = 'SELECTED'
           item.date = date
           item.scheduledAt = slots[index].toISOString()
+          if (policy.dailySelection) item.sendOrder = index
           selected.push(item)
           globallySelected.add(item.id)
         })

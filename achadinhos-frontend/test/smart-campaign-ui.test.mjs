@@ -27,6 +27,13 @@ test('plan dates reject past, malformed and impossible calendar dates', () => {
   assert.equal(validPlanDate('2026-10-14', '2026-10-15'), false)
 })
 
+test('expanded discovery supports 50 base keywords while negative terms stay bounded', () => {
+  const keywords = Array.from({ length: 50 }, (_, i) => `termo ${i}`).join(', ')
+  assert.equal(audienceValidation(audienceInput(audience, keywords, '')), null)
+  assert.match(audienceValidation(audienceInput(audience, `${keywords}, termo extra`, '')), /50 termos-base/)
+  assert.match(audienceValidation(audienceInput(audience, 'cozinha', Array.from({ length: 21 }, (_, i) => `excluir ${i}`).join(', '))), /20 termos negativos/)
+})
+
 test('file audience suggestions handle ambiguity and do not classify tapete as pet', () => {
   const audiences = ['DOMESTICA', 'MASCULINO', 'PESCA', 'PET'].map((slug) => ({ slug, name: slug }))
   const selected = new Set(audiences.map((item) => item.slug))

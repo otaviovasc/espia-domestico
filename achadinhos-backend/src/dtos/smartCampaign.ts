@@ -41,7 +41,7 @@ export const SmartAudienceDestinationSchema = z.object({
 
 export const SmartAudienceProfileSchema = z.object({
   instructions: z.string().trim().min(20).max(2000),
-  keywords: z.array(z.string().trim().min(2).max(80)).min(1).max(20),
+  keywords: z.array(z.string().trim().min(2).max(80)).min(1).max(50),
   negativeKeywords: z.array(z.string().trim().min(2).max(80)).max(20),
 })
 

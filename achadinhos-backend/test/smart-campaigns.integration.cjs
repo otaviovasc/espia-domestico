@@ -1110,3 +1110,64 @@ test('plan request ids are idempotent and analysis uses its frozen audience crit
     await user.destroy()
   }
 })
+
+test('daily replenishment preserves evidence and resumes only new analysis with durable receipts', async () => {
+  assertLocalDatabase()
+  const { OfferImportService } = require('../dist/services/OfferImportService')
+  const user = await createUser('daily-append')
+  try {
+    const deps = fakeDependencies()
+    const imports = new OfferImportService()
+    let importsCount = 0
+    const parsePayloads = imports.parsePayloads.bind(imports)
+    imports.parsePayloads = payloads => { importsCount++; return parsePayloads(payloads) }
+    const service = new SmartCampaignService(imports, deps.savedProducts, deps.intelligence, deps.groups, deps.connections)
+    await configureAudiences(service, user.id, ['pet'])
+    const old = offer('Ração premium para cachorro', 1234567)
+    old.productId = 'MLB1234567'
+    const initial = await service.createPlan(user.id, {
+      requestId: randomUUID(), date: localDate(1), days: 1, audienceSlugs: ['pet'], rawJson: [old],
+    }, { runId: randomUUID(), localDate: localDate(1), minimumItems: 1, startTime: '09:00', endTime: '21:00' })
+    const row = await SmartPlan.findOne({ where: { uuid: initial.uuid } })
+    await service.processPendingAnalysis(row.id)
+    await row.reload()
+    const before = structuredClone(row.input)
+    const existingAnalysis = structuredClone(row.input.analysisResults['0'])
+    const next = offer('Coleira para cachorro', 7654321)
+    next.productId = 'MLB7654321'
+    const duplicate = { ...old, productId: 'MLB-1234567', affiliateUrl: 'https://meli.la/different-link' }
+    const payloads = [{ name: 'replenishment.json', json: [duplicate, next], targetAudienceSlug: 'pet' }]
+    const requestId = randomUUID()
+    const revision = row.revision
+    const appended = await service.appendDailyProducts(user.id, row.uuid, revision, payloads, requestId)
+    assert.equal(appended.status, SMART_PLAN_STATUS.ANALYZING)
+    await row.reload()
+    assert.equal(row.input.offers.length, 2)
+    assert.equal(row.input.requestFingerprint, before.requestFingerprint)
+    assert.deepEqual(row.input.analysisResults['0'], existingAnalysis)
+    assert.deepEqual(row.input.observedAt.slice(0, 1), before.observedAt)
+    assert.equal(importsCount, 1)
+    const replay = await service.appendDailyProducts(user.id, row.uuid, revision, payloads, requestId)
+    assert.equal(replay.revision, appended.revision)
+    assert.equal(importsCount, 1)
+    await assert.rejects(service.appendDailyProducts(user.id, row.uuid, revision, [{ ...payloads[0], name: 'changed.json' }], requestId), /outros dados/)
+    await assert.rejects(service.appendDailyProducts(user.id, row.uuid, row.revision, payloads, randomUUID()), /em revisão/)
+    const oldCalls = deps.analysisCalls.length
+    await service.processPendingAnalysis(row.id)
+    assert.equal(deps.analysisCalls.length, oldCalls + 1)
+    assert.equal(deps.analysisCalls.at(-1).offers.length, 1)
+    assert.equal(deps.analysisCalls.at(-1).offers[0].productId, next.productId)
+    await row.reload()
+    assert.deepEqual(row.input.analysisResults['0'], existingAnalysis)
+    assert.equal(row.status, SMART_PLAN_STATUS.REVIEW)
+    const completedReplay = await service.appendDailyProducts(user.id, row.uuid, revision, payloads, requestId)
+    assert.equal(completedReplay.revision, row.revision)
+    assert.equal(importsCount, 1)
+    await assert.rejects(service.appendDailyProducts(user.id, row.uuid, revision, payloads, randomUUID()), /alterado/)
+    row.settings = { ...row.settings, dailyAutomation: undefined }
+    await row.save()
+    await assert.rejects(service.appendDailyProducts(user.id, row.uuid, row.revision, payloads, randomUUID()), /automação diária/)
+  } finally {
+    await user.destroy()
+  }
+})

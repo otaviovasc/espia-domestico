@@ -7,7 +7,7 @@ export const NicheIntelligenceOverrideSchema = z
   .object({
     description: z.string().trim().min(1).max(1000).optional(),
     instructions: z.string().trim().min(1).max(2000).optional(),
-    keywords: z.array(z.string().trim().min(2).max(80)).min(1).max(20).optional(),
+    keywords: z.array(z.string().trim().min(2).max(80)).min(1).max(50).optional(),
     negativeKeywords: z.array(z.string().trim().min(2).max(80)).max(20).optional(),
   })
   .strict()

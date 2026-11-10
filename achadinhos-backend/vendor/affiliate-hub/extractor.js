@@ -815,7 +815,7 @@
     const input = options.keywords ?? options.keyword ?? "";
     const values = Array.isArray(input) ? input : [input];
     if (values.some(value => typeof value !== "string")) throw new Error("Informe palavras-chave como texto.");
-    if (values.join(",").length > 4200) throw new Error("Use até 20 frases de até 200 caracteres cada.");
+    if (values.join(",").length > 10200) throw new Error("Use até 50 frases de até 200 caracteres cada.");
     const matchMode = options.matchMode ?? "any";
     if (!["any", "all"].includes(matchMode)) throw new Error("Escolha qualquer frase (ANY) ou todas as frases (ALL).");
     const matchStyle = options.matchStyle ?? "substring";
@@ -829,7 +829,7 @@
       const normalized = normalizeKeyword(keyword);
       if (seen.has(normalized)) continue;
       seen.add(normalized); keywords.push(keyword);
-      if (keywords.length > 20) throw new Error("Use até 20 frases diferentes.");
+      if (keywords.length > 50) throw new Error("Use até 50 frases diferentes.");
     }
     return { keyword: keywords.join(", "), keywords, matchMode, matchStyle, ...normalizeEligibility(options),
       comparisonMode: `accent_case_insensitive_visible_text_${matchStyle}`, targetScope: "combined_unique_products",

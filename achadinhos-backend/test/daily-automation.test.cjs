@@ -13,7 +13,7 @@ const { buildSmartSchedule } = require('../dist/services/SmartCampaignService')
 const { SmartCampaignSender, resolveSmartSendPolicy } = require('../dist/services/SmartCampaignSender')
 
 test('daily cadence fills 08:00–19:00 with 30 items per audience and 20–25 minute gaps', () => {
-  const config = DailyAutomationConfigSchema.parse({ userId: 1 })
+  const config = DailyAutomationConfigSchema.parse({ userId: 1, planningDaysAhead: 0, collectTime: '06:00' })
   assert.equal(dailyItemTarget(config), 30)
   const policy = { startTime: config.startTime, endTime: config.endTime, timezone: config.timezone,
     minGapSeconds: 1200, maxGapSeconds: 1500, dailyCap: 30, spreadAcrossWindow: true, windowEndBufferSeconds: 120 }
@@ -124,4 +124,22 @@ test('vendored extension sources match their recorded integrity hashes', () => {
   for (const [name, hash] of Object.entries(manifest.sha256)) {
     assert.equal(createHash('sha256').update(fs.readFileSync(path.join(root, name))).digest('hex'), hash)
   }
+})
+
+const { dailyRequiredItems } = require('../dist/config/dailyAutomation')
+const { dailyPlanCoverage } = require('../dist/utils/dailyPlanCoverage')
+test('D+1 preparation targets tomorrow after 19:00 and requires all 30 slots per audience', () => {
+  const config = DailyAutomationConfigSchema.parse({ userId: 1 })
+  assert.equal(dailyWindow(config, new Date('2026-11-09T21:59:00Z')).due, false)
+  const window = dailyWindow(config, new Date('2026-11-09T22:00:00Z'))
+  assert.equal(window.due, true)
+  assert.equal(window.targetDate, '2026-11-10')
+  assert.equal(dailyRequiredItems(config), 30)
+  assert.ok(dailyRemainingCapacity(config, new Date('2026-11-09T22:00:00Z'), window.targetDate) >= 30)
+  const slots = buildSmartSchedule(window.targetDate, 30, { startTime: config.startTime, endTime: config.endTime, timezone: config.timezone,
+    minGapSeconds: 1200, maxGapSeconds: 1500, dailyCap: 30, spreadAcrossWindow: true, windowEndBufferSeconds: 120 }, 'd1')
+  const items = ['domestica', 'masculino'].flatMap(audienceSlug => slots.map(slot => ({ state: 'SELECTED', audienceSlug, scheduledAt: slot.toISOString() })))
+  assert.equal(dailyPlanCoverage(items, config, window.targetDate).ready, true)
+  assert.equal(dailyPlanCoverage(items.slice(1), config, window.targetDate).ready, false)
+  assert.equal(dailyPlanCoverage(items.map(i => ({ ...i, scheduledAt: undefined })), config, window.targetDate).ready, false)
 })
