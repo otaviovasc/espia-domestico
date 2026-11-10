@@ -30,8 +30,8 @@ export type SalesStatus = 'pending' | 'cancelled' | 'settled' | 'unknown' | 'amb
 /** Known pending label and explicit cancellation/return labels. Unknown never means paid. */
 export function affiliateSalesStatus(value: string): SalesStatus {
   const status = value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ').toUpperCase()
-  if (status === 'EM REVISAO') return 'pending'
-  if (['CANCELADA', 'CANCELADO', 'CANCELADA POR DEVOLUCAO', 'DEVOLVIDA', 'DEVOLVIDO', 'REEMBOLSADA', 'REEMBOLSADO'].includes(status)) return 'cancelled'
+  if (/^EM REVISAO\b/.test(status)) return 'pending'
+  if (/^(?:CANCELAD[AO]|DEVOLVID[AO]|REEMBOLSAD[AO]|ESTORNAD[AO])\b/.test(status)) return 'cancelled'
   return 'unknown'
 }
 
@@ -76,7 +76,7 @@ export function reconcileAffiliateSales(previous: AffiliateSale[], observed: Aff
     if (choices.length > 1) collisions.push({ key, productId: sale.productId, variants: choices })
     if (!old || observationIdentity(old) !== observationIdentity(sale) || Boolean(old.observationAmbiguous) !== sale.observationAmbiguous) {
       const fieldsChanged = old ? (['status', 'commissionBRL', 'saleValueBRL', 'saleDate', 'commissionRatePercent', 'units', 'observedCategory', 'observationAmbiguous', 'observationStatuses'] as const)
-        .filter(field => JSON.stringify(old[field]) !== JSON.stringify(sale[field])) : ['observedPurchase']
+        .filter(field => JSON.stringify(old[field] ?? (field === 'observationAmbiguous' ? false : null)) !== JSON.stringify(sale[field] ?? (field === 'observationAmbiguous' ? false : null))) : ['observedPurchase']
       changes.push({ key, productId: sale.productId, kind: old ? 'changed' : 'newly_observed', fieldsChanged, previousStatus: old?.status ?? null,
         status: sale.status, previousCommissionBRL: old?.commissionBRL ?? null, commissionBRL: sale.commissionBRL })
     }

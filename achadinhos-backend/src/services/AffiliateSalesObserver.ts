@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { chromium, type Browser } from 'playwright'
+import { chromium, type Browser, type Page } from 'playwright'
 import { dailyWindow, dailyDateOffset, type DailyAutomationConfig } from '@/config/dailyAutomation'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
 import { AffiliateSalesState, resolveAffiliateSaleDate, type SalesReportRange } from './AffiliateSalesState'
@@ -77,6 +77,15 @@ export function affiliateSalesErrorCode(error: unknown): string {
   return codes[message] ?? (error instanceof Error && error.name === 'TimeoutError' ? 'AFFILIATE_SALES_TIMEOUT' : 'AFFILIATE_SALES_OBSERVATION_FAILED')
 }
 
+async function waitForLoadedSales(page: Page): Promise<void> {
+  // Headers, a selected preset and absent pagination do not prove data has loaded.
+  // No live empty-state marker has been verified: preserve prior data instead of certifying zero.
+  await page.waitForFunction(() => [...document.querySelectorAll('table tbody tr')].some(row => {
+    const cells = [...row.querySelectorAll('td')].map(cell => (cell as HTMLElement).innerText.trim())
+    return cells.length === 5 && /#\s*\d{8,30}\b/.test(cells[0]) && /R\$/.test(cells[2]) && Boolean(cells[4])
+  }), undefined, { timeout: 10_000 })
+}
+
 /** Observational ledger only. It cannot approve, change rankings or send messages. */
 export class AffiliateSalesObserver {
   async tick(config: DailyAutomationConfig, now = new Date()): Promise<void> {
@@ -113,14 +122,15 @@ export class AffiliateSalesObserver {
       if (!new URL(page.url()).pathname.startsWith('/afiliados') || await page.locator('input[type="password"]').count()) throw new Error('AUTH_REQUIRED')
       const table = page.locator('table').first()
       await table.waitFor({ timeout: 20_000 })
+      await waitForLoadedSales(page)
       // This UI selection was verified on the authenticated dashboard. No private API replay.
       const selectedPeriod = page.locator('main button').filter({ hasText: /^Últimos 90 dias$/ }).first()
       if (!await selectedPeriod.count() || !await selectedPeriod.isVisible()) {
-        const previousPeriodRows = await table.locator('tbody').innerText()
+        const previousPeriodView = await page.evaluate(() => JSON.stringify([...document.querySelectorAll('table tbody, .andes-pagination')].map(node => node.textContent)))
         await page.locator('main button').filter({ hasText: /\d.+\/(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)|^últimos\s+\d+\s+dias$|^este\s+mês$|^hoje$|^ontem$/i }).first().click({ timeout: 5000 })
         await page.getByText('Últimos 90 dias', { exact: true }).click({ timeout: 5000 })
         await selectedPeriod.waitFor({ timeout: 5000 })
-        await page.waitForFunction(previous => Boolean((document.querySelector('table tbody') as HTMLElement | null)?.innerText.trim()) && (document.querySelector('table tbody') as HTMLElement).innerText !== previous, previousPeriodRows, { timeout: 10_000 })
+        await page.waitForFunction(previous => Boolean((document.querySelector('table tbody') as HTMLElement | null)?.innerText.trim()) && JSON.stringify([...document.querySelectorAll('table tbody, .andes-pagination')].map(node => node.textContent)) !== previous, previousPeriodView, { timeout: 10_000 })
       }
       // Tracking requests may never go idle; the explicit table transition above certifies reload.
       await page.waitForLoadState('networkidle', { timeout: 1000 }).catch(() => undefined)
@@ -133,6 +143,7 @@ export class AffiliateSalesObserver {
       let malformedRows = 0, complete = false
       const seenPages = new Set<string>()
       for (let index = 0; index < 10; index++) {
+        await waitForLoadedSales(page)
         const raw = await table.locator('tbody tr').evaluateAll(rows => rows.map(row => ({
           cells: [...row.querySelectorAll('td')].map(cell => (cell as HTMLElement).innerText.trim()),
           productLinks: [...row.querySelectorAll('a[href]')].map(a => (a as HTMLAnchorElement).href),

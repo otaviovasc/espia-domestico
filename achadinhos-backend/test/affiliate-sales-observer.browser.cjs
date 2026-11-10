@@ -7,7 +7,7 @@ const { chromium } = require('playwright')
 const { AffiliateSalesObserver } = require('../dist/services/AffiliateSalesObserver')
 const { AffiliateSalesState } = require('../dist/services/AffiliateSalesState')
 
-for (const initialPeriod of ['2 até 8/nov', 'Últimos 7 dias']) test(`Chromium waits for delayed report pages from ${initialPeriod}, records collisions and preserves the last good generation after login expiry`, async () => {
+for (const initialPeriod of ['2 até 8/nov', 'Últimos 7 dias', 'Últimos 90 dias']) test(`Chromium waits for delayed report pages from ${initialPeriod}, records collisions and preserves the last good generation after login expiry`, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sales-browser-'))
   const statePath = path.join(directory, 'daily-auth/session.json')
   await fs.mkdir(path.dirname(statePath), { recursive: true })
@@ -15,7 +15,7 @@ for (const initialPeriod of ['2 até 8/nov', 'Últimos 7 dias']) test(`Chromium 
   const previousState = process.env.DAILY_BROWSER_STATE_PATH
   process.env.DAILY_BROWSER_STATE_PATH = statePath
   const originalLaunch = chromium.launch.bind(chromium)
-  let launches = 0, loginExpired = false
+  let launches = 0, loginExpired = false, emptyReport = false
   const row = (order, product, commission = 10, status = 'EM REVISÃO') => `<tr><td>09/nov #${order} Panela Categoria: Cozinha<a href="https://produto.mercadolivre.com.br/MLB-${product}-panela-_JM">Produto</a></td><td>Loja</td><td>R$ 100,00 1 unidade</td><td>R$ ${commission},00 Venda direta: 10%</td><td>${status}</td></tr>`
   const first = row('111111111111', '123456789') + row('222222222222', '987654321')
   const second = row('111111111111', '123456789') + row('111111111111', '123456789', 0, 'CANCELADA')
@@ -28,6 +28,8 @@ for (const initialPeriod of ['2 até 8/nov', 'Últimos 7 dias']) test(`Chromium 
       const originalPage = context.newPage.bind(context)
       context.newPage = async () => {
         const page = await originalPage()
+        const originalWait = page.waitForFunction.bind(page)
+        page.waitForFunction = (fn, arg, options) => originalWait(fn, arg, emptyReport ? { ...options, timeout: 200 } : options)
         const originalGoto = page.goto.bind(page)
         page.goto = async (...args) => {
           const response = await originalGoto(...args)
@@ -38,17 +40,21 @@ for (const initialPeriod of ['2 até 8/nov', 'Últimos 7 dias']) test(`Chromium 
           const url = new URL(route.request().url())
           if (url.hostname !== 'www.mercadolivre.com.br') return route.abort()
           if (url.pathname === '/login') return route.fulfill({ contentType: 'text/html', body: '<input type="password">' })
-          if (url.pathname === '/qa-sales') {
+          if (url.pathname === '/qa-default') {
             await new Promise(resolve => setTimeout(resolve, 1800))
+            return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ rows: row('999999999999', '999999999') }) })
+          }
+          if (url.pathname === '/qa-sales') {
+            await new Promise(resolve => setTimeout(resolve, initialPeriod === 'Últimos 90 dias' && url.searchParams.get('page') === '1' ? 3000 : 1800))
             return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ rows: url.searchParams.get('page') === '2' ? second : first }) })
           }
           assert.equal(url.pathname, '/afiliados/dashboard')
           if (loginExpired) return route.fulfill({ status: 302, headers: { location: 'https://www.mercadolivre.com.br/login' }, body: '' })
           return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<main><button id="period" onclick="document.querySelector('#choice').hidden=false">${initialPeriod}</button>
             <button id="choice" hidden onclick="load(1);document.querySelector('#period').textContent='Últimos 90 dias';this.hidden=true">Últimos 90 dias</button>
-            <table><thead><tr>${['Produtos','Loja','Valor da venda','Ganho por venda','Estado'].map(x=>'<th>'+x+'</th>').join('')}</tr></thead><tbody>${row('999999999999', '999999999')}</tbody></table>
-            <div class="andes-pagination__button--next" id="next"><button onclick="load(2)">Próxima</button></div>
-            <script>async function load(page){const r=await fetch('/qa-sales?page='+page);const d=await r.json();document.querySelector('tbody').innerHTML=d.rows;if(page===2){document.querySelector('#next').setAttribute('aria-disabled','true');}}</script></main>` })
+            <table><thead><tr>${['Produtos','Loja','Valor da venda','Ganho por venda','Estado'].map(x=>'<th>'+x+'</th>').join('')}</tr></thead><tbody>${initialPeriod === 'Últimos 7 dias' ? first : ''}</tbody></table>
+            <nav class="andes-pagination"><span id="pages">1</span><div class="andes-pagination__button--next" id="next" ${initialPeriod === 'Últimos 90 dias' ? 'hidden' : ''}><button onclick="load(2)">Próxima</button></div></nav>
+            <script>async function load(page){const r=await fetch('/qa-sales?page='+page);const d=await r.json();document.querySelector('tbody').innerHTML=d.rows;document.querySelector('#pages').textContent='2';document.querySelector('#next').hidden=false;if(page===2){document.querySelector('#next').setAttribute('aria-disabled','true');}}${initialPeriod === 'Últimos 90 dias' && !emptyReport ? 'load(1)' : initialPeriod === '2 até 8/nov' ? "fetch('/qa-default').then(r=>r.json()).then(d=>document.querySelector('tbody').innerHTML=d.rows)" : ''}</script></main>` })
         })
         return page
       }
@@ -69,8 +75,16 @@ for (const initialPeriod of ['2 até 8/nov', 'Últimos 7 dias']) test(`Chromium 
     assert.equal((await fs.stat(statePath)).mode & 0o777, 0o600)
     assert.equal(await observer.capture(1, '2026-11-10'), null)
     assert.equal(launches, 1, 'The durable attempt marker prevents duplicate browsing')
+    if (initialPeriod === 'Últimos 90 dias') {
+      emptyReport = true
+      await assert.rejects(observer.capture(1, '2026-11-11'), error => error.name === 'TimeoutError')
+      const empty = await store.report()
+      assert.equal(empty.generationId, firstGeneration.capture.generationId, 'Unverified empty state never replaces complete data')
+      assert.equal(empty.attempt.code, 'AFFILIATE_SALES_TIMEOUT')
+      emptyReport = false
+    }
     loginExpired = true
-    await assert.rejects(observer.capture(1, '2026-11-11'), /AUTH_REQUIRED/)
+    await assert.rejects(observer.capture(1, '2026-11-12'), /AUTH_REQUIRED/)
     const report = await store.report()
     assert.equal(report.generationId, firstGeneration.capture.generationId)
     assert.equal(report.attempt.status, 'failed')

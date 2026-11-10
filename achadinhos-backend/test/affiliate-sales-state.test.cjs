@@ -27,7 +27,11 @@ test('under-review and indirect purchases count immediately; a cancellation reve
   assert.equal(summarizeAffiliateSales(merged.sales).demand.observedPurchases, 0)
   assert.equal(reconcileAffiliateSales(merged.sales, [cancelled]).changes.length, 0)
   assert.equal(summarizeAffiliateSales([sale({ status: 'Rótulo novo' })]).totals.unknown.orders, 1)
-  for (const status of ['DEVOLVIDA', 'REEMBOLSADA']) assert.equal(summarizeAffiliateSales([sale({ status })]).demand.observedPurchases, 0)
+  for (const status of ['DEVOLVIDA', 'REEMBOLSADA', 'CANCELADA\n\nPor arrependimento', 'CANCELADA\nPagamento recusado', 'Cancelada pelo comprador', 'ESTORNADA pelo banco']) {
+    assert.equal(summarizeAffiliateSales([sale({ status })]).demand.observedPurchases, 0)
+    assert.equal(summarizeAffiliateSales(reconcileAffiliateSales([], [sale(), sale({ status })]).sales).demand.observedPurchases, 0)
+  }
+  assert.equal(summarizeAffiliateSales([sale({ status: 'EM REVISÃO\nAguardando' })]).demand.pendingPurchases, 1)
 })
 
 test('differing same-order rows remain ambiguous without summing money or fabricating two purchases', () => {
