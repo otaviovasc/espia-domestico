@@ -1400,6 +1400,8 @@ export class SmartCampaignService {
             score: scored.total,
               fitScore: fit?.score,
               political: analysis?.political,
+              captionEvidence: analysis?.captionEvidence,
+              analysisLineage: analysis?.lineage,
               estimatedCommission: collectedSmartCommissionRate(offer) === null ? undefined : scored.estimatedCommission,
             freshnessHours: scored.freshnessHours,
               reason: hardReasons.length ? hardReasons.join('; ') : fit!.reason,

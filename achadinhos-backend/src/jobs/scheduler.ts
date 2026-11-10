@@ -7,7 +7,7 @@ import { DailyAutomationService } from '@/services/DailyAutomationService'
 import { readDailyAutomationConfig, dailyWindow } from '@/config/dailyAutomation'
 import { logger } from '@/utils/logger'
 import { env } from '@/config/env'
-import { AffiliateSalesObserver } from '@/services/AffiliateSalesObserver'
+import { AffiliateSalesObserver, affiliateSalesErrorCode } from '@/services/AffiliateSalesObserver'
 
 const POLL_INTERVAL_MS = 30_000
 
@@ -84,7 +84,7 @@ export function startScheduler(): void {
         .then(async () => {
           if (!sales || !isCurrent() || !dailyConfig) return
           try { await sales.tick(dailyConfig) }
-          catch { logger.warn('Affiliate sales observation failed; existing delivery and collection stay independent'); void problem('AFFILIATE_SALES_OBSERVATION_FAILED') }
+          catch (error) { const code = affiliateSalesErrorCode(error); logger.warn({ code }, 'Affiliate sales observation failed'); void problem(code) }
         })
         .finally(() => {
           if (collectingGeneration === currentGeneration) collectingGeneration = null

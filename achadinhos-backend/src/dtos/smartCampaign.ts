@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { OfferSchema } from './campaign'
+import { SmartCaptionEvidenceSchema, SmartAnalysisLineageSchema } from './smartIntelligence'
 
 export const SmartAudienceSlugSchema = z
   .string()
@@ -178,6 +179,8 @@ export const SmartPlanItemSchema = z.object({
   score: z.number().min(0).max(100),
   fitScore: z.number().min(0).max(100).optional(),
   political: z.boolean().optional(),
+  captionEvidence: SmartCaptionEvidenceSchema.optional(),
+  analysisLineage: SmartAnalysisLineageSchema.optional(),
   estimatedCommission: z.number().min(0).optional(),
   freshnessHours: z.number().min(0).optional(),
   reason: z.string().max(2000),

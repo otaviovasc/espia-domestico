@@ -1,0 +1,100 @@
+const { test } = require('node:test')
+const assert = require('node:assert/strict')
+const { mkdtemp, readFile, writeFile, rm } = require('node:fs/promises')
+const { tmpdir } = require('node:os')
+const path = require('node:path')
+const { randomUUID } = require('node:crypto')
+const { AffiliateSalesState, summarizeAffiliateSales, reconcileAffiliateSales, resolveAffiliateSaleDate } = require('../dist/services/AffiliateSalesState')
+const sale = (extra = {}) => ({ key: 'a'.repeat(64), productId: 'MLB123456789', title: 'Panela', saleDateLabel: '09/nov', saleDate: '2026-11-09',
+  saleValueBRL: 98.77, commissionBRL: 17.82, units: 1, status: 'EM REVISÃO', attribution: 'direct',
+  firstSeenAt: '2026-11-10T12:00:00Z', lastSeenAt: '2026-11-10T12:00:00Z', ...extra })
+const capture = (sales, extra = {}) => ({ generationId: randomUUID(), userId: 1, observedAt: '2026-11-10T12:00:00Z',
+  reportRange: { from: '2026-08-12', to: '2026-11-09' }, complete: true, rows: sales.length, malformedRows: 0, sales, ...extra })
+
+test('under-review and indirect purchases count immediately; a cancellation reverses demand exactly once', () => {
+  const first = sale({ attribution: 'indirect' })
+  const demand = summarizeAffiliateSales([first])
+  assert.equal(demand.demand.observedPurchases, 1)
+  assert.equal(demand.demand.pendingPurchases, 1)
+  assert.equal(demand.demand.indirectPurchases, 1)
+  assert.equal(demand.totals.pending.knownCommissionCents, 1782)
+  assert.equal(demand.paidEarningsKnown, false)
+  const cancelled = sale({ status: 'CANCELADA\n\nPor devolução', commissionBRL: 0 })
+  const merged = reconcileAffiliateSales([first], [cancelled, cancelled])
+  assert.equal(merged.sales.length, 1)
+  assert.equal(merged.identicalDuplicateRows, 1)
+  assert.equal(merged.changes.length, 1)
+  assert.equal(summarizeAffiliateSales(merged.sales).demand.observedPurchases, 0)
+  assert.equal(reconcileAffiliateSales(merged.sales, [cancelled]).changes.length, 0)
+  assert.equal(summarizeAffiliateSales([sale({ status: 'Rótulo novo' })]).totals.unknown.orders, 1)
+})
+
+test('differing same-order rows remain ambiguous without summing money or fabricating two purchases', () => {
+  const rows = [sale(), sale({ commissionBRL: 5, saleValueBRL: 20 })]
+  const result = reconcileAffiliateSales([], rows)
+  assert.equal(result.sales.length, 1)
+  assert.equal(result.collisions.length, 1)
+  assert.equal(result.collisions[0].variants.length, 2)
+  const report = summarizeAffiliateSales(result.sales)
+  assert.equal(report.totals.ambiguous.orders, 1)
+  assert.equal(report.totals.ambiguous.knownCommissionCents, 0)
+  assert.equal(report.demand.observedPurchases, 0)
+  assert.equal(reconcileAffiliateSales(result.sales, [...rows].reverse()).changes.length, 0)
+})
+
+test('sale dates resolve inside the report range across year boundaries and otherwise stay unknown', () => {
+  const range = { from: '2026-10-13', to: '2027-01-10' }
+  assert.equal(resolveAffiliateSaleDate('28/dez', range), '2026-12-28')
+  assert.equal(resolveAffiliateSaleDate('09/jan', range), '2027-01-09')
+  assert.equal(resolveAffiliateSaleDate('09/jul', range), null)
+  assert.equal(resolveAffiliateSaleDate('32/nov', range), null)
+  assert.equal(resolveAffiliateSaleDate('29/fev', { from: '2027-02-01', to: '2027-03-01' }), null)
+})
+
+test('partial and interrupted writes retain the last complete generation; corrupt pointers fail explicitly', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'affiliate-state-'))
+  try {
+    const store = new AffiliateSalesState(directory, 1)
+    assert.equal((await store.report()).summary, null)
+    const initial = capture([sale()])
+    await store.publish(initial)
+    await store.publish(capture([], { complete: false, malformedRows: 1, rows: 1 }))
+    assert.equal((await store.readGeneration()).capture.generationId, initial.generationId)
+    await assert.rejects(store.publish(initial), /EEXIST/)
+    assert.equal((await store.readGeneration()).capture.generationId, initial.generationId)
+    await assert.rejects(store.publish(capture([sale({ status: 'CANCELADA' })]), async () => { throw new Error('Interrupted before pointer') }))
+    assert.equal((await store.report()).summary.demand.observedPurchases, 1)
+    const repeated = await store.publish(capture([sale()]))
+    assert.equal(repeated.newRows, 0)
+    assert.equal(repeated.changedRows, 0)
+    const report = await store.report(new Date('2026-11-12T12:00:00Z'))
+    assert.equal(report.stale, true)
+    assert.equal(report.ageHours, 48)
+    await writeFile(path.join(directory, 'last-attempt.json'), JSON.stringify({ userId: 1, date: '2026-11-11', startedAt: '2026-11-11T22:00:00Z', status: 'failed', code: 'AFFILIATE_SALES_AUTH_REQUIRED' }))
+    assert.equal((await store.report()).attempt.status, 'failed')
+    assert.equal((await store.report()).summary.demand.observedPurchases, 1)
+    const pointer = JSON.parse(await readFile(path.join(directory, 'current.json'), 'utf8'))
+    await writeFile(path.join(directory, 'generations', pointer.generationId + '.json'), '{}')
+    await assert.rejects(store.readGeneration(), /SALES_STATE_INTEGRITY_FAILED/)
+    await assert.rejects(new AffiliateSalesState(directory, 2).readGeneration())
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})
+
+test('private worker report can use legacy demand immediately without claiming verified completeness', async () => {
+  const { execFileSync } = require('node:child_process')
+  const directory = await mkdtemp(path.join(tmpdir(), 'affiliate-report-'))
+  try {
+    const { mkdir } = require('node:fs/promises')
+    const stateDirectory = path.join(directory, 'affiliate-sales', 'account-1')
+    await mkdir(stateDirectory, { recursive: true })
+    await writeFile(path.join(stateDirectory, 'ledger.json'), JSON.stringify({ userId: 1, sales: [sale()] }))
+    const output = execFileSync(process.execPath, [path.join(__dirname, '../scripts/daily-sales-report.cjs')], { env: {
+      ...process.env, DAILY_AUTOMATION_CONFIG: '{"userId":1}', DAILY_BROWSER_STATE_PATH: path.join(directory, 'daily-auth/session.json'),
+    }, encoding: 'utf8' })
+    const report = JSON.parse(output)
+    assert.equal(report.completeness, 'legacy_unverified')
+    assert.equal(report.summary.demand.observedPurchases, 1)
+    assert.equal(report.lastCompleteObservedAt, null)
+    assert.equal(report.stale, true)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+})

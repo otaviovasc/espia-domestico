@@ -6,6 +6,7 @@
   "scripts": {
     "daily:login": "node scripts/daily-login.cjs",
     "daily:sync-extractor": "node scripts/sync-affiliate-extractor.cjs",
+    "daily:sales-report": "node scripts/daily-sales-report.cjs",
     "test:daily:integration": "npm run build && node --test test/daily-automation.integration.cjs",
     "test:daily:browser": "npm run build && node --test test/daily-collector.browser.cjs",
     "dev": "ts-node-dev -r tsconfig-paths/register --respawn src/server.ts",

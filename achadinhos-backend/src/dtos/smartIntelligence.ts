@@ -34,6 +34,16 @@ export const SmartProductFitSchema = z
   .strict()
 export type SmartProductFit = z.infer<typeof SmartProductFitSchema>
 
+export const SmartCaptionEvidenceSchema = z.object({
+  source: z.enum(['title', 'description', 'image', 'none']),
+  fact: z.string().trim().max(160),
+}).strict()
+export const SmartAnalysisLineageSchema = z.object({
+  model: z.string().max(160), policyVersion: z.string().max(80),
+  imageUrlHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  captionHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+}).strict()
+
 export const SmartProductAnalysisSchema = z
   .object({
     index: z.number().int().nonnegative(),
@@ -43,6 +53,8 @@ export const SmartProductAnalysisSchema = z
     political: z.boolean().optional(),
     /** Optional for historical analyses; factual copy from the classification request. */
     shortCaption: z.string().trim().max(80).optional(),
+    captionEvidence: SmartCaptionEvidenceSchema.optional(),
+    lineage: SmartAnalysisLineageSchema.optional(),
   })
   .strict()
 export type SmartProductAnalysis = z.infer<typeof SmartProductAnalysisSchema>
