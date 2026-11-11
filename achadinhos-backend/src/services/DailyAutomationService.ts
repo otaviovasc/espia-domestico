@@ -26,6 +26,7 @@ import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
 import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryKeywords } from '@/utils/dailyDiscovery'
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
+import { dailyRepeatCooldown } from '@/services/dailyNovelty'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
 
 interface DailyRun {
@@ -38,7 +39,7 @@ interface DailyRun {
   payloads: DailyPayload[] | null
   plan_uuid: string | null
   attempts: number
-  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>> }
+  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>>; repeatSelected?: number }
   lease_token: string
 }
 
@@ -104,17 +105,17 @@ export class DailyAutomationService {
     if (state.exhausted || this.windowExpired(run.config, run.local_date)) return false
     const pooled = (run.payloads ?? []).flatMap(p => Array.isArray(p.json.cards) ? p.json.cards : [])
     const ids = pooled.map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter((id): id is string => Boolean(id))
-    const history = await this.exclusions(run.user_id)
     const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
+    const histories = new Map(await Promise.all(audiences.map(async audience => [audience.slug, await this.exclusions(run.user_id, run.config, audience.destinations.map(d => d.groupId))] as const)))
     const requests = DAILY_AUDIENCES.flatMap(slug => {
-      if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule))) return []
+      if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule || (dailyRepeatCooldown(run.config) && a.selected < dailyItemTarget(run.config))))) return []
       const existing = (run.payloads ?? []).filter(p => p.targetAudienceSlug === slug).reduce((n, p) => n + (Array.isArray(p.json.cards) ? p.json.cards.length : 0), 0)
       const audience = audiences.find(a => a.slug === slug)!
       const keywords = dailyDiscoveryKeywords(slug, audience.profile.keywords, round + (state.initialRounds?.[slug] ?? 0))
       const limit = Math.min(DAILY_DISCOVERY_ROUND_SIZE, run.config.candidateLimit - existing)
       if (limit <= 0 || !keywords.length) return []
       return [{ slug, options: { limit, keywords, matchMode: 'any', matchStyle: 'word',
-        excludeProductIds: [...new Set([...history, ...ids])], excludePolitical: true,
+        excludeProductIds: [...new Set([...(histories.get(slug) ?? []), ...ids])], excludePolitical: true,
         quality: { minRating: run.config.minRating, minSoldCount: run.config.minSoldCount },
         minPrice: audience.policy.minPrice, maxPrice: audience.policy.maxPrice,
         commission: { minPercent: audience.policy.minCommissionPercent, minEstimatedBrl: audience.policy.minEstimatedCommission } } }]
@@ -205,11 +206,15 @@ export class DailyAutomationService {
     if (!rows.length) throw new DailyCollectionError('STOPPED')
   }
 
-  private async exclusions(userId: number): Promise<string[]> {
+  private async exclusions(userId: number, config: Partial<DailyAutomationConfig> = {}, groupIds: string[] = []): Promise<string[]> {
+    const cooldown = groupIds.length ? dailyRepeatCooldown(config) : 0
+    const cutoff = new Date(Date.now() - cooldown * 86_400_000)
+    const blocked = (row: { status: string; sentAt: Date | null; groupId: string }) =>
+      !cooldown || row.status !== 'SENT' || !row.sentAt || (groupIds.includes(row.groupId) && row.sentAt > cutoff)
     const [deliveries, sends] = await Promise.all([
       ProductGroupDelivery.findAll({
         where: { userId },
-        attributes: ['offerProductId', 'offerSource'],
+        attributes: ['offerProductId', 'offerSource', 'status', 'sentAt', 'groupId'],
       }),
       SmartSend.findAll({
         where: {
@@ -223,14 +228,14 @@ export class DailyAutomationService {
             ],
           },
         },
-        attributes: ['offer'],
+        attributes: ['offer', 'status', 'sentAt', 'groupId'],
       }),
     ])
     const values = [
-      ...deliveries
+      ...deliveries.filter(blocked)
         .filter((row) => row.offerSource?.trim().toLowerCase() === 'mercadolivre')
         .map((row) => row.offerProductId),
-      ...sends
+      ...sends.filter(blocked)
         .filter((row) => row.offer.source?.trim().toLowerCase() === 'mercadolivre')
         .map((row) => row.offer.productId),
     ]
@@ -326,6 +331,8 @@ export class DailyAutomationService {
         ].includes(ownedPlan.status)
       ) {
         await this.checkpointPlan(run, ownedPlan)
+        run.discovery_state = { ...run.discovery_state, repeatSelected: ownedPlan.items.filter(item => item.state === 'SELECTED' && item.repeatFallback).length }
+        await this.discoveryCheckpoint(run)
         await this.save(run, ownedPlan.status)
         return
       }
@@ -407,9 +414,9 @@ export class DailyAutomationService {
                 .filter((id): id is string => Boolean(id))
             : [],
         )
-        const excludeProductIds = [
-          ...new Set([...(await this.exclusions(run.user_id)), ...completedIds]),
-        ]
+        const histories = new Map(await Promise.all(audiences.map(async audience => [audience.slug,
+          [...new Set([...(await this.exclusions(run.user_id, run.config, audience.destinations.map(d => d.groupId))), ...completedIds])]] as const)))
+        const excludeProductIds = [...histories.values()].flat()
         if (excludeProductIds.length + run.config.candidateLimit * missing.length > 50_000) {
           await this.save(run, 'CONFIG_REQUIRED', 'HISTORY_LIMIT')
           return
@@ -431,7 +438,7 @@ export class DailyAutomationService {
                 keywords: dailyDiscoveryKeywords(slug, audience.profile.keywords, state.initialRounds?.[slug] ?? 0),
                 matchMode: 'any',
                 matchStyle: 'word',
-                excludeProductIds,
+                excludeProductIds: histories.get(slug)!,
                 quality: { minRating: run.config.minRating, minSoldCount: run.config.minSoldCount },
                 excludePolitical: true,
                 minPrice: policy.minPrice,
@@ -512,6 +519,7 @@ export class DailyAutomationService {
             runId: run.id,
             localDate: run.local_date,
             minimumItems: dailyRequiredItems(run.config),
+            repeatCooldownDays: run.config.repeatCooldownDays ?? 0,
             startTime: run.config.startTime,
             endTime: run.config.endTime,
           },
@@ -524,8 +532,17 @@ export class DailyAutomationService {
         await this.save(run, 'ANALYZING')
       } else if (plan.status === SMART_PLAN_STATUS.REVIEW) {
         const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
-        if (!coverage.ready) {
-          if (run.config.planningDaysAhead === 1 && await this.replenish(run, plan, audiences)) return
+        const repeatShortage = dailyRepeatCooldown(run.config) && coverage.audiences.some(a => a.selected < dailyItemTarget(run.config))
+        if (!coverage.ready || repeatShortage) {
+          if (!plan.settings.dailyAutomation || !(plan.settings.dailyAutomation as { repeatFallbackReady?: boolean }).repeatFallbackReady) {
+            if ((run.config.planningDaysAhead === 1 || dailyRepeatCooldown(run.config)) && await this.replenish(run, plan, audiences)) return
+            if (dailyRepeatCooldown(run.config)) {
+              await this.requireLease(run)
+              await this.smart.enableDailyRepeatFallback(run.user_id, plan.uuid, plan.revision)
+              await this.save(run, 'ANALYZING')
+              return
+            }
+          }
           // Automatic approval always ships the qualified remainder of a short or late day.
           if (!run.config.autoApprove || !coverage.audiences.some(a => a.selected)) {
             await this.save(run, 'REVIEW', 'INSUFFICIENT_QUALIFIED_PRODUCTS', coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; '))
@@ -538,6 +555,9 @@ export class DailyAutomationService {
         }
         await this.requireLease(run)
         await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
+        await plan.reload()
+        run.discovery_state = { ...run.discovery_state, repeatSelected: plan.items.filter(item => item.state === 'SELECTED' && item.repeatFallback).length }
+        await this.discoveryCheckpoint(run)
         await this.save(run, 'SCHEDULED')
       } else if (plan.status === SMART_PLAN_STATUS.FAILED) {
         await this.save(run, 'ANALYSIS_HOLD', 'SMART_ANALYSIS_FAILED')

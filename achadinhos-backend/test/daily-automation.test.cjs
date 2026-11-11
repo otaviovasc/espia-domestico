@@ -143,3 +143,10 @@ test('D+1 preparation targets tomorrow after 19:00 and requires all 30 slots per
   assert.equal(dailyPlanCoverage(items.slice(1), config, window.targetDate).ready, false)
   assert.equal(dailyPlanCoverage(items.map(i => ({ ...i, scheduledAt: undefined })), config, window.targetDate).ready, false)
 })
+
+test('repeat cooldown defaults monthly, supports lifetime disable, and strictly bounds enabled values', () => {
+  assert.equal(DailyAutomationConfigSchema.parse({ userId: 1 }).repeatCooldownDays, 30)
+  for (const repeatCooldownDays of [0, 7, 30, 3650]) assert.equal(DailyAutomationConfigSchema.safeParse({ userId: 1, repeatCooldownDays }).success, true)
+  for (const repeatCooldownDays of [-1, 1, 6, 7.5, 3651, '30']) assert.equal(DailyAutomationConfigSchema.safeParse({ userId: 1, repeatCooldownDays }).success, false)
+  assert.equal(DailyAutomationConfigSchema.safeParse({ userId: 1, repeatCooldownDays: 30, repeatAnything: true }).success, false)
+})

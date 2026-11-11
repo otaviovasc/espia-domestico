@@ -49,7 +49,7 @@ import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampa
 import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 import { dailyDemandScore, dailyEvidenceReasons, dailySelectionReasons } from '@/utils/dailyProductSelection'
 import { dailyCommercialValue, dailyMixedPriceOrder } from '@/utils/dailyCommercialValue'
-import { hasDailyProductConflict, dailyOfferAliases } from '@/services/dailyNovelty'
+import { dailyOfferAliases, dailyProductHistory, dailyRepeatCooldown } from '@/services/dailyNovelty'
 
 const MIN_SMART_FIT = 70
 
@@ -697,7 +697,7 @@ export class SmartCampaignService {
   }
 
   async createPlan(userId: number, input: CreateSmartPlanInput, dailyAutomation?: {
-    runId: string; localDate: string; minimumItems: number; startTime: string; endTime: string
+    runId: string; localDate: string; minimumItems: number; startTime: string; endTime: string; repeatCooldownDays?: number
   }) {
     const audiences = await this.audienceRows(userId, input.audienceSlugs)
     if (audiences.some((audience) => !audience.enabled)) {
@@ -975,6 +975,21 @@ export class SmartCampaignService {
     return serializePlan(plan)
   }
 
+  async enableDailyRepeatFallback(userId: number, uuid: string, revision: number): Promise<void> {
+    await sequelize.transaction(async transaction => {
+      const plan = await this.requirePlan(userId, uuid, transaction)
+      const daily = plan.settings.dailyAutomation as { repeatCooldownDays?: number; repeatFallbackReady?: boolean } | undefined
+      if (!daily || !dailyRepeatCooldown(daily)) throw ConflictError('Repetição diária desativada')
+      if (daily.repeatFallbackReady) return
+      if (plan.revision !== revision || plan.status !== SMART_PLAN_STATUS.REVIEW) throw ConflictError('O plano foi alterado; atualize a tela')
+      plan.settings = { ...plan.settings, dailyAutomation: { ...daily, repeatFallbackReady: true } }
+      plan.status = SMART_PLAN_STATUS.ANALYZING
+      plan.revision += 1
+      plan.progress = { phase: 'QUEUED', completed: 0, total: (plan.input as unknown as PlanInputPayload).offers.length }
+      await plan.save({ transaction })
+    })
+  }
+
   private async claimAnalysisPlan(planId?: number): Promise<SmartPlan | null> {
     return sequelize.transaction(async (transaction) => {
       const where = planId
@@ -1184,6 +1199,8 @@ export class SmartCampaignService {
           phase: 'COMPLETE',
           completed: input.offers.length,
           total: input.offers.length,
+          repeatCandidates: items.filter(item => item.repeatFallback).length,
+          repeatSelected: items.filter(item => item.repeatFallback && item.state === 'SELECTED').length,
         }
         await current.save({ transaction })
       })
@@ -1337,6 +1354,7 @@ export class SmartCampaignService {
       }
       allowedRoutes.set(index, allowed)
     })
+    const daily = plan.settings.dailyAutomation as { repeatCooldownDays?: number; repeatFallbackReady?: boolean } | undefined
     const globallySelected = new Set<string>()
     for (const audience of audiences) {
       const policy = {
@@ -1361,7 +1379,7 @@ export class SmartCampaignService {
           : configuredStart
       const audienceCategoryCounts = new Map<string, number>()
       const candidates: SmartPlanItem[] = []
-      offers.forEach((offer, index) => {
+      for (const [index, offer] of offers.entries()) {
         const analysis = analyses[String(index)]
           const fit = analysis?.fits.find((entry) => entry.slug === audience.slug)
           const hardReasons = evaluateSmartProductEligibility(offer, policy, audience.policy).reasons
@@ -1371,7 +1389,7 @@ export class SmartCampaignService {
           if (!hasCommissionEvidence(offer)) hardReasons.push('Comissão não informada na coleta')
           if (!observations[index]) hardReasons.push('Horário de observação ausente')
           if (observations[index] && !isEvidenceFresh(observations[index], firstSendAt, policy.freshnessHours)) hardReasons.push('Evidência da oferta está antiga; atualize o produto')
-          if (!fit && !hardReasons.length) return
+          if (!fit && !hardReasons.length) continue
         const scored = this.commercialScore(
           offer,
             fit?.score ?? 0,
@@ -1384,7 +1402,11 @@ export class SmartCampaignService {
             if (!hardReasons.includes(reason)) hardReasons.push(reason)
           }
         }
+          const history = daily ? await dailyProductHistory(plan.userId, plan.id, plan.uuid, offer,
+            { ...daily, groupIds: audience.destinations.map(d => d.groupId) }) : { conflict: false, repeat: false }
+          if (history.conflict) hardReasons.push('Produto reservado, incerto ou dentro do intervalo de repetição')
           const warnings = [...(analysis?.warnings ?? [])]
+          if (history.repeat && !history.conflict) warnings.push(`Repetição após ${dailyRepeatCooldown(daily ?? {})} dias`)
           if (!analysis) warnings.push('Não avaliado pela IA: excluído pelos filtros de todos os públicos.')
           if (fit && fit.score < MIN_SMART_FIT) hardReasons.push('Baixa afinidade com o público')
           if (fit && !allowedRoutes.get(index)?.has(audience.slug)) {
@@ -1407,16 +1429,17 @@ export class SmartCampaignService {
               reason: hardReasons.length ? hardReasons.join('; ') : fit!.reason,
               category: fit?.category,
             warnings,
+            repeatFallback: history.repeat && !history.conflict,
             standout: false,
             customMessage: policy.dailySelection ? safeSmartCaption(analysis?.shortCaption) || null : null,
             observedAt: observations[index] ?? new Date(0).toISOString(),
             scores: scored.components,
           }),
         )
-      })
+      }
       const eligible = candidates
-        .filter((item) => item.state !== 'REJECTED')
-        .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
+        .filter((item) => item.state !== 'REJECTED' && (!item.repeatFallback || daily?.repeatFallbackReady))
+        .sort((left, right) => Number(Boolean(left.repeatFallback)) - Number(Boolean(right.repeatFallback)) || right.score - left.score || left.id.localeCompare(right.id))
       const selected: SmartPlanItem[] = []
       for (let dayOffset = 0; dayOffset < plan.days; dayOffset++) {
         const date = addDays(plan.startDate, dayOffset)
@@ -1436,7 +1459,9 @@ export class SmartCampaignService {
             ? planningNow
             : undefined
         const dayPool = eligible.filter((item) => !globallySelected.has(item.id))
-        const dayCandidates = policy.dailySelection ? dailyMixedPriceOrder(dayPool, capacity) : dayPool
+        const dayCandidates = policy.dailySelection
+          ? [...dailyMixedPriceOrder(dayPool.filter(item => !item.repeatFallback), capacity),
+            ...dailyMixedPriceOrder(dayPool.filter(item => item.repeatFallback), capacity)] : dayPool
         // Evenly distribute this audience's best remaining offers across the selected dates.
         const remainingDays = plan.days - dayOffset
         const audienceTarget = Math.ceil(
@@ -1749,7 +1774,7 @@ export class SmartCampaignService {
               const available = smartZonedInstant(date, dayPolicy.endTime, policy.timezone).getTime() - first - Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)
               const capacity = Math.max(0, Math.floor(available / (policy.minGapSeconds * 1000)) + 1)
               if (dayItems.length > capacity) {
-                const ranked = [...dayItems].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
+                const ranked = [...dayItems].sort((a, b) => Number(Boolean(a.repeatFallback)) - Number(Boolean(b.repeatFallback)) || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
                 if (ranked.filter(item => item.pinned).length > capacity) throw ConflictError('A seleção fixa excede a janela restante.')
                 const retained = new Set(ranked.slice(0, capacity).map(item => item.id))
                 for (const item of dayItems.filter(item => !retained.has(item.id))) {
@@ -1900,7 +1925,7 @@ export class SmartCampaignService {
       const rows: CreationAttributes<SmartSend>[] = []
       validateAudienceDailyCaps(selected, settings.audiences)
       const approvalNow = new Date()
-      const daily = plan.settings.dailyAutomation as { minimumItems?: number; startTime?: string; endTime?: string } | undefined
+      const daily = plan.settings.dailyAutomation as { minimumItems?: number; startTime?: string; endTime?: string; repeatCooldownDays?: number; repeatFallbackReady?: boolean } | undefined
       const dailySelectedIdentities = new Set<string>()
       if (settings.global?.startNow) {
         const earlyStart = immediateTiming(plan.startDate, usedSlugs.map((slug) => settings.audiences[slug].timezone), approvalNow)
@@ -1912,6 +1937,15 @@ export class SmartCampaignService {
         const policy = {
           ...(settings.audiences[slug] ?? audience.policy),
           startTime: settings.global?.campaignStartTime ?? settings.audiences[slug]?.startTime ?? audience.policy.startTime,
+        }
+        const histories = new Map<string, Awaited<ReturnType<typeof dailyProductHistory>>>()
+        if (daily) {
+          for (const item of approvalItems.filter(item => item.audienceSlug === slug && item.state !== 'REJECTED')) {
+            const history = await dailyProductHistory(userId, plan.id, plan.uuid, item.product,
+              { ...daily, groupIds: audience.destinations.map(d => d.groupId), now: approvalNow }, transaction)
+            histories.set(item.id, history)
+            item.repeatFallback = history.repeat && !history.conflict
+          }
         }
         for (const date of [
           ...new Set(
@@ -1942,11 +1976,15 @@ export class SmartCampaignService {
             let conflicts = 0
             for (const item of dayItems) {
               const identities = dailyOfferAliases(item.product)
-              if (identities.some(identity => dailySelectedIdentities.has(identity))
-                || await hasDailyProductConflict(userId, plan.id, plan.uuid, item.product, transaction)) {
+              const history = histories.get(item.id)!
+              if (item.repeatFallback) item.warnings = [...new Set([...item.warnings, `Repetição após ${dailyRepeatCooldown(daily)} dias`])]
+              if (history.conflict || (item.repeatFallback && (!daily.repeatFallbackReady || options.automatic))
+                || identities.some(identity => dailySelectedIdentities.has(identity))) {
                 item.state = 'RESERVE'
                 item.scheduledAt = undefined
-                item.warnings = [...new Set([...(item.warnings ?? []), 'Produto reservado ou entregue por outro plano; removido da seleção diária.'])]
+                item.warnings = [...new Set([...(item.warnings ?? []), item.repeatFallback && daily.repeatFallbackReady
+                  ? 'Repetição em reserva para priorizar produtos inéditos.'
+                  : 'Produto reservado ou entregue por outro plano; removido da seleção diária.'])]
                 selected.splice(selected.indexOf(item), 1)
                 conflicts++
               } else identities.forEach(identity => dailySelectedIdentities.add(identity))
@@ -1958,7 +1996,7 @@ export class SmartCampaignService {
               const sendBy = smartZonedInstant(date, dayPolicy.endTime, policy.timezone)
               const reserves = approvalItems
                 .filter(item => item.audienceSlug === slug && item.date === date && item.state === 'RESERVE')
-                .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+                .sort((a, b) => Number(Boolean(a.repeatFallback)) - Number(Boolean(b.repeatFallback)) || b.score - a.score || a.id.localeCompare(b.id))
               for (const item of reserves) {
                 if (dayItems.length >= wanted) break
                 if (evaluateSmartProductEligibility(item.product, policy, audience.policy).reasons.length
@@ -1968,10 +2006,12 @@ export class SmartCampaignService {
                   || (item.fitScore ?? 0) < MIN_SMART_FIT
                   || !item.observedAt || !isEvidenceFresh(new Date(item.observedAt), sendBy, policy.freshnessHours)) continue
                 const identities = dailyOfferAliases(item.product)
-                if (identities.some(identity => dailySelectedIdentities.has(identity))
-                  || await hasDailyProductConflict(userId, plan.id, plan.uuid, item.product, transaction)) continue
+                const history = histories.get(item.id)!
+                if (history.conflict || (item.repeatFallback && !daily.repeatFallbackReady)
+                  || identities.some(identity => dailySelectedIdentities.has(identity))) continue
                 identities.forEach(identity => dailySelectedIdentities.add(identity))
                 item.state = 'SELECTED'
+                if (item.repeatFallback) item.warnings = [...new Set([...item.warnings, `Repetição após ${dailyRepeatCooldown(daily)} dias`])]
                 item.warnings = [...new Set([...(item.warnings ?? []), 'Reserva qualificada promovida para substituir produto repetido.'])]
                 selected.push(item)
                 dayItems.push(item)
@@ -1986,7 +2026,7 @@ export class SmartCampaignService {
             const capacity = Math.max(0, Math.floor(seconds / policy.minGapSeconds) + 1)
             if (capacity < minimum) throw new AppError('Não há janela suficiente para a seleção diária.', 409, 'LATE_ANALYSIS')
             if (dayItems.length > capacity) {
-              const ranked = [...dayItems].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
+              const ranked = [...dayItems].sort((a, b) => Number(Boolean(a.repeatFallback)) - Number(Boolean(b.repeatFallback)) || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
               if (ranked.filter(item => item.pinned).length > capacity) throw new AppError('A seleção fixa excede a janela restante.', 409, 'LATE_ANALYSIS')
               const retained = new Set(ranked.slice(0, capacity).map(item => item.id))
               for (const item of dayItems.filter(item => !retained.has(item.id))) {
@@ -2061,6 +2101,7 @@ export class SmartCampaignService {
         }
       }
       if (!selected.length) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409, 'DAILY_NOVELTY_CONFLICT')
+      if (daily) plan.progress = { ...plan.progress, repeatSelected: selected.filter(item => item.repeatFallback).length }
       const rowsByGroup = new Map<string, Set<string>>()
       const uniqueRows = rows.filter((row) => {
         const aliases = offerIdentityAliases(row.offer)
@@ -2147,6 +2188,7 @@ export class SmartCampaignService {
           groupIds: requestedGroups,
           sendCount: rows.length,
           approvalMode: options.automatic ? 'automatic' : 'operator',
+          repeatSelected: selected.filter(item => item.repeatFallback).length,
         },
         transaction,
       )
