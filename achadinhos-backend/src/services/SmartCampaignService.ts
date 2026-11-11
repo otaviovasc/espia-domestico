@@ -48,8 +48,9 @@ import { env } from '@/config/env'
 import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
 import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 import { dailyDemandScore, dailyEvidenceReasons, dailySelectionReasons } from '@/utils/dailyProductSelection'
+import { dailyCategoryKey } from '@/utils/dailyAssortment'
 import { dailyCommercialValue, dailyMixedPriceOrder } from '@/utils/dailyCommercialValue'
-import { dailyOfferAliases, dailyProductConflicts, dailyRepeatCooldown } from '@/services/dailyNovelty'
+import { dailyOfferAliases, dailySelectionAliases, dailyProductConflicts, dailyRepeatCooldown } from '@/services/dailyNovelty'
 import { reconcileDailyApproval } from '@/services/dailyApprovalReconciliation'
 
 const MIN_SMART_FIT = 70
@@ -1478,8 +1479,8 @@ export class SmartCampaignService {
           const scheduledToday = selected.filter((entry) => entry.date === date).length
           if (chosen.length >= Math.min(maximum, audienceTarget - scheduledToday)) break
           if (chosen.length >= maximum) break
-          if (daily && dailyOfferAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
-          const category = item.category ?? 'outros'
+          if (daily && dailySelectionAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
+          const category = policy.dailySelection ? dailyCategoryKey(item.category) : item.category ?? 'outros'
           const categoryKey = `${date}:${category}`
           const count = audienceCategoryCounts.get(categoryKey) ?? 0
           if (count >= categoryLimit) {
@@ -1502,7 +1503,7 @@ export class SmartCampaignService {
           if (tentative.some((candidate, index) =>
             !isEvidenceFresh(candidate.observedAt, tentativeSlots[index], policy.freshnessHours))) continue
           chosen.push(item)
-          if (daily) dailyOfferAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
+          if (daily) dailySelectionAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
           audienceCategoryCounts.set(categoryKey, count + 1)
         }
         // Diversity is a preference for daily plans, never an artificial quality
@@ -1515,7 +1516,7 @@ export class SmartCampaignService {
           for (const item of dayCandidates) {
             if (chosen.length >= minimumTarget) break
             if (chosenIds.has(item.id)) continue
-            if (daily && dailyOfferAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
+            if (daily && dailySelectionAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
             const tentative = [...chosen, item]
             let candidateSlots: Date[]
             try {
@@ -1527,7 +1528,7 @@ export class SmartCampaignService {
             if (tentative.some((candidate, index) => !isEvidenceFresh(candidate.observedAt, candidateSlots[index], policy.freshnessHours))) continue
             item.warnings = [...new Set([...item.warnings, 'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
             chosen.push(item)
-            if (daily) dailyOfferAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
+            if (daily) dailySelectionAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
             chosenIds.add(item.id)
           }
         }
@@ -2013,7 +2014,7 @@ export class SmartCampaignService {
                 || Boolean(policy.dailySelection && dailySelectionReasons(item.product, item.fitScore ?? 0, item.score, policy.dailySelection).length),
               conflict: item => dailyOfferAliases(item.product).some(alias => histories!.has(alias)),
               repeatsReady: Boolean(daily.repeatFallbackReady),
-              aliases: item => dailyOfferAliases(item.product), occupied: dailySelectedIdentities,
+              aliases: item => dailySelectionAliases(item.product), occupied: dailySelectedIdentities,
               schedule: count => buildSmartSchedule(date, count, dayPolicy, `${plan.uuid}:${slug}:${date}:approved`, earliest),
               fresh: (item, slot) => Boolean(item.observedAt && isEvidenceFresh(new Date(item.observedAt), slot, policy.freshnessHours)),
               maxStandouts: policy.maxStandouts,
@@ -2028,7 +2029,7 @@ export class SmartCampaignService {
             let conflicts = 0
             const dayIdentities = new Set<string>()
             for (const item of dayItems) {
-              const identities = dailyOfferAliases(item.product)
+              const identities = dailySelectionAliases(item.product)
               const conflict = identities.some(identity => histories!.has(identity))
               if (item.repeatFallback) item.warnings = [...new Set([...item.warnings, `Repetição após ${dailyRepeatCooldown(daily)} dias`])]
               if (conflict || (item.repeatFallback && !daily.repeatFallbackReady)
@@ -2061,7 +2062,7 @@ export class SmartCampaignService {
               }
               dayItems = dayItems.filter(item => retained.has(item.id))
             }
-            for (const item of dayItems) dailyOfferAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
+            for (const item of dayItems) dailySelectionAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
           }
           const slots = buildSmartSchedule(
             date,

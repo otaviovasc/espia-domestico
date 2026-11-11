@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 
 export interface OfferIdentityInput {
+  title?: string
   savedProductId?: number
   source?: string
   productId?: string

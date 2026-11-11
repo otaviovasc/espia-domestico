@@ -75,3 +75,24 @@ test('mixed daily selection preserves affordable/premium ends and fills all 30 s
   assert.ok(filled.some(i => i.id === 999))
   assert.equal(dailyMixedPriceOrder(pool.filter(i => i.product.discountedPrice === 200), 30).slice(0, 30).length, 30)
 })
+
+test('daily assortment keeps one Boombox colour variant and promotes another qualified product', () => {
+  const row = (id, title, score) => ({ id, product: { title, discountedPrice: 600 }, category: 'Eletrônicos', score })
+  const values = [row('blue', 'Caixa de Som JBL Boombox 4 Bluetooth Portátil 210W Bivolt Azul', 95),
+    row('orange', 'Jbl Boombox 4 Caixa De Som Com Bluetooth Cor Laranja', 94),
+    row('black', 'Caixa de Som Bluetooth Portátil JBL Boombox 4 JBL Pro Sound 210W até 34h de Bateria Preta', 93),
+    row('other', 'Projetor HY320 Hardline Smart TV', 80)]
+  assert.deepEqual(new Set(dailyMixedPriceOrder(values, 2).slice(0, 2).map(i => i.id)), new Set(['blue', 'other']))
+  const distinct = [...values.slice(0, 1), row('older', 'JBL Boombox 3 Preto', 93),
+    row('accessory', 'Capa para JBL Boombox 4 Preto', 92), row('kit', 'Kit JBL Boombox 4 e microfone', 91)]
+  assert.equal(dailyMixedPriceOrder(distinct, 4).slice(0, 4).length, 4)
+})
+
+test('daily diversity counts spelling variants together and defers excess when other categories qualify', () => {
+  const categories = ['Eletrônicos', 'ELETRONICOS', 'eletrônicos', 'Eletronicos']
+  const values = Array.from({ length: 12 }, (_, id) => ({ id, product: { discountedPrice: 200 }, category: categories[id % 4], score: 98 }))
+    .concat(['Ferramentas', 'Moda masculina', 'Perfume masculino'].flatMap((category, n) => Array.from({ length: 4 }, (_, i) => ({ id: 100+n*10+i, product: { discountedPrice: 200 }, category, score: 70 }))))
+  const selected = dailyMixedPriceOrder(values, 12).slice(0, 12)
+  assert.equal(selected.filter(i => i.id < 100).length, 3)
+  assert.equal(selected.length, 12)
+})
