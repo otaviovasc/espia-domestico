@@ -2148,3 +2148,50 @@ test('terminal recovery preserves account scope, backoff and an active worker le
   assert.equal((await other.run()).status, 'ANALYZING')
   assert.equal(other.calls.create, 1)
 })
+
+test('daily planning and automatic reconciliation reserve colour variants and backfill distinct products', async () => {
+  const f = await setup()
+  const products = [cooldownOffer('MLB99886001', 'Cafeteira Nescafé Dolce Gusto Genio S Basic Grafite', 400),
+    cooldownOffer('MLB99886002', 'Cafeteira Nescafé Dolce Gusto Genio S Basic Branca 110v', 400),
+    cooldownOffer('MLB99886003', 'Cafeteira Nescafé Dolce Gusto Genio S Plus Preto', 400),
+    cooldownOffer('MLB99886004', 'Panela de pressão Inox', 100)]
+  const { smart } = cooldownSmart(f, products)
+  const created = await smart.createPlan(f.user.id, { requestId: randomUUID(), date: dailyWindow(f.config).date, days: 1,
+    audienceSlugs: ['domestica'], payloads: [{ name: 'variants', json: {} }], campaignStartTime: '08:00',
+    settings: { dailyCap: 3, maxStandouts: 0, dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 75, minCommercialScore: 60 } },
+  }, { runId: randomUUID(), localDate: dailyWindow(f.config).date, minimumItems: 3, startTime: '08:00', endTime: '19:00', repeatCooldownDays: 30 })
+  const plan = await SmartPlan.findOne({ where: { uuid: created.id } })
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload()
+  const selectedIds = () => plan.items.filter(i => i.state === 'SELECTED').map(i => i.product.productId)
+  assert.equal(selectedIds().length, 3)
+  assert.equal(selectedIds().filter(id => ['MLB99886001', 'MLB99886002'].includes(id)).length, 1)
+  assert.ok(selectedIds().includes('MLB99886003'), 'Plus is a distinct model')
+  // A review edit can reintroduce a variant; automatic approval must replace it.
+  const items = structuredClone(plan.items)
+  items.forEach(i => { i.state = i.product.productId === 'MLB99886004' ? 'RESERVE' : 'SELECTED' })
+  await plan.update({ items })
+  await smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: true })
+  await plan.reload()
+  assert.equal(selectedIds().length, 3)
+  assert.equal(selectedIds().filter(id => ['MLB99886001', 'MLB99886002'].includes(id)).length, 1)
+  assert.ok(selectedIds().includes('MLB99886004'))
+  assert.equal(await SmartSend.count({ where: { planId: plan.id } }), 3)
+})
+
+test('daily cooldown catches known models sold under different listing IDs without excluding kits or other groups', async () => {
+  const f = await setup()
+  const old = cooldownOffer('MLB99886101', 'Aspirador de Pó e Água WAP GTW 10 1400W de Potência com Bocal de Sopro')
+  const alias = cooldownOffer('MLB99886102', 'Aspirador De Pó e Água Wap Gtw 10 Compacto 1400w 10 Litros Amarelo')
+  await cooldownDelivery(f, old, 1)
+  const { dailyProductHistory } = require('../dist/services/dailyNovelty')
+  const history = (offer, group = 'domestica@g.us') => dailyProductHistory(f.user.id, -1, randomUUID(), offer, { repeatCooldownDays: 30, groupIds: [group] })
+  assert.equal((await history(alias)).conflict, true)
+  assert.equal((await history(alias, 'masculino@g.us')).conflict, false)
+  assert.equal((await history({ ...alias, title: 'Kit Aspirador WAP GTW 10 + Sacos extras' })).conflict, false)
+  assert.equal((await history({ ...alias, title: 'Aspirador de pó WAP GTW 12 Inox' })).conflict, false)
+  const blender = cooldownOffer('MLB99886103', 'Liquidificador Turbo Power Mondial Preto 550W L-99 FB')
+  await cooldownDelivery(f, blender, 40)
+  const cooled = await history(cooldownOffer('MLB99886104', 'Liquidificador Turbo Power Mondial 550W - L-99 FB'))
+  assert.deepEqual(cooled, { conflict: false, repeat: true })
+})

@@ -27,7 +27,7 @@ import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryPage } from '@/utils/dailyDis
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
 import { normalizedMercadoLivreProductId, type OfferIdentityInput } from '@/utils/offerIdentity'
-import { dailyExcludedProductIds, dailyOfferAliases, dailyProductConflicts, dailyRepeatCooldown, type DailyRepeatPolicy } from '@/services/dailyNovelty'
+import { dailyExcludedProductIds, dailyOfferAliases, dailySelectionAliases, dailyProductConflicts, dailyRepeatCooldown, type DailyRepeatPolicy } from '@/services/dailyNovelty'
 
 interface DailyRun {
   id: string
@@ -181,7 +181,7 @@ export class DailyAutomationService {
     const identities = new Set<string>()
     const effective = plan.items.filter(item => {
       if (item.state !== 'SELECTED' || !item.product) return true
-      const aliases = dailyOfferAliases(item.product as OfferIdentityInput)
+      const aliases = dailySelectionAliases(item.product as OfferIdentityInput)
       const history = histories.get(String(item.audienceSlug))!
       if (aliases.some(identity => history.has(identity) || (!fallbackReady && history.repeats.has(identity)) || identities.has(identity))) return false
       aliases.forEach(identity => identities.add(identity))
@@ -324,9 +324,10 @@ export class DailyAutomationService {
   private async filterPayload(run: DailyRun, payload: DailyPayload, plan?: SmartPlan): Promise<DailyPayload> {
     if (!Array.isArray(payload.json.cards)) return payload
     const offers = payload.json.cards.map(card => {
-      const value = card as { productId?: string; commissionedUrl?: string; productUrl?: string } | null
+      const value = card as { productId?: string; title?: string; commissionedUrl?: string; productUrl?: string } | null
       const url = value?.commissionedUrl || value?.productUrl
       return { source: 'mercadolivre', productId: typeof value?.productId === 'string' ? value.productId : undefined,
+        title: typeof value?.title === 'string' ? value.title : undefined,
         affiliateUrl: typeof url === 'string' ? url : '' }
     })
     const audience = await SmartAudience.findOne({ where: { userId: run.user_id, slug: payload.targetAudienceSlug } })
