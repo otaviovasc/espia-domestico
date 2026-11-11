@@ -186,6 +186,7 @@ export const SmartPlanItemSchema = z.object({
   reason: z.string().max(2000),
   category: z.string().max(120).optional(),
   warnings: z.array(z.string().max(500)).max(20).default([]),
+  repeatFallback: z.boolean().optional(),
   scheduledAt: z.string().datetime().optional(),
   standout: z.boolean().default(false),
   customMessage: z.string().trim().max(800).nullable().optional(),

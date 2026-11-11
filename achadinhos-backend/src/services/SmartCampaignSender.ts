@@ -447,7 +447,7 @@ export class SmartCampaignSender {
         status: SMART_SEND_STATUS.SENDING, leaseExpiresAt: { [Op.gt]: this.now() },
       }, transaction, lock: transaction.LOCK.UPDATE })
       const active = await SmartPlan.findOne({ where: { id: plan.id, userId: send.userId, status: SMART_PLAN_STATUS.SCHEDULED }, transaction, lock: transaction.LOCK.UPDATE })
-      return Boolean(current && active && !await hasDailyProductConflict(send.userId, plan.id, plan.uuid, send.offer, transaction))
+      return Boolean(current && active && !await hasDailyProductConflict(send.userId, plan.id, plan.uuid, current.offer, transaction, { ...(active.settings.dailyAutomation as { repeatCooldownDays?: number }), groupIds: [current.groupId], now: this.now() }))
     })
     return ready && this.canSendNow(send, plan)
   }
@@ -616,7 +616,7 @@ export class SmartCampaignSender {
         await this.releaseLeaseInTransaction(freshSend, transaction, 'O plano não está agendado.')
         return { kind: 'blocked', reason: 'O plano não está agendado.' }
       }
-      if (freshPlan.settings.dailyAutomation && await hasDailyProductConflict(send.userId, plan.id, plan.uuid, freshSend.offer, transaction)) {
+      if (freshPlan.settings.dailyAutomation && await hasDailyProductConflict(send.userId, plan.id, plan.uuid, freshSend.offer, transaction, { ...(freshPlan.settings.dailyAutomation as { repeatCooldownDays?: number }), groupIds: [freshSend.groupId], now })) {
         await this.finishInTransaction(freshSend, SMART_SEND_STATUS.SKIPPED, 'Produto reservado ou entregue por outro plano após a coleta diária.', transaction)
         return { kind: 'skipped', reason: 'Conflito com outro plano.' }
       }

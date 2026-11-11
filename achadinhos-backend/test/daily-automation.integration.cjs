@@ -36,7 +36,7 @@ afterEach(async () => {
 async function setup() {
   const user = await User.create({ name: 'Daily QA', email: `${randomUUID()}@daily.invalid`, passwordHash: 'unused' })
   createdUsers.push(user.id)
-  const config = DailyAutomationConfigSchema.parse({ userId: user.id, planningDaysAhead: 0, collectTime: '00:00', autoApprove: true, requireFullWindow: false })
+  const config = DailyAutomationConfigSchema.parse({ userId: user.id, planningDaysAhead: 0, collectTime: '00:00', repeatCooldownDays: 0, autoApprove: true, requireFullWindow: false })
   // The worker's commercial window is explicitly bounded; run QA before 21:00 SP.
   for (const slug of ['domestica', 'masculino']) {
     await SmartAudience.create({ userId: user.id, slug, name: slug, description: 'Daily QA audience', enabled: true,
@@ -1099,7 +1099,7 @@ test('daily novelty readiness rechecks later reservations and replenishes only t
 test('daily novelty readiness detects cross-audience aliases even without external history', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
   const f = await setup()
-  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, autoApprove: true, requireFullWindow: false })
+  f.config = DailyAutomationConfigSchema.parse({ repeatCooldownDays: 0, userId: f.user.id, autoApprove: true, requireFullWindow: false })
   await f.service.tick(f.config)
   const run = await f.run()
   const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
@@ -1152,7 +1152,7 @@ for (const daysAhead of [0, 1]) {
   test(`novelty conflicts replenish a previously complete D+${daysAhead} preview before approval`, async t => {
     t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
     const f = await setup()
-    f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, planningDaysAhead: daysAhead,
+    f.config = DailyAutomationConfigSchema.parse({ repeatCooldownDays: 0, userId: f.user.id, planningDaysAhead: daysAhead,
       collectTime: daysAhead ? '19:00' : '06:00', autoApprove: true, requireFullWindow: !!daysAhead })
     if (!daysAhead) t.mock.timers.setTime(new Date('2026-11-09T10:00:00Z').getTime())
     const { dailyRequiredItems } = require('../dist/config/dailyAutomation')
@@ -1287,7 +1287,7 @@ test('low-inventory alert persistence failure does not stop initial collection a
 test('replenishment uses its final broad hub pass once and does not buy analysis for empty results', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
   const f = await setup()
-  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id })
+  f.config = DailyAutomationConfigSchema.parse({ repeatCooldownDays: 0, userId: f.user.id })
   await f.service.tick(f.config)
   const run = await f.run()
   const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
@@ -1322,7 +1322,7 @@ test('replenishment uses its final broad hub pass once and does not buy analysis
 test('replenishment only collects remaining candidate headroom and stops at the configured cap', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
   const f = await setup()
-  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, candidateLimit: 2 })
+  f.config = DailyAutomationConfigSchema.parse({ repeatCooldownDays: 0, userId: f.user.id, candidateLimit: 2 })
   await f.service.tick(f.config)
   const run = await f.run()
   const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
@@ -1380,4 +1380,377 @@ test('exhausted discovery still delegates qualified reserve backfill to approval
   assert.equal(f.calls.approve, 1, 'Approval owns atomic reserve qualification and promotion')
   assert.equal(f.calls.collect, 1)
   assert.equal((await f.run()).status, 'SCHEDULED')
+})
+
+function cooldownOffer(id, title = 'Panela QA', price = 100) {
+  return { title, productId: id, source: 'mercadolivre', currency: 'BRL', discountedPrice: price,
+    originalPrice: price * 2, commissioned: true, commissionedUrlStatus: 'generated_from_page_state', commissionRate: 15,
+    affiliateUrl: `https://meli.la/cooldown-${id}`, extensionEvidence: { extractedAt: new Date().toISOString(),
+      visibleSignals: { rating: 4.9, soldCount: 50000, bestSeller: true } } }
+}
+async function cooldownDelivery(f, offer, days, extra = {}) {
+  return ProductGroupDelivery.create({ userId: f.user.id, connectionScope: `old-${f.user.id}`, groupId: 'domestica@g.us', groupName: 'Domestic',
+    offerIdentity: randomUUID(), offerSource: ' MercadoLivre ', offerProductId: ` mlb - ${offer.productId.slice(3)} `,
+    offerUrl: 'https://meli.la/old-link', offerTitle: offer.title, status: 'SENT', sentAt: new Date(Date.now() - days * 86400000), ...extra })
+}
+function cooldownSmart(f, offers) {
+  const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
+  const groups = new Map(['domestica', 'masculino'].map(slug => [`${slug}@g.us`, { id: `${slug}@g.us`, name: slug, size: 20, announceOnly: false }]))
+  const groupService = { async requireCurrentGroups() { return groups } }
+  const scope = `cooldown-${f.user.id}`
+  const connections = { async getConnectionScope() { return scope }, async requireConnectedContext() { return { scope, creds: {} } } }
+  const analyzed = []
+  const smart = new SmartCampaignService({ parsePayloads(payloads) {
+    const imported = payloads.flatMap(payload => payload.json.offers ?? [])
+    const values = imported.length ? imported : offers
+    return { offers: values, source: 'mercadolivre', totalSeen: values.length, errors: [], duplicateCount: 0 }
+  } },
+    { async save(_user, values) { return values } }, {
+      async analyze(values, slugs) {
+        analyzed.push(...values.map(offer => offer.productId))
+        return values.map((offer, index) => ({ index, political: offer.title.includes('político'),
+          fits: slugs.map(slug => ({ slug, score: slug === (offer.title.includes('Barbeador') ? 'masculino' : 'domestica') ? 98 : 72,
+            reason: 'Current audience fit', category: 'uso diário', seasonalScore: 50 })), warnings: [], shortCaption: 'USO NA ROTINA' }))
+      }, async standoutCopy() { assert.fail('No paid copy for daily runs') },
+    }, groupService, connections)
+  return { smart, analyzed, groupService, connections }
+}
+
+test('cooldown is group-specific, uses the latest confirmation and normalized aliases, and 0 keeps lifetime novelty', async () => {
+  const f = await setup()
+  const offer = cooldownOffer('MLB98765001')
+  offer.savedProductId = 98765001
+  const { hasDailyProductConflict } = require('../dist/services/dailyNovelty')
+  const conflict = (days, groups = ['domestica@g.us']) => sequelize.transaction(transaction =>
+    hasDailyProductConflict(f.user.id, -1, randomUUID(), offer, transaction, { repeatCooldownDays: days, groupIds: groups }))
+  const old = await cooldownDelivery(f, offer, 40)
+  assert.equal(await conflict(30), false)
+  assert.equal(await conflict(0), true)
+  assert.equal(await conflict(0, ['masculino@g.us']), true, 'Disabled mode preserves global lifetime novelty')
+  await old.update({ sentAt: new Date(Date.now() - 30 * 86400000) })
+  assert.equal(await conflict(30), false, 'Exactly N elapsed days qualifies')
+  await old.update({ sentAt: new Date(Date.now() - 30 * 86400000 + 1) })
+  assert.equal(await conflict(30), true, 'One millisecond inside the cooldown is blocked')
+  await old.update({ sentAt: new Date(Date.now() - 86400000) })
+  assert.equal(await conflict(30, ['masculino@g.us']), false, 'Yesterday in another destination is fresh here')
+  assert.equal(await conflict(30, ['masculino@g.us', 'domestica@g.us']), true)
+  await old.update({ sentAt: new Date(Date.now() - 40 * 86400000) })
+  const recent = await cooldownDelivery(f, offer, 1, { connectionScope: 'changed-connection', offerIdentity: randomUUID() })
+  assert.equal(await conflict(30), true, 'An older delivery never hides a newer confirmation')
+  await recent.destroy()
+  await old.update({ sentAt: null })
+  assert.equal(await conflict(30), true, 'Missing confirmation time fails closed')
+  await old.update({ status: 'SENDING', sentAt: new Date(Date.now() - 400 * 86400000) })
+  assert.equal(await conflict(30, ['masculino@g.us']), true, 'Uncertain claims never age out, even in another group')
+})
+
+test('active reservations and UNKNOWN sends block aged repeats; confirmed smart sends obey the same cooldown', async () => {
+  const f = await setup()
+  const offer = cooldownOffer('MLB98765002')
+  await cooldownDelivery(f, offer, 40)
+  const other = await SmartPlan.create({ userId: f.user.id, status: 'PAUSED', startDate: dailyWindow(f.config).date,
+    days: 1, timezone: f.config.timezone, audienceSlugs: ['domestica'], input: {}, settings: {}, items: [] })
+  const send = await SmartSend.create({ userId: f.user.id, planId: other.id, audienceSlug: 'domestica', groupId: 'domestica@g.us', groupName: 'Domestic',
+    connectionScope: 'reservation-qa', offerIdentity: randomUUID(), offer: { ...offer, productId: ' mlb - 98765002 ' },
+    scheduledAt: new Date(), evidenceObservedAt: new Date(), localDate: dailyWindow(f.config).date, timezone: f.config.timezone, status: 'PENDING' })
+  const { hasDailyProductConflict } = require('../dist/services/dailyNovelty')
+  const conflict = () => sequelize.transaction(transaction => hasDailyProductConflict(f.user.id, -1, randomUUID(), offer,
+    transaction, { repeatCooldownDays: 30, groupIds: ['domestica@g.us'] }))
+  for (const status of ['PENDING', 'SENDING', 'UNKNOWN']) {
+    await send.update({ status, sentAt: new Date(Date.now() - 400 * 86400000) })
+    assert.equal(await conflict(), true, status)
+  }
+  await send.update({ status: 'SENT', sentAt: new Date(Date.now() - 40 * 86400000) })
+  assert.equal(await conflict(), false)
+  await send.update({ sentAt: new Date(Date.now() - 86400000) })
+  assert.equal(await conflict(), true)
+})
+
+test('collector exclusions admit cooled products per destination but retain recent and uncertain history', async () => {
+  const f = await setup()
+  const old = cooldownOffer('MLB98765003'), recent = cooldownOffer('MLB98765004'), uncertain = cooldownOffer('MLB98765005')
+  await cooldownDelivery(f, old, 40)
+  await cooldownDelivery(f, recent, 1)
+  await cooldownDelivery(f, uncertain, 400, { status: 'SENDING' })
+  const config = { ...f.config, repeatCooldownDays: 30 }
+  assert.deepEqual((await f.service.exclusions(f.user.id, config, ['domestica@g.us'])).sort(), [recent.productId, uncertain.productId])
+  assert.deepEqual(await f.service.exclusions(f.user.id, config, ['masculino@g.us']), [uncertain.productId])
+  assert.deepEqual((await f.service.exclusions(f.user.id, f.config, ['domestica@g.us'])).sort(), [old.productId, recent.productId, uncertain.productId])
+})
+
+test('fresh products outrank richer repeats, fallback reuses analyses, and sender delivers an approved repeat', async t => {
+  const f = await setup()
+  const fresh = cooldownOffer('MLB98765006'), repeat = cooldownOffer('MLB98765007', 'Panela premium QA', 600)
+  await cooldownDelivery(f, repeat, 40)
+  const { smart, analyzed, connections, groupService } = cooldownSmart(f, [repeat, fresh])
+  const created = await smart.createPlan(f.user.id, { requestId: randomUUID(), date: dailyWindow(f.config).date, days: 1,
+    audienceSlugs: ['domestica'], payloads: [{ name: 'current-collection', json: {} }], campaignStartTime: '08:00',
+    settings: { dailyCap: 2, maxStandouts: 0, excludePolitical: true, dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 75, minCommercialScore: 60 } },
+  }, { runId: randomUUID(), localDate: dailyWindow(f.config).date, minimumItems: 2, startTime: '08:00', endTime: '19:00', repeatCooldownDays: 30 })
+  const plan = await SmartPlan.findOne({ where: { uuid: created.id } })
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload()
+  assert.equal(plan.status, 'REVIEW', JSON.stringify(plan.progress))
+  assert.deepEqual(plan.items.filter(item => item.state === 'SELECTED').map(item => item.product.productId), [fresh.productId])
+  assert.equal(plan.items.find(item => item.product.productId === repeat.productId).state, 'RESERVE')
+  const paid = analyzed.length
+  await smart.enableDailyRepeatFallback(f.user.id, plan.uuid, plan.revision)
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload()
+  assert.equal(analyzed.length, paid, 'Selection rebuild never purchases the saved classification again')
+  const selected = plan.items.filter(item => item.state === 'SELECTED').sort((a, b) => a.sendOrder - b.sendOrder)
+  assert.deepEqual(selected.map(item => item.product.productId), [fresh.productId, repeat.productId])
+  assert.ok(selected[1].score > selected[0].score, 'Priority wins over commercial score and price mix')
+  assert.equal(selected[1].repeatFallback, true)
+  assert.ok(selected[1].warnings.includes('Repetição após 30 dias'))
+  assert.equal(plan.progress.repeatSelected, 1)
+  await smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: true })
+  const rows = await SmartSend.findAll({ where: { planId: plan.id } })
+  await SmartSend.update({ status: 'SKIPPED' }, { where: { id: rows.find(row => row.offer.productId === fresh.productId).id } })
+  const target = rows.find(row => row.offer.productId === repeat.productId)
+  t.mock.timers.setTime(target.scheduledAt.getTime())
+  let sends = 0
+  const accepted = async () => { sends++; return { id: randomUUID(), status: 'sent' } }
+  const { SmartCampaignSender } = require('../dist/services/SmartCampaignSender')
+  const sender = new SmartCampaignSender({ sendText: accepted, sendMedia: accepted }, connections, groupService, { now: () => new Date() })
+  const result = await sender.processDue()
+  await target.reload()
+  assert.equal(target.status, 'SENT', JSON.stringify({ result, error: target.lastError }))
+  assert.equal(sends, 1)
+  assert.equal(await ProductGroupDelivery.count({ where: { planUuid: plan.uuid, status: 'SENT' } }), 1)
+})
+
+test('worker exhausts fresh discovery before enabling repeats and records the approved run count', async () => {
+  const f = await setup()
+  f.config = { ...f.config, repeatCooldownDays: 30, candidateLimit: 1 }
+  const offers = [cooldownOffer('MLB98765008'), cooldownOffer('MLB98765009', 'Barbeador QA')]
+  await cooldownDelivery(f, offers[0], 40)
+  const { smart, analyzed } = cooldownSmart(f, offers)
+  const service = new DailyAutomationService(smart, f.collector)
+  await service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload()
+  assert.equal(plan.items.filter(item => item.state === 'SELECTED' && item.audienceSlug === 'domestica').length, 0)
+  const paid = analyzed.length
+  await service.tick(f.config)
+  await plan.reload()
+  assert.equal((await f.run()).discovery_state.exhausted, true)
+  assert.equal(plan.settings.dailyAutomation.repeatFallbackReady, true)
+  assert.equal(plan.status, 'ANALYZING')
+  await smart.processPendingAnalysis(plan.id)
+  await service.tick(f.config)
+  await plan.reload()
+  assert.equal((await f.run()).status, 'SCHEDULED')
+  assert.equal((await f.run()).discovery_state.repeatSelected, 1)
+  assert.equal(plan.progress.repeatSelected, 1)
+  assert.equal(analyzed.length, paid)
+  assert.equal(f.calls.collect, 1, 'Candidate bound ends discovery without replaying collection')
+  const sendCount = await SmartSend.count({ where: { planId: plan.id } })
+  await sequelize.query("UPDATE daily_automation_runs SET status='ANALYZING', discovery_state=discovery_state - 'repeatSelected', next_attempt_at=NOW() WHERE id=:id", { replacements: { id: run.id } })
+  await service.tick(f.config)
+  assert.equal((await f.run()).discovery_state.repeatSelected, 1, 'Restart recovers evidence after approval committed before the run checkpoint')
+  assert.equal(await SmartSend.count({ where: { planId: plan.id } }), sendCount)
+})
+
+test('approval and both sender rechecks reject newly conflicting repeats without provider calls', async t => {
+  const { SmartCampaignSender } = require('../dist/services/SmartCampaignSender')
+  for (const stage of ['approval', 'reservation', 'provider']) {
+    const f = await setup()
+    const offer = cooldownOffer(`MLB${98765100 + ['approval', 'reservation', 'provider'].indexOf(stage)}`)
+    await cooldownDelivery(f, offer, 40)
+    const { smart, connections, groupService } = cooldownSmart(f, [offer])
+    const created = await smart.createPlan(f.user.id, { requestId: randomUUID(), date: dailyWindow(f.config).date, days: 1,
+      audienceSlugs: ['domestica'], payloads: [{ name: 'current', json: {} }], campaignStartTime: '08:00',
+      settings: { maxStandouts: 0, dailyCap: 1, dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 75, minCommercialScore: 60 } },
+    }, { runId: randomUUID(), localDate: dailyWindow(f.config).date, minimumItems: 1, startTime: '08:00', endTime: '19:00', repeatCooldownDays: 30 })
+    const plan = await SmartPlan.findOne({ where: { uuid: created.id } })
+    await smart.processPendingAnalysis(plan.id)
+    await plan.reload()
+    await smart.enableDailyRepeatFallback(f.user.id, plan.uuid, plan.revision)
+    await smart.processPendingAnalysis(plan.id)
+    await plan.reload()
+    if (stage === 'approval') {
+      await cooldownDelivery(f, offer, 1, { connectionScope: 'latest' })
+      await assert.rejects(smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: true }), { code: 'DAILY_NOVELTY_CONFLICT' })
+      assert.equal(await SmartSend.count({ where: { planId: plan.id } }), 0)
+      continue
+    }
+    await smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: true })
+    const target = await SmartSend.findOne({ where: { planId: plan.id } })
+    t.mock.timers.setTime(target.scheduledAt.getTime())
+    const other = await SmartPlan.create({ userId: f.user.id, status: 'PAUSED', startDate: target.localDate, days: 1,
+      timezone: f.config.timezone, audienceSlugs: ['domestica'], input: {}, settings: {}, items: [] })
+    const reserve = () => SmartSend.create({ userId: f.user.id, planId: other.id, audienceSlug: 'domestica', groupId: 'other@g.us', groupName: 'Other',
+      connectionScope: 'other-account-scope', offerIdentity: randomUUID(), offer: { ...offer, productId: ` mlb - ${offer.productId.slice(3)} ` },
+      scheduledAt: new Date(), evidenceObservedAt: new Date(), localDate: target.localDate, timezone: f.config.timezone, status: 'UNKNOWN' })
+    const fail = async () => assert.fail('A newly uncertain repeat must never reach the provider')
+    const sender = new SmartCampaignSender({ sendText: fail, sendMedia: fail }, connections, groupService, { now: () => new Date() })
+    if (stage === 'reservation') await reserve()
+    else {
+      const ready = sender.readyForProvider.bind(sender)
+      sender.readyForProvider = async (...args) => { await reserve(); return ready(...args) }
+    }
+    await sender.processDue()
+    await target.reload()
+    assert.equal(target.status, 'SKIPPED', `${stage}: ${target.lastError}`)
+    assert.equal(await ProductGroupDelivery.count({ where: { planUuid: plan.uuid } }), 0, 'Only the unsent owned claim may be removed')
+    assert.equal(await SmartSend.count({ where: { planId: other.id, status: 'UNKNOWN' } }), 1)
+  }
+})
+
+test('repeat fallback preserves stale-evidence, popularity, affiliate and political hard gates', async () => {
+  const f = await setup()
+  const offers = Array.from({ length: 5 }, (_, index) => cooldownOffer(`MLB${98765200 + index}`))
+  offers[0].extensionEvidence.extractedAt = '2000-01-01T00:00:00Z'
+  offers[1].extensionEvidence.visibleSignals.rating = 4
+  offers[2].extensionEvidence.visibleSignals.soldCount = 0
+  offers[3].commissionedUrlStatus = 'manual_unverified'
+  offers[4].title = 'Caneca com conteúdo político'
+  for (const offer of offers) await cooldownDelivery(f, offer, 40)
+  const { smart } = cooldownSmart(f, offers)
+  const created = await smart.createPlan(f.user.id, { requestId: randomUUID(), date: dailyWindow(f.config).date, days: 1,
+    audienceSlugs: ['domestica'], payloads: [{ name: 'current', json: {} }], campaignStartTime: '08:00',
+    settings: { maxStandouts: 0, excludePolitical: true, dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 75, minCommercialScore: 60 } },
+  }, { runId: randomUUID(), localDate: dailyWindow(f.config).date, minimumItems: 1, startTime: '08:00', endTime: '19:00', repeatCooldownDays: 30 })
+  const plan = await SmartPlan.findOne({ where: { uuid: created.id } })
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload()
+  await smart.enableDailyRepeatFallback(f.user.id, plan.uuid, plan.revision)
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload()
+  assert.equal(plan.status, 'REVIEW')
+  assert.equal(plan.items.length, 5)
+  assert.ok(plan.items.every(item => item.state === 'REJECTED'))
+  assert.ok(plan.items.every(item => item.reason.length > 0))
+  assert.equal(plan.progress.repeatSelected, 0)
+})
+
+test('newly discovered fresh products fill the target before stored repeat candidates are released', async () => {
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ ...f.config, repeatCooldownDays: 30, candidateLimit: 3, endTime: '08:25' })
+  const repeat = cooldownOffer('MLB98765300'), male = cooldownOffer('MLB98765301', 'Barbeador QA')
+  const fresh = [cooldownOffer('MLB98765302'), cooldownOffer('MLB98765303')]
+  const male2 = cooldownOffer('MLB98765304', 'Barbeador QA 2')
+  await cooldownDelivery(f, repeat, 40)
+  const payload = (slug, offers) => ({ name: `${slug}-${offers[0].productId}.json`, targetAudienceSlug: slug,
+    json: { offers, cards: offers.map(offer => ({ productId: offer.productId })) } })
+  let collections = 0
+  const collector = { async collect(requests) {
+    collections++
+    if (collections === 1) return [payload('domestica', [repeat]), payload('masculino', [male])]
+    if (collections === 2) return [payload('domestica', [fresh[0]]), payload('masculino', [male2])]
+    assert.equal(collections, 3)
+    assert.deepEqual(requests.map(request => request.slug), ['domestica'])
+    assert.ok(requests[0].options.excludeProductIds.includes(fresh[0].productId))
+    return [payload('domestica', [fresh[1]])]
+  } }
+  const { smart, analyzed } = cooldownSmart(f, [])
+  const service = new DailyAutomationService(smart, collector)
+  await service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  for (let round = 0; round < 3; round++) {
+    await smart.processPendingAnalysis(plan.id)
+    await service.tick(f.config)
+  }
+  await plan.reload()
+  assert.equal(plan.status, 'SCHEDULED', JSON.stringify(plan.progress))
+  assert.deepEqual(plan.items.filter(item => item.state === 'SELECTED' && item.audienceSlug === 'domestica').map(item => item.product.productId).sort(), fresh.map(offer => offer.productId).sort())
+  assert.equal(plan.items.find(item => item.product.productId === repeat.productId && item.audienceSlug === 'domestica').state, 'RESERVE')
+  assert.equal(plan.settings.dailyAutomation.repeatFallbackReady, undefined)
+  assert.equal((await f.run()).discovery_state.repeatSelected, 0)
+  assert.equal(analyzed.length, 5, 'Replenishment analyzes only the three new observations')
+  assert.equal(collections, 3)
+})
+
+test('cooldown collection catches relisted affiliate URLs and retains old matches as repeat reserves', async t => {
+  const f = await setup()
+  f.config = { ...f.config, repeatCooldownDays: 30 }
+  const { offerIdentity } = require('../dist/utils/offerIdentity')
+  const recent = cooldownOffer('MLB98800001'), old = cooldownOffer('MLB98800002')
+  for (const [offer, days] of [[recent, 1], [old, 40]]) {
+    await cooldownDelivery(f, offer, days, { offerIdentity: offerIdentity(offer), offerUrl: offer.affiliateUrl })
+  }
+  const cards = [recent, old].map((offer, index) => ({ ...offer, productId: `MLB9880010${index}`,
+    commissionedUrl: offer.affiliateUrl }))
+  const filtered = await f.service.filterPayload({ user_id: f.user.id, config: f.config }, {
+    name: 'relisted.json', targetAudienceSlug: 'domestica', json: { extractedAt: new Date().toISOString(), cards },
+  })
+  assert.deepEqual(filtered.json.cards.map(card => card.productId), [cards[1].productId])
+  assert.equal(filtered.json.cards[0].repeatFallback, true)
+  const otherGroup = await f.service.filterPayload({ user_id: f.user.id, config: f.config }, {
+    ...filtered, targetAudienceSlug: 'masculino', json: { cards },
+  })
+  assert.equal(otherGroup.json.cards.length, 2)
+  assert.ok(otherGroup.json.cards.every(card => !card.repeatFallback), 'Confirmed history only in another group is fresh')
+  const warnings = []
+  const service = new DailyAutomationService(f.smart, f.collector, { async enqueueInventoryLow(...args) { warnings.push(args) } })
+  await service.inventoryWarning({ user_id: f.user.id, config: f.config, id: 'relisted-qa', local_date: dailyWindow(f.config).date }, filtered)
+  assert.equal(warnings[0][4], 0, 'Cooled repeats never count as fresh inventory')
+  const { smart } = cooldownSmart(f, filtered.json.cards)
+  const created = await smart.createPlan(f.user.id, { requestId: randomUUID(), date: dailyWindow(f.config).date, days: 1,
+    audienceSlugs: ['domestica'], payloads: [{ name: 'filtered-collection', json: {} }], campaignStartTime: '08:00',
+    settings: { dailyCap: 2, maxStandouts: 0, excludePolitical: true,
+      dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 75, minCommercialScore: 60 } },
+  }, { runId: randomUUID(), localDate: dailyWindow(f.config).date, minimumItems: 2, startTime: '08:00', endTime: '19:00', repeatCooldownDays: 30 })
+  const plan = await SmartPlan.findOne({ where: { uuid: created.id } })
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload()
+  assert.equal(plan.items.length, 1)
+  assert.equal(plan.items[0].state, 'RESERVE')
+  assert.equal(plan.items[0].repeatFallback, true)
+  assert.ok(plan.items[0].warnings.includes('Repetição após 30 dias'))
+})
+
+test('cooldown planning and approval batch once per audience and preserve destination-specific freshness', async () => {
+  const f = await setup()
+  f.config = { ...f.config, repeatCooldownDays: 30 }
+  const domestic = [cooldownOffer('MLB98800200'), cooldownOffer('MLB98800201'), cooldownOffer('MLB98800202')]
+  const male = [cooldownOffer('MLB98800203', 'Barbeador QA'), cooldownOffer('MLB98800204', 'Barbeador premium QA', 600)]
+  await cooldownDelivery(f, domestic[0], 1, { groupId: 'masculino@g.us' })
+  await cooldownDelivery(f, male[1], 40, { groupId: 'masculino@g.us' })
+  const { smart } = cooldownSmart(f, [...domestic, ...male])
+  const created = await smart.createPlan(f.user.id, { requestId: randomUUID(), date: dailyWindow(f.config).date, days: 1,
+    audienceSlugs: ['domestica', 'masculino'], payloads: [{ name: 'batch-qa', json: {} }], campaignStartTime: '08:00',
+    settings: { dailyCap: 2, maxStandouts: 0, excludePolitical: true,
+      dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 75, minCommercialScore: 60 } },
+  }, { runId: randomUUID(), localDate: dailyWindow(f.config).date, minimumItems: 2, startTime: '08:00', endTime: '19:00', repeatCooldownDays: 30 })
+  const plan = await SmartPlan.findOne({ where: { uuid: created.id } })
+  const query = sequelize.query.bind(sequelize)
+  let queries = 0
+  const batched = async action => {
+    queries = 0
+    sequelize.query = (sql, ...args) => {
+      if (typeof sql === 'string' && sql.includes('WITH daily_history AS')) queries++
+      return query(sql, ...args)
+    }
+    try { await action() } finally { sequelize.query = query }
+    assert.equal(queries, 2, 'History work is bounded by audience count, not offer/item count')
+  }
+  await batched(() => smart.processPendingAnalysis(plan.id))
+  await plan.reload()
+  const fresh = plan.items.find(item => item.audienceSlug === 'domestica' && item.product.productId === domestic[0].productId)
+  assert.equal(fresh.state, 'SELECTED')
+  assert.equal(fresh.repeatFallback, false)
+  const repeat = () => plan.items.find(item => item.audienceSlug === 'masculino' && item.product.productId === male[1].productId)
+  assert.equal(repeat().state, 'RESERVE')
+  assert.equal(repeat().repeatFallback, true)
+  await smart.enableDailyRepeatFallback(f.user.id, plan.uuid, plan.revision)
+  await batched(() => smart.processPendingAnalysis(plan.id))
+  await plan.reload()
+  assert.equal(repeat().state, 'SELECTED')
+  const audiences = await SmartAudience.findAll({ where: { userId: f.user.id } })
+  const run = { user_id: f.user.id, config: f.config, local_date: plan.startDate }
+  assert.equal((await f.service.noveltyCoverage(run, plan, audiences)).noveltyShortage, false)
+  await cooldownDelivery(f, fresh.product, 1, { connectionScope: 'new-reservation', status: 'SENDING', groupId: 'unrelated@g.us' })
+  assert.equal((await f.service.noveltyCoverage(run, plan, audiences)).noveltyShortage, true)
+  await batched(() => smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: true }))
+  await plan.reload()
+  assert.equal(plan.status, 'SCHEDULED')
+  const selected = plan.items.filter(item => item.state === 'SELECTED')
+  assert.equal(selected.length, 4)
+  assert.ok(!selected.some(item => item.product.productId === domestic[0].productId))
+  assert.equal(selected.filter(item => item.repeatFallback).length, 1)
 })

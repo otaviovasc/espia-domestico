@@ -26,7 +26,7 @@ import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryPage } from '@/utils/dailyDis
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
 import { normalizedMercadoLivreProductId, type OfferIdentityInput } from '@/utils/offerIdentity'
-import { dailyExcludedProductIds, dailyOfferAliases, dailyProductConflicts } from '@/services/dailyNovelty'
+import { dailyExcludedProductIds, dailyOfferAliases, dailyProductConflicts, dailyRepeatCooldown, type DailyRepeatPolicy } from '@/services/dailyNovelty'
 
 interface DailyRun {
   id: string
@@ -38,7 +38,7 @@ interface DailyRun {
   payloads: DailyPayload[] | null
   plan_uuid: string | null
   attempts: number
-  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>> }
+  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>>; repeatSelected?: number }
   lease_token: string
 }
 
@@ -98,6 +98,7 @@ export class DailyAutomationService {
 
   private async inventoryWarning(run: DailyRun, payload: DailyPayload, limit = dailyCandidateTarget(run.config)): Promise<void> {
     const fresh = new Set((Array.isArray(payload.json.cards) ? payload.json.cards : [])
+      .filter(card => !(card as { repeatFallback?: boolean }).repeatFallback)
       .map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter(Boolean)).size
     const required = Math.min(limit, dailyRequiredItems(run.config) * 2)
     if (fresh >= required) return
@@ -110,15 +111,19 @@ export class DailyAutomationService {
   }
 
   /** Coverage after removing selected items that repeat history or another audience's selection. */
-  private async noveltyCoverage(run: DailyRun, plan: SmartPlan) {
+  private async noveltyCoverage(run: DailyRun, plan: SmartPlan, audiences: SmartAudience[]) {
     const selected = plan.items.filter(item => item.state === 'SELECTED')
-    const conflicts = await dailyProductConflicts(run.user_id, plan.id, plan.uuid,
-      selected.flatMap(item => item.product ? [item.product as OfferIdentityInput] : []))
+    const histories = new Map(await Promise.all(audiences.map(async audience => [audience.slug,
+      await dailyProductConflicts(run.user_id, plan.id, plan.uuid,
+        selected.filter(item => item.audienceSlug === audience.slug).flatMap(item => item.product ? [item.product as OfferIdentityInput] : []),
+        undefined, { ...run.config, groupIds: audience.destinations.map(d => d.groupId) })] as const)))
+    const fallbackReady = (plan.settings.dailyAutomation as { repeatFallbackReady?: boolean } | undefined)?.repeatFallbackReady
     const identities = new Set<string>()
     const effective = plan.items.filter(item => {
       if (item.state !== 'SELECTED' || !item.product) return true
       const aliases = dailyOfferAliases(item.product as OfferIdentityInput)
-      if (aliases.some(identity => conflicts.has(identity) || identities.has(identity))) return false
+      const history = histories.get(String(item.audienceSlug))!
+      if (aliases.some(identity => history.has(identity) || (!fallbackReady && history.repeats.has(identity)) || identities.has(identity))) return false
       aliases.forEach(identity => identities.add(identity))
       return true
     })
@@ -139,16 +144,16 @@ export class DailyAutomationService {
     if (state.exhausted || this.windowExpired(run.config, run.local_date)) return false
     const pooled = (run.payloads ?? []).flatMap(p => Array.isArray(p.json.cards) ? p.json.cards : [])
     const ids = pooled.map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter((id): id is string => Boolean(id))
-    const history = await this.exclusions(run.user_id, plan)
+    const histories = new Map(await Promise.all(audiences.map(async audience => [audience.slug, await this.exclusions(run.user_id, run.config, audience.destinations.map(d => d.groupId), plan)] as const)))
     const requests = DAILY_AUDIENCES.flatMap(slug => {
-      if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule))) return []
+      if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule || (dailyRepeatCooldown(run.config) && a.selected < dailyItemTarget(run.config))))) return []
       const existing = (run.payloads ?? []).filter(p => p.targetAudienceSlug === slug).reduce((n, p) => n + (Array.isArray(p.json.cards) ? p.json.cards.length : 0), 0)
       const audience = audiences.find(a => a.slug === slug)!
       const keywords = dailyDiscoveryPage(slug, audience.profile.keywords, round + (state.initialRounds?.[slug] ?? 0), run.local_date)
       const limit = Math.min(DAILY_DISCOVERY_ROUND_SIZE, run.config.candidateLimit - existing)
       if (limit <= 0 || !keywords) return []
       return [{ slug, options: { limit, keywords, matchMode: 'any', matchStyle: 'word',
-        excludeProductIds: [...new Set([...history, ...ids])], excludePolitical: true,
+        excludeProductIds: [...new Set([...(histories.get(slug) ?? []), ...ids])], excludePolitical: true,
         quality: { minRating: run.config.minRating, minSoldCount: run.config.minSoldCount },
         minPrice: audience.policy.minPrice, maxPrice: audience.policy.maxPrice,
         commission: { minPercent: audience.policy.minCommissionPercent, minEstimatedBrl: audience.policy.minEstimatedCommission } } }]
@@ -252,8 +257,8 @@ export class DailyAutomationService {
     if (!rows.length) throw new DailyCollectionError('STOPPED')
   }
 
-  private async exclusions(userId: number, plan?: SmartPlan): Promise<string[]> {
-    return dailyExcludedProductIds(userId, plan?.id, plan?.uuid)
+  private async exclusions(userId: number, config: DailyRepeatPolicy = {}, groupIds: string[] = [], plan?: SmartPlan): Promise<string[]> {
+    return dailyExcludedProductIds(userId, plan?.id, plan?.uuid, { ...config, groupIds })
   }
 
   private async filterPayload(run: DailyRun, payload: DailyPayload, plan?: SmartPlan): Promise<DailyPayload> {
@@ -264,9 +269,15 @@ export class DailyAutomationService {
       return { source: 'mercadolivre', productId: typeof value?.productId === 'string' ? value.productId : undefined,
         affiliateUrl: typeof url === 'string' ? url : '' }
     })
-    const conflicts = await dailyProductConflicts(run.user_id, plan?.id ?? null, plan?.uuid ?? null, offers)
-    return { ...payload, json: { ...payload.json, cards: payload.json.cards.filter((_card, index) =>
-      !dailyOfferAliases(offers[index]).some(identity => conflicts.has(identity))) } }
+    const audience = await SmartAudience.findOne({ where: { userId: run.user_id, slug: payload.targetAudienceSlug } })
+    const conflicts = await dailyProductConflicts(run.user_id, plan?.id ?? null, plan?.uuid ?? null, offers,
+      undefined, { ...run.config, groupIds: audience?.destinations.map(d => d.groupId) })
+    const cards = payload.json.cards.flatMap((card, index) => {
+      const aliases = dailyOfferAliases(offers[index])
+      if (aliases.some(identity => conflicts.has(identity))) return []
+      return [{ ...(card as Record<string, unknown>), repeatFallback: aliases.some(identity => conflicts.repeats.has(identity)) }]
+    })
+    return { ...payload, json: { ...payload.json, cards } }
   }
 
   async tick(config: DailyAutomationConfig, now = new Date()): Promise<void> {
@@ -352,6 +363,8 @@ export class DailyAutomationService {
         ].includes(ownedPlan.status)
       ) {
         await this.checkpointPlan(run, ownedPlan)
+        run.discovery_state = { ...run.discovery_state, repeatSelected: ownedPlan.items.filter(item => item.state === 'SELECTED' && item.repeatFallback).length }
+        await this.discoveryCheckpoint(run)
         await this.save(run, ownedPlan.status)
         return
       }
@@ -433,9 +446,9 @@ export class DailyAutomationService {
                 .filter((id): id is string => Boolean(id))
             : [],
         )
-        const excludeProductIds = [
-          ...new Set([...(await this.exclusions(run.user_id)), ...completedIds]),
-        ]
+        const histories = new Map(await Promise.all(audiences.map(async audience => [audience.slug,
+          [...new Set([...(await this.exclusions(run.user_id, run.config, audience.destinations.map(d => d.groupId))), ...completedIds])]] as const)))
+        const excludeProductIds = [...histories.values()].flat()
         if (excludeProductIds.length + run.config.candidateLimit * missing.length > 50_000) {
           await this.save(run, 'CONFIG_REQUIRED', 'HISTORY_LIMIT')
           return
@@ -458,7 +471,7 @@ export class DailyAutomationService {
                 keywords: dailyDiscoveryPage(slug, audience.profile.keywords, state.initialRounds?.[slug] ?? 0, run.local_date),
                 matchMode: 'any',
                 matchStyle: 'word',
-                excludeProductIds,
+                excludeProductIds: histories.get(slug)!,
                 quality: { minRating: run.config.minRating, minSoldCount: run.config.minSoldCount },
                 excludePolitical: true,
                 minPrice: policy.minPrice,
@@ -539,6 +552,7 @@ export class DailyAutomationService {
             runId: run.id,
             localDate: run.local_date,
             minimumItems: dailyRequiredItems(run.config),
+            repeatCooldownDays: run.config.repeatCooldownDays ?? 0,
             startTime: run.config.startTime,
             endTime: run.config.endTime,
           },
@@ -550,9 +564,18 @@ export class DailyAutomationService {
       if (plan.status === SMART_PLAN_STATUS.ANALYZING) {
         await this.save(run, 'ANALYZING')
       } else if (plan.status === SMART_PLAN_STATUS.REVIEW) {
-        const { coverage, noveltyShortage } = await this.noveltyCoverage(run, plan)
-        if (!coverage.ready) {
-          if ((run.config.planningDaysAhead === 1 || noveltyShortage) && await this.replenish(run, plan, audiences, coverage)) return
+        const { coverage, noveltyShortage } = await this.noveltyCoverage(run, plan, audiences)
+        const repeatShortage = dailyRepeatCooldown(run.config) && coverage.audiences.some(a => a.selected < dailyItemTarget(run.config))
+        if (!coverage.ready || repeatShortage) {
+          if (!plan.settings.dailyAutomation || !(plan.settings.dailyAutomation as { repeatFallbackReady?: boolean }).repeatFallbackReady) {
+            if ((run.config.planningDaysAhead === 1 || noveltyShortage || dailyRepeatCooldown(run.config)) && await this.replenish(run, plan, audiences, coverage)) return
+            if (dailyRepeatCooldown(run.config)) {
+              await this.requireLease(run)
+              await this.smart.enableDailyRepeatFallback(run.user_id, plan.uuid, plan.revision)
+              await this.save(run, 'ANALYZING')
+              return
+            }
+          }
           // Automatic approval always ships the qualified remainder of a short or late day.
           if (!run.config.autoApprove || !plan.items.some(item => item.state === 'SELECTED')) {
             await this.save(run, 'REVIEW', 'INSUFFICIENT_QUALIFIED_PRODUCTS', coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; '))
@@ -570,9 +593,12 @@ export class DailyAutomationService {
           if (!(error instanceof AppError) || !['DAILY_NOVELTY_CONFLICT', 'DAILY_INVENTORY_SHORTAGE'].includes(error.code ?? '')) throw error
           await plan.reload()
           if (plan.status !== SMART_PLAN_STATUS.REVIEW) throw error
-          if (await this.replenish(run, plan, audiences, (await this.noveltyCoverage(run, plan)).coverage)) return
+          if (await this.replenish(run, plan, audiences, (await this.noveltyCoverage(run, plan, audiences)).coverage)) return
           throw error
         }
+        await plan.reload()
+        run.discovery_state = { ...run.discovery_state, repeatSelected: plan.items.filter(item => item.state === 'SELECTED' && item.repeatFallback).length }
+        await this.discoveryCheckpoint(run)
         await this.save(run, 'SCHEDULED')
       } else if (plan.status === SMART_PLAN_STATUS.FAILED) {
         await this.save(run, 'ANALYSIS_HOLD', 'SMART_ANALYSIS_FAILED')
