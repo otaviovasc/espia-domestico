@@ -42,8 +42,8 @@ export class DailyAutomationAlerts {
     if (code === 'READY') return // Operational problems only; no routine status chatter.
     if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(code) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return
     // Extract only a bounded vocabulary of operational facts, never arbitrary text.
-    const facts = detail.match(/(?:domestica|masculino)|(?:fresh|selected|required|missing|unknown|failed|skipped)=\d{1,6}\b|deadline=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|-03:00)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)?.slice(0, 30).join(' ') ?? ''
-    const body = `⚠️ Espia — operação de ${date}\nCódigo: ${code}\n${facts}\nJanela: ${config.startTime}–${config.endTime} (São Paulo).\nVerifique o painel Smart e os logs do worker. A automação não contorna filtros ou repete envios incertos.`
+    const facts = detail.match(/(?:domestica|masculino)|(?:selected|fresh|required|missing|unknown|failed|skipped)=\d{1,6}\b|deadline=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|-03:00)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)?.slice(0, 30).join(' ') ?? ''
+    const body = `${code === 'DAILY_PARTIAL_DAY' ? 'ℹ️' : '⚠️'} Espia — operação de ${date}\nCódigo: ${code}\n${facts}\nJanela: ${config.startTime}–${config.endTime} (São Paulo).\nVerifique o painel Smart e os logs do worker. A automação não contorna filtros ou repete envios incertos.`
     await sequelize.query(`INSERT INTO daily_automation_alerts(id,user_id,event_key,group_id,body)
       VALUES(:id,:userId,:key,:groupId,:body) ON CONFLICT(user_id,event_key) DO NOTHING`, {
       replacements: { id: randomUUID(), userId: config.userId, key: `${date}:${code}:${createHash('sha256').update(key).digest('hex')}`, groupId: config.alertGroupId, body },
@@ -76,14 +76,19 @@ export class DailyAutomationAlerts {
     // Warn before the sending window, even when collection or paid AI is stuck.
     if (minutes(time) >= minutes(config.startTime) - 30 && time < config.endTime &&
       (!config.weekdaysOnly || !['Sat', 'Sun'].includes(new Intl.DateTimeFormat('en-US', { timeZone: config.timezone, weekday: 'short' }).format(now)))) {
-      const plans = await sequelize.query<{ uuid: string; status: string; items: Parameters<typeof dailyPlanCoverage>[0] }>(
-        `SELECT uuid,status,items FROM smart_plans WHERE user_id=:userId AND start_date=CAST(:today AS DATE)
-         AND settings ? 'dailyAutomation' AND status<>'CANCELLED' ORDER BY created_at DESC LIMIT 1`,
+      const plans = await sequelize.query<{ uuid: string; status: string; items: Parameters<typeof dailyPlanCoverage>[0]; config: DailyAutomationConfig | null }>(
+        `SELECT p.uuid,p.status,p.items,r.config FROM smart_plans p
+         LEFT JOIN daily_automation_runs r ON r.user_id=p.user_id AND r.request_id::text=p.input->>'requestId'
+         WHERE p.user_id=:userId AND p.start_date=CAST(:today AS DATE)
+         AND p.settings ? 'dailyAutomation' AND p.status<>'CANCELLED' ORDER BY p.created_at DESC LIMIT 1`,
         { replacements: { userId: config.userId, today }, type: QueryTypes.SELECT })
       const plan = plans[0]
-      const coverage = dailyPlanCoverage(plan?.items ?? [], config, today)
-      const code = !coverage.ready ? 'PRE_SEND_PLAN_INCOMPLETE' : plan?.status === 'REVIEW' ? 'MANUAL_APPROVAL_REQUIRED' : null
-      if (code) await this.enqueue(config, today, `readiness:${code}`, code,
+      const frozen = plan?.config ?? config
+      const coverage = dailyPlanCoverage(plan?.items ?? [], frozen, today)
+      const code = plan?.status === 'REVIEW' ? (frozen.autoApprove ? 'AUTO_APPROVAL_STALLED' : 'MANUAL_APPROVAL_REQUIRED')
+        : ['SCHEDULED', 'COMPLETED'].includes(plan?.status ?? '') ? (coverage.audiences.some(audience => audience.missing > 0) ? 'DAILY_PARTIAL_DAY' : null)
+          : !coverage.ready ? 'PRE_SEND_PLAN_INCOMPLETE' : null
+      if (code) await this.enqueue(config, today, `readiness:${plan?.uuid ?? 'missing'}:${code}`, code,
         `${plan?.uuid ?? ''} ${coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; ')} deadline=${today}T${config.startTime}:00-03:00`)
     }
   }
