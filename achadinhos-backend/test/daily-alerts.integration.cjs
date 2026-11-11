@@ -81,3 +81,17 @@ test('current-day sender issues alert separately and readiness gives counts and 
   assert.match(readiness.body, /deadline=2026-11-10T08:00:00-03:00/)
   assert.equal(f.calls.length, 0, 'monitoring persists only; scheduler separately dispatches')
 })
+
+test('inventory warnings retain bounded typed counts and deduplicate without provider access', async () => {
+  const f = await setup()
+  await f.service.enqueueInventoryLow(f.config, '2026-11-11', 'inventory:domestica', 'domestica', 18, 60)
+  await f.service.enqueueInventoryLow(f.config, '2026-11-11', 'inventory:domestica', 'domestica', 0, 60)
+  await f.service.enqueueInventoryLow(f.config, '2026-11-11', 'bad', 'domestica', NaN, 60)
+  await f.service.enqueueInventoryLow(f.config, '2026-11-11', 'bad', 'domestica', -1, 60)
+  const rows = await f.rows()
+  assert.equal(rows.length, 1)
+  assert.match(rows[0].body, /DAILY_INVENTORY_LOW/)
+  assert.match(rows[0].body, /domestica fresh=18 required=60/)
+  assert.equal(rows[0].status, 'PENDING')
+  assert.equal(f.calls.length, 0)
+})

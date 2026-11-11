@@ -989,3 +989,237 @@ test('D+1 ready preview still automatically approves after its first target slot
   assert.equal(f.calls.collect, 1)
   assert.equal((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'SCHEDULED')
 })
+
+for (const daysAhead of [0, 1]) {
+  test(`novelty conflicts replenish a previously complete D+${daysAhead} preview before approval`, async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+    const f = await setup()
+    f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, planningDaysAhead: daysAhead,
+      collectTime: daysAhead ? '19:00' : '06:00', autoApprove: true, requireFullWindow: !!daysAhead })
+    if (!daysAhead) t.mock.timers.setTime(new Date('2026-11-09T10:00:00Z').getTime())
+    const { dailyRequiredItems } = require('../dist/config/dailyAutomation')
+    const { buildSmartSchedule } = require('../dist/services/SmartCampaignService')
+    const { offerIdentity } = require('../dist/utils/offerIdentity')
+    f.collector.collect = async requests => {
+      f.calls.collect++
+      if (f.calls.collect === 1) {
+        assert.ok(requests.every(r => r.options.limit === (daysAhead ? 120 : 50)))
+        return f.payloads
+      }
+      assert.deepEqual(requests.map(r => r.slug), ['domestica'])
+      assert.ok(requests[0].options.excludeProductIds.includes('MLB87654321'))
+      assert.equal(requests[0].options.excludePolitical, true)
+      assert.deepEqual(requests[0].options.quality, { minRating: 4.5, minSoldCount: 100 })
+      return [{ ...f.payloads[0], json: { cards: [{ productId: 'MLB87654322' }] } }]
+    }
+    await f.service.tick(f.config)
+    const run = await f.run()
+    const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+    const count = dailyRequiredItems(f.config)
+    const slots = buildSmartSchedule(run.local_date, count, { startTime: '08:00', endTime: '19:00', timezone: f.config.timezone,
+      minGapSeconds: 1200, maxGapSeconds: 1500, dailyCap: 30, spreadAcrossWindow: true, windowEndBufferSeconds: 120 }, 'inventory')
+    const items = ['domestica', 'masculino'].flatMap((audienceSlug, a) => slots.map((slot, n) => ({
+      state: 'SELECTED', audienceSlug, scheduledAt: slot.toISOString(), product: { source: 'mercadolivre',
+        productId: a === 0 && n === 0 ? 'MLB87654321' : `MLB${80000000 + a * 1000 + n}`,
+        title: `${audienceSlug} ${n}`, affiliateUrl: `https://meli.la/inventory-${a}-${n}` },
+    })))
+    await plan.update({ status: 'REVIEW', items })
+    const product = items[0].product
+    await ProductGroupDelivery.create({ userId: f.user.id, connectionScope: 'inventory-qa', groupId: 'old@g.us', groupName: 'Old',
+      offerIdentity: offerIdentity(product), offerSource: 'mercadolivre', offerProductId: product.productId,
+      offerUrl: product.affiliateUrl, offerTitle: product.title, status: 'SENT', sentAt: new Date() })
+    let appends = 0
+    f.smart.appendDailyProducts = async () => { appends++; await plan.update({ status: 'ANALYZING' }) }
+    await f.service.tick(f.config)
+    assert.equal(f.calls.collect, 2)
+    assert.equal(f.calls.approve, 0)
+    assert.equal(appends, 1)
+    assert.equal((await f.run()).status, 'ANALYZING')
+    assert.equal((await plan.reload()).items.length, items.length, 'Discovery preflight does not edit Smart selections')
+  })
+}
+
+test('an approval-time novelty race returns to bounded discovery instead of a terminal attention hold', async () => {
+  const f = await setup()
+  const { AppError } = require('../dist/middleware/Error/AppError')
+  const { offerIdentity } = require('../dist/utils/offerIdentity')
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  const product = { source: 'mercadolivre', productId: 'MLB88776655', title: 'Panela', affiliateUrl: 'https://meli.la/race-inventory' }
+  await plan.update({ status: 'REVIEW', items: [
+    { state: 'SELECTED', audienceSlug: 'domestica', product },
+    { state: 'SELECTED', audienceSlug: 'masculino' },
+  ] })
+  f.smart.approve = async () => {
+    f.calls.approve++
+    await ProductGroupDelivery.create({ userId: f.user.id, connectionScope: 'inventory-race', groupId: 'old@g.us', groupName: 'Old',
+      offerIdentity: offerIdentity(product), offerSource: 'mercadolivre', offerProductId: product.productId,
+      offerUrl: product.affiliateUrl, offerTitle: product.title, status: 'SENT', sentAt: new Date() })
+    throw new AppError('Novelty race', 409, 'DAILY_NOVELTY_CONFLICT')
+  }
+  let appends = 0
+  f.smart.appendDailyProducts = async () => { appends++; await plan.update({ status: 'ANALYZING' }) }
+  f.collector.collect = async requests => {
+    assert.deepEqual(requests.map(r => r.slug), ['domestica'])
+    return [{ ...f.payloads[0], json: { cards: [{ productId: 'MLB88776656' }] } }]
+  }
+  await f.service.tick(f.config)
+  assert.equal(f.calls.approve, 1)
+  assert.equal(appends, 1)
+  assert.equal((await f.run()).status, 'ANALYZING')
+  assert.equal((await f.run()).attempts, 0)
+})
+
+test('empty initial discovery gets exactly one broad hub pass then terminates without AI', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id })
+  const pages = []
+  f.collector.collect = async requests => {
+    pages.push(requests)
+    return requests.map(r => ({ name: `${r.slug}.json`, targetAudienceSlug: r.slug, json: { cards: [] } }))
+  }
+  for (let i = 0; i < 19; i++) {
+    await f.service.tick(f.config)
+    const run = await f.run()
+    if (run.status === 'REVIEW') break
+    await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  }
+  assert.equal((await f.run()).last_error, 'DISCOVERY_KEYWORDS_EXHAUSTED')
+  for (const slug of ['domestica', 'masculino']) {
+    const requests = pages.flat().filter(r => r.slug === slug)
+    assert.ok(requests.length <= 17)
+    assert.equal(requests.filter(r => r.options.keywords.length === 0).length, 1)
+    assert.deepEqual(requests.at(-1).options.keywords, [])
+    assert.ok(requests.every(r => r.options.excludePolitical && r.options.quality.minRating === 4.5 && r.options.limit === 120))
+  }
+  assert.equal(f.calls.create, 0)
+})
+
+test('low fresh inventory creates one typed durable warning per audience without blocking analysis', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  const { DailyAutomationAlerts } = require('../dist/services/DailyAutomationAlerts')
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, alertGroupId: '123456789012345678@g.us' })
+  const alerts = new DailyAutomationAlerts({}, {}, { async sendText() { assert.fail('No provider calls') } })
+  f.collector.collect = async (requests, signal, checkpoint) => {
+    for (const payload of f.payloads) await checkpoint(payload)
+    return f.payloads
+  }
+  f.service = new DailyAutomationService(f.smart, f.collector, alerts)
+  await f.service.tick(f.config)
+  const rows = await sequelize.query('SELECT * FROM daily_automation_alerts WHERE user_id=:id', { replacements: { id: f.user.id }, type: 'SELECT' })
+  assert.equal(rows.length, 2, 'Checkpoint and returned payload warnings deduplicate')
+  assert.ok(rows.every(row => row.status === 'PENDING' && row.body.includes('DAILY_INVENTORY_LOW') && row.body.includes('fresh=1 required=60')))
+  assert.equal((await f.run()).status, 'ANALYZING')
+  assert.equal(f.calls.create, 1)
+})
+
+test('low-inventory alert persistence failure does not stop initial collection and analysis', async () => {
+  const f = await setup()
+  let alerts = 0
+  f.service = new DailyAutomationService(f.smart, f.collector, { async enqueueInventoryLow() { alerts++; throw Error('private') } })
+  await f.service.tick(f.config)
+  assert.equal(alerts, 2)
+  assert.equal((await f.run()).status, 'ANALYZING')
+  assert.equal(f.calls.create, 1)
+})
+
+test('replenishment uses its final broad hub pass once and does not buy analysis for empty results', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id })
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  await plan.update({ status: 'REVIEW', items: [] })
+  const { dailyDiscoveryKeywords } = require('../dist/utils/dailyDiscovery')
+  let round = 1
+  for (; dailyDiscoveryKeywords('domestica', ['domestica'], round, run.local_date).length; round++) {}
+  await sequelize.query('UPDATE daily_automation_runs SET discovery_state=CAST(:state AS JSONB) WHERE id=:id', {
+    replacements: { id: run.id, state: JSON.stringify({ round }) },
+  })
+  let collections = 0
+  f.collector.collect = async requests => {
+    collections++
+    assert.deepEqual(requests.find(r => r.slug === 'domestica').options.keywords, [])
+    assert.ok(requests.every(r => r.options.limit === 50 && r.options.excludePolitical && r.options.quality.minSoldCount === 100))
+    return requests.map(r => ({ name: `${r.slug}.json`, targetAudienceSlug: r.slug, json: { cards: [] } }))
+  }
+  f.smart.appendDailyProducts = async () => assert.fail('Empty collection must not buy AI')
+  await f.service.tick(f.config)
+  // The two banks can have different final pages; exhaust the other audience too.
+  const state = (await f.run()).discovery_state
+  state.initialRounds = { masculino: 16 }
+  await sequelize.query('UPDATE daily_automation_runs SET discovery_state=CAST(:state AS JSONB) WHERE id=:id', {
+    replacements: { id: run.id, state: JSON.stringify(state) },
+  })
+  await f.service.tick(f.config)
+  assert.equal(collections, 1)
+  assert.equal((await f.run()).status, 'REVIEW')
+  assert.equal((await f.run()).discovery_state.exhausted, true)
+})
+
+test('replenishment only collects remaining candidate headroom and stops at the configured cap', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, candidateLimit: 2 })
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  await plan.update({ status: 'REVIEW', items: [] })
+  let collections = 0
+  f.collector.collect = async requests => {
+    collections++
+    assert.ok(requests.every(r => r.options.limit === 1))
+    return requests.map((r, i) => ({ name: `${r.slug}-extra.json`, targetAudienceSlug: r.slug, json: { cards: [{ productId: `MLB9988776${i}` }] } }))
+  }
+  f.smart.appendDailyProducts = async () => {}
+  await f.service.tick(f.config)
+  await f.service.tick(f.config)
+  assert.equal(collections, 1)
+  assert.equal((await f.run()).discovery_state.exhausted, true)
+  assert.equal((await f.run()).status, 'REVIEW')
+})
+
+test('a full replenishment batch below the initial warning floor does not emit a low-inventory alert', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id })
+  let warnings = 0
+  f.service = new DailyAutomationService(f.smart, f.collector, { async enqueueInventoryLow() { warnings++ } })
+  f.collector.collect = async requests => requests.map((r, a) => ({ name: `${r.slug}.json`, targetAudienceSlug: r.slug,
+    json: { cards: Array.from({ length: r.options.limit }, (_, n) => ({ productId: `MLB${77000000 + a * 1000 + n}` })) } }))
+  await f.service.tick(f.config)
+  assert.equal(warnings, 0)
+  const run = await f.run()
+  await SmartPlan.update({ status: 'REVIEW', items: [] }, { where: { uuid: run.plan_uuid } })
+  f.smart.appendDailyProducts = async () => {}
+  await f.service.tick(f.config)
+  assert.equal(warnings, 0)
+  assert.equal((await f.run()).status, 'ANALYZING')
+})
+
+test('exhausted discovery still delegates qualified reserve backfill to approval when selected picks conflict', async () => {
+  const f = await setup()
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  const products = ['domestica', 'masculino'].map((slug, i) => ({ source: 'mercadolivre', productId: `MLB8866554${i}`,
+    title: slug, affiliateUrl: `https://meli.la/exhausted-${i}` }))
+  const { offerIdentity } = require('../dist/utils/offerIdentity')
+  for (const product of products) await ProductGroupDelivery.create({ userId: f.user.id, connectionScope: 'inventory-reserves',
+    groupId: 'old@g.us', groupName: 'Old', offerIdentity: offerIdentity(product), offerSource: 'mercadolivre',
+    offerProductId: product.productId, offerUrl: product.affiliateUrl, offerTitle: product.title, status: 'SENT', sentAt: new Date() })
+  await plan.update({ status: 'REVIEW', items: ['domestica', 'masculino'].flatMap((audienceSlug, i) => [
+    { state: 'SELECTED', audienceSlug, product: products[i] }, { state: 'RESERVE', audienceSlug },
+  ]) })
+  await sequelize.query('UPDATE daily_automation_runs SET discovery_state=CAST(:state AS JSONB) WHERE id=:id', {
+    replacements: { id: run.id, state: JSON.stringify({ exhausted: true }) },
+  })
+  await f.service.tick(f.config)
+  assert.equal(f.calls.approve, 1, 'Approval owns atomic reserve qualification and promotion')
+  assert.equal(f.calls.collect, 1)
+  assert.equal((await f.run()).status, 'SCHEDULED')
+})

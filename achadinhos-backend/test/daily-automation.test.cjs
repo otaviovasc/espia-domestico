@@ -143,3 +143,20 @@ test('D+1 preparation targets tomorrow after 19:00 and requires all 30 slots per
   assert.equal(dailyPlanCoverage(items.slice(1), config, window.targetDate).ready, false)
   assert.equal(dailyPlanCoverage(items.map(i => ({ ...i, scheduledAt: undefined })), config, window.targetDate).ready, false)
 })
+
+const { dailyCandidateTarget } = require('../dist/config/dailyAutomation')
+test('initial candidate headroom absorbs a 75 percent loss and respects per-audience and plan bounds', () => {
+  const config = DailyAutomationConfigSchema.parse({ userId: 1 })
+  assert.equal(dailyRequiredItems(config), 30)
+  assert.equal(dailyCandidateTarget(config), 120)
+  assert.equal(dailyCandidateTarget(config) / 4, dailyRequiredItems(config))
+  for (const candidateLimit of [1, 20, 50, 100, 120, 200, 250]) {
+    const capped = DailyAutomationConfigSchema.parse({ ...config, candidateLimit })
+    assert.equal(dailyCandidateTarget(capped), Math.min(candidateLimit, 120))
+    assert.ok(dailyCandidateTarget(capped) * 2 <= 500)
+  }
+  const wider = DailyAutomationConfigSchema.parse({ userId: 1, startTime: '02:00', endTime: '21:00', collectTime: '21:00' })
+  assert.equal(dailyCandidateTarget(wider), 200)
+  const preview = DailyAutomationConfigSchema.parse({ userId: 1, requireFullWindow: false })
+  assert.equal(dailyCandidateTarget(preview), 50)
+})

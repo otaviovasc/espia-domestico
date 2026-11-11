@@ -93,6 +93,10 @@ export function dailyRequiredItems(config: DailyAutomationConfig): number {
   return config.requireFullWindow && config.planningDaysAhead === 1 ? dailyItemTarget(config) : dailyMinimumItems(config)
 }
 
+export function dailyCandidateTarget(config: DailyAutomationConfig): number {
+  return Math.min(config.candidateLimit, Math.max(50, dailyRequiredItems(config) * 4))
+}
+
 export function dailyDateOffset(date: string, days: number): string {
   const value = new Date(`${date}T12:00:00Z`)
   value.setUTCDate(value.getUTCDate() + days)

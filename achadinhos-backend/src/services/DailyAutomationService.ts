@@ -7,6 +7,7 @@ import {
   dailyWindow,
   dailyItemTarget,
   dailyRequiredItems,
+  dailyCandidateTarget,
   type DailyAutomationConfig,
 } from '@/config/dailyAutomation'
 import { AppError } from '@/middleware/Error/AppError'
@@ -23,7 +24,9 @@ import {
   type DailyPayload,
 } from '@/services/DailyProductCollector'
 import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
-import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryKeywords } from '@/utils/dailyDiscovery'
+import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryPage } from '@/utils/dailyDiscovery'
+import { dailyOfferAliases, hasDailyProductConflict } from '@/services/dailyNovelty'
+import type { OfferInput } from '@/dtos/campaign'
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
@@ -96,6 +99,38 @@ export class DailyAutomationService {
     })
   }
 
+  private async inventoryWarning(run: DailyRun, payload: DailyPayload, limit = dailyCandidateTarget(run.config)): Promise<void> {
+    const fresh = new Set((Array.isArray(payload.json.cards) ? payload.json.cards : [])
+      .map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter(Boolean)).size
+    const required = Math.min(limit, dailyRequiredItems(run.config) * 2)
+    if (fresh >= required) return
+    try {
+      await this.alerts?.enqueueInventoryLow(run.config, run.local_date, `${run.id}:${payload.targetAudienceSlug}`,
+        payload.targetAudienceSlug, fresh, required)
+    } catch {
+      logger.warn({ dailyRunId: run.id, code: 'ALERT_PERSIST_FAILED' }, 'Daily inventory warning persistence failed')
+    }
+  }
+
+  private async nonConflictingInventory(plan: SmartPlan): Promise<SmartPlan> {
+    const items = await sequelize.transaction(async transaction => {
+      const identities = new Set<string>()
+      const fresh: typeof plan.items = []
+      for (const item of plan.items) {
+        if (item.state === 'SELECTED' && item.product) {
+          const product = item.product as OfferInput
+          const aliases = dailyOfferAliases(product)
+          if (aliases.some(alias => identities.has(alias))
+            || await hasDailyProductConflict(plan.userId, plan.id, plan.uuid, product, transaction)) continue
+          aliases.forEach(alias => identities.add(alias))
+        }
+        fresh.push(item)
+      }
+      return fresh
+    })
+    return { ...plan.get({ plain: true }), items } as SmartPlan
+  }
+
   private async replenish(run: DailyRun, plan: SmartPlan, audiences: SmartAudience[]): Promise<boolean> {
     // Round payloads are durable before append. Replaying an interrupted append uses
     // the same request ID and therefore cannot purchase the same analysis twice.
@@ -110,9 +145,9 @@ export class DailyAutomationService {
       if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule))) return []
       const existing = (run.payloads ?? []).filter(p => p.targetAudienceSlug === slug).reduce((n, p) => n + (Array.isArray(p.json.cards) ? p.json.cards.length : 0), 0)
       const audience = audiences.find(a => a.slug === slug)!
-      const keywords = dailyDiscoveryKeywords(slug, audience.profile.keywords, round + (state.initialRounds?.[slug] ?? 0))
+      const keywords = dailyDiscoveryPage(slug, audience.profile.keywords, round + (state.initialRounds?.[slug] ?? 0), run.local_date)
       const limit = Math.min(DAILY_DISCOVERY_ROUND_SIZE, run.config.candidateLimit - existing)
-      if (limit <= 0 || !keywords.length) return []
+      if (limit <= 0 || !keywords) return []
       return [{ slug, options: { limit, keywords, matchMode: 'any', matchStyle: 'word',
         excludeProductIds: [...new Set([...history, ...ids])], excludePolitical: true,
         quality: { minRating: run.config.minRating, minSoldCount: run.config.minSoldCount },
@@ -120,16 +155,21 @@ export class DailyAutomationService {
         commission: { minPercent: audience.policy.minCommissionPercent, minEstimatedBrl: audience.policy.minEstimatedCommission } } }]
     })
     if (!state.pending && !requests.length) { state.exhausted = true; await this.discoveryCheckpoint(run); return false }
+    if (requests.some(request => request.options.excludeProductIds.length + request.options.limit > 50_000))
+      throw new DailyCollectionError('HISTORY_LIMIT')
     if (!state.collected) {
       state.pending ??= []
       await this.discoveryCheckpoint(run)
       const payloads = await this.collector.collect(requests.filter(r => !state.pending?.some(p => p.targetAudienceSlug === r.slug)), this.abort.signal, async payload => {
         state.pending = [...(state.pending ?? []).filter(p => p.targetAudienceSlug !== payload.targetAudienceSlug), payload]
         await this.discoveryCheckpoint(run)
+        await this.inventoryWarning(run, payload, requests.find(request => request.slug === payload.targetAudienceSlug)?.options.limit)
       })
       state.pending = [...state.pending, ...payloads.filter(p => !state.pending?.some(old => old.targetAudienceSlug === p.targetAudienceSlug))]
       state.collected = true
       await this.discoveryCheckpoint(run)
+      for (const payload of payloads)
+        await this.inventoryWarning(run, payload, requests.find(request => request.slug === payload.targetAudienceSlug)?.options.limit)
     }
     const pending = state.pending ?? []
     if (pending.some(p => Array.isArray(p.json.cards) && p.json.cards.length)) {
@@ -152,7 +192,11 @@ export class DailyAutomationService {
   }
 
   private async checkpointPayload(run: DailyRun, payload: DailyPayload): Promise<void> {
-    if (!Array.isArray(payload.json.cards) || !payload.json.cards.length) return
+    if (!Array.isArray(payload.json.cards) || !payload.json.cards.length) {
+      await this.requireLease(run)
+      await this.inventoryWarning(run, payload)
+      return
+    }
     await this.requireLease(run)
     const payloads = [
       ...(run.payloads ?? []).filter(
@@ -177,6 +221,7 @@ export class DailyAutomationService {
     )
     run.payloads = payloads
     if (complete) run.attempts = 0
+    await this.inventoryWarning(run, payload)
   }
 
   private async checkpointPlan(run: DailyRun, plan: SmartPlan): Promise<void> {
@@ -416,19 +461,20 @@ export class DailyAutomationService {
         }
         const state = run.discovery_state ??= {}
         state.initialRounds ??= {}
-        if (missing.some(slug => !dailyDiscoveryKeywords(slug, audiences.find(a => a.slug === slug)!.profile.keywords, state.initialRounds?.[slug] ?? 0).length)) {
+        const discoverable = missing.filter(slug => dailyDiscoveryPage(slug, audiences.find(a => a.slug === slug)!.profile.keywords, state.initialRounds?.[slug] ?? 0, run.local_date))
+        if (!discoverable.length) {
           await this.save(run, 'REVIEW', 'DISCOVERY_KEYWORDS_EXHAUSTED')
           return
         }
         const payloads = await this.collector.collect(
-          missing.map((slug) => {
+          discoverable.map((slug) => {
             const audience = audiences.find((value) => value.slug === slug)!
             const policy = audience.policy
             return {
               slug,
               options: {
-                limit: Math.min(DAILY_DISCOVERY_ROUND_SIZE, run.config.candidateLimit),
-                keywords: dailyDiscoveryKeywords(slug, audience.profile.keywords, state.initialRounds?.[slug] ?? 0),
+                limit: dailyCandidateTarget(run.config),
+                keywords: dailyDiscoveryPage(slug, audience.profile.keywords, state.initialRounds?.[slug] ?? 0, run.local_date),
                 matchMode: 'any',
                 matchStyle: 'word',
                 excludeProductIds,
@@ -460,7 +506,7 @@ export class DailyAutomationService {
           )
         ) {
           if (run.config.planningDaysAhead === 1) {
-            for (const slug of missing) {
+            for (const slug of discoverable) {
               if (!run.payloads?.some(p => p.targetAudienceSlug === slug && Array.isArray(p.json.cards) && p.json.cards.length))
                 state.initialRounds[slug] = (state.initialRounds[slug] ?? 0) + 1
             }
@@ -523,11 +569,13 @@ export class DailyAutomationService {
       if (plan.status === SMART_PLAN_STATUS.ANALYZING) {
         await this.save(run, 'ANALYZING')
       } else if (plan.status === SMART_PLAN_STATUS.REVIEW) {
-        const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
+        const inventory = await this.nonConflictingInventory(plan)
+        const noveltyShortage = inventory.items.length < plan.items.length
+        const coverage = dailyPlanCoverage(inventory.items, run.config, run.local_date)
         if (!coverage.ready) {
-          if (run.config.planningDaysAhead === 1 && await this.replenish(run, plan, audiences)) return
+          if ((run.config.planningDaysAhead === 1 || noveltyShortage) && await this.replenish(run, inventory, audiences)) return
           // Automatic approval always ships the qualified remainder of a short or late day.
-          if (!run.config.autoApprove || !coverage.audiences.some(a => a.selected)) {
+          if (!run.config.autoApprove || !plan.items.some(item => item.state === 'SELECTED')) {
             await this.save(run, 'REVIEW', 'INSUFFICIENT_QUALIFIED_PRODUCTS', coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; '))
             return
           }
@@ -537,7 +585,16 @@ export class DailyAutomationService {
           return
         }
         await this.requireLease(run)
-        await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
+        try {
+          await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
+        } catch (error) {
+          if (!(error instanceof AppError) || !['DAILY_NOVELTY_CONFLICT', 'DAILY_INVENTORY_SHORTAGE'].includes(error.code ?? '')) throw error
+          await plan.reload()
+          if (plan.status !== SMART_PLAN_STATUS.REVIEW) throw error
+          const latestInventory = await this.nonConflictingInventory(plan)
+          if (await this.replenish(run, latestInventory, audiences)) return
+          throw error
+        }
         await this.save(run, 'SCHEDULED')
       } else if (plan.status === SMART_PLAN_STATUS.FAILED) {
         await this.save(run, 'ANALYSIS_HOLD', 'SMART_ANALYSIS_FAILED')

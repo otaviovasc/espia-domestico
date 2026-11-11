@@ -8,6 +8,7 @@ import { UazapiClient } from '@/channels/uazapi/UazapiClient'
 import { dailyWindow, type DailyAutomationConfig } from '@/config/dailyAutomation'
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
+import type { DailyAudienceSlug } from '@/services/DailyProductCollector'
 
 interface PendingAlert { id: string; group_id: string; body: string }
 
@@ -18,6 +19,12 @@ export class DailyAutomationAlerts {
     @inject(GroupService) private readonly groups: GroupService,
     @inject(UazapiClient) private readonly provider: UazapiClient,
   ) {}
+
+  async enqueueInventoryLow(config: DailyAutomationConfig, date: string, key: string,
+    slug: DailyAudienceSlug, fresh: number, required: number): Promise<void> {
+    if (![fresh, required].every(value => Number.isSafeInteger(value) && value >= 0 && value <= 50_000)) return
+    await this.enqueue(config, date, key, 'DAILY_INVENTORY_LOW', `${slug} fresh=${fresh} required=${required}`)
+  }
 
   async enqueueLoginCode(config: DailyAutomationConfig, date: string, challengeId: string): Promise<void> {
     if (!config.alertGroupId || !/^[a-f0-9-]{36}$/.test(challengeId)) throw new Error('ML_AUTH_GROUP_REQUIRED')
@@ -35,7 +42,7 @@ export class DailyAutomationAlerts {
     if (code === 'READY') return // Operational problems only; no routine status chatter.
     if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(code) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return
     // Extract only a bounded vocabulary of operational facts, never arbitrary text.
-    const facts = detail.match(/(?:domestica|masculino)|(?:selected|required|missing|unknown|failed|skipped)=\d{1,6}\b|deadline=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|-03:00)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)?.slice(0, 30).join(' ') ?? ''
+    const facts = detail.match(/(?:domestica|masculino)|(?:fresh|selected|required|missing|unknown|failed|skipped)=\d{1,6}\b|deadline=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|-03:00)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)?.slice(0, 30).join(' ') ?? ''
     const body = `⚠️ Espia — operação de ${date}\nCódigo: ${code}\n${facts}\nJanela: ${config.startTime}–${config.endTime} (São Paulo).\nVerifique o painel Smart e os logs do worker. A automação não contorna filtros ou repete envios incertos.`
     await sequelize.query(`INSERT INTO daily_automation_alerts(id,user_id,event_key,group_id,body)
       VALUES(:id,:userId,:key,:groupId,:body) ON CONFLICT(user_id,event_key) DO NOTHING`, {
