@@ -31,7 +31,7 @@ Reuse the existing explicitly priced, guarded AI configuration. Both Smart audie
 
 For a collection/analysis preview, set `DAILY_AUTOMATION_ENABLED=true` with `autoApprove:false`. It still uses guarded paid classification, but waits in the existing Smart review UI. After setup verification, `autoApprove:true` enables the requested unattended cycle. Configuration changes apply to the next target date without a saved run. In-progress runs resume their persisted configuration across midnight and restarts.
 
-Automatic approval enforces the full-window minimum. An explicit approval in Smart may accept a smaller qualified selection, including a single healthy audience, while preserving novelty, quality, cadence and the 08:00–19:00 daily envelope. This is a deliberate partial-day decision by the operator. `startNow` and `advance` cannot move daily sends before the daily start time.
+Automatic approval always approves the qualified selection, even below the full-window target, after a late start, or with a single audience. It replaces novelty conflicts with qualified reserves first. Novelty, quality, political, cadence and the 08:00–19:00 envelope remain hard gates; only an empty qualified selection or a closed window holds the day. An explicit approval in Smart follows the same rules. `startNow` and `advance` cannot move daily sends before the daily start time.
 
 Optional `DAILY_BROWSER_CDP_URL` accepts a private Chromium CDP endpoint. Provision/manage that provider's session separately. The collector creates an isolated context from the state file and disconnects afterward. CDP support alone does not implement a hosted provider's session lifecycle. Never expose the credential-bearing URL in logs/frontend.
 
@@ -60,7 +60,7 @@ WHERE user_id=:user_id AND local_date=:local_date
   AND plan_uuid IS NULL AND (lease_until IS NULL OR lease_until < NOW());
 ```
 
-Do not clear an existing plan's request ID/input to evade idempotency or budgets. Inspect REVIEW shortages in Smart rather than automatically relaxing quality. `DAILY_AUTOMATION_ENABLED=false` plus worker restart stops new daily orchestration, **not already-approved sends**: pause/cancel the existing Smart plan separately, preserving uncertain outcomes.
+Do not clear an existing plan's request ID/input to evade idempotency or budgets. Quality gates are never relaxed; a short day ships its qualified products instead. `DAILY_AUTOMATION_ENABLED=false` plus worker restart stops new daily orchestration, **not already-approved sends**: pause/cancel the existing Smart plan separately, preserving uncertain outcomes.
 
 `attempts` counts failures within the current orchestration phase. Completing collection and first checkpointing the plan reset the counter; collection failures cannot consume the later approval retry budget. A held analysis is status polling, not another attempt. Completed audience payloads are checkpointed individually; after a timeout only the missing audience is recollected, with completed products excluded.
 
@@ -100,7 +100,7 @@ After a Chromium-enabled worker and private `/data` volume exist, select the exa
 
 Held analysis is checked on each daily scheduler tick, with no 15-minute collection backoff and no automatic paid retry. Prior-day unapproved automation plans are canceled using their observed revision; a concurrent operator change is preserved. Cleanup failures are recorded on today's run rather than escaping before its checkpoint exists.
 
-A newly conflicting product is removed at approval; automatic approval continues if both audiences still meet the minimum. An insufficient remainder holds with `DAILY_NOVELTY_CONFLICT` or `DAILY_INVENTORY_SHORTAGE`. Connection, revision, binding and competing-manual-campaign conflicts retain distinct codes and require operator inspection; the worker does not silently override those changes. Empty/partial collection retries at most three total attempts before any paid classification; old `EMPTY` rows can be explicitly rearmed with the SQL above.
+A newly conflicting product is removed at approval and automatic approval promotes the best qualified, non-conflicting reserve for that audience. Approval proceeds with whatever qualified products remain; `DAILY_NOVELTY_CONFLICT` holds only when none remain. Connection, revision, binding and competing-manual-campaign conflicts retain distinct codes and require operator inspection; the worker does not silently override those changes. Empty/partial collection retries at most three total attempts before any paid classification; old `EMPTY` rows can be explicitly rearmed with the SQL above.
 
 Small but nonempty inventories still receive bounded classification so the operator can inspect and explicitly approve a qualified partial day. This trades some AI spend for recoverability; no claim is made that the full window is feasible merely because classification ran. Measure actual yield before increasing candidate limits. Browser authentication is checkpointed after each successful audience so later failures preserve already-rotated state.
 
@@ -141,7 +141,7 @@ The mix reserves20% of slots for qualified products up toR$100 and20% aboveR$500
 
 Set `alertGroupId` to the verified Loja Geral JID for the account. Collection/authentication/configuration/analysis failures, exhausted shortages, pre-send missing plans/manual approvals, paused plans and uncertain/failed/skipped sends produce typed deduplicated events. Messages contain only plan IDs, counts, deadlines and problem codes. Pending notification transport is independent of long collection/analysis. A provider-uncertain notification is retained asUNKNOWN and never replayed automatically. Pre-provider connection checks back off safely. Total worker/database/WhatsApp outages cannot guarantee delivery of their own notification.
 
-An automatic full D+1 plan that reaches its first slot unapproved is held with `PREPARATION_DEADLINE_MISSED`. It cannot claim a complete day by silently shifting its start. Explicit operator salvage is still possible under existing time, freshness and delivery guards.
+An automatic D+1 plan that reaches its first slot unapproved is still approved for the remaining window, starting at approval time under the existing time, freshness and delivery guards.
 
 Outbox metadata (do not dump message payloads or credentials):
 

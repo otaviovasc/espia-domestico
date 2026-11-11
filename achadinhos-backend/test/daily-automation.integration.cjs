@@ -280,17 +280,28 @@ test('expired leases resume and create failures reuse collected evidence', async
   assert.equal(f.calls.create, 1)
 })
 
-test('missing qualified inventory for one audience holds the plan for review', async () => {
+test('missing qualified inventory for one audience still auto-approves the other audience', async () => {
   const f = await setup()
   await f.service.tick(f.config)
   const run = await f.run()
   await SmartPlan.update({ status: 'REVIEW', items: [{ state: 'SELECTED', audienceSlug: 'domestica' }] }, { where: { uuid: run.plan_uuid } })
   await f.service.tick(f.config)
+  assert.equal((await f.run()).status, 'SCHEDULED')
+  assert.equal(f.calls.approve, 1)
+})
+
+test('a plan with no qualified selection is never auto-approved', async () => {
+  const f = await setup()
+  await f.service.tick(f.config)
+  const run = await f.run()
+  await SmartPlan.update({ status: 'REVIEW', items: [{ state: 'RESERVE', audienceSlug: 'domestica' }] }, { where: { uuid: run.plan_uuid } })
+  await f.service.tick(f.config)
   assert.equal((await f.run()).status, 'REVIEW')
+  assert.equal((await f.run()).last_error, 'INSUFFICIENT_QUALIFIED_PRODUCTS')
   assert.equal(f.calls.approve, 0)
 })
 
-test('a full-window run does not auto-approve a sparse selection even when both audiences have products', async (t) => {
+test('a full-window run auto-approves a sparse selection when both audiences have products', async (t) => {
   const date = new Date().toISOString().slice(0, 10)
   t.mock.timers.enable({ apis: ['Date'], now: new Date(`${date}T10:00:00Z`).getTime() })
   const f = await setup()
@@ -299,8 +310,8 @@ test('a full-window run does not auto-approve a sparse selection even when both 
   const run = await f.run()
   await SmartPlan.update({ status: 'REVIEW', items: ['domestica', 'masculino'].map(slug => ({ state: 'SELECTED', audienceSlug: slug })) }, { where: { uuid: run.plan_uuid } })
   await f.service.tick(f.config)
-  assert.equal((await f.run()).status, 'REVIEW')
-  assert.equal(f.calls.approve, 0)
+  assert.equal((await f.run()).status, 'SCHEDULED')
+  assert.equal(f.calls.approve, 1)
 })
 
 test('real Smart analysis skips weak demand/politics before AI and retains rejected evidence', async () => {
@@ -381,7 +392,7 @@ test('collected root and visible descriptions reach the real classification requ
   assert.equal(plan.items.filter(item => item.state === 'SELECTED').length, 0)
 })
 
-test('active-plan limits and expired full windows hold before browser or paid work', async (t) => {
+test('active-plan limits hold before browser or paid work while a late full window still collects', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T10:00:00Z').getTime() })
   const f = await setup()
   for (let index = 0; index < 2; index++) await f.smart.createPlan(f.user.id, { date: dailyWindow(f.config).date, requestId: randomUUID(), audienceSlugs: ['domestica'], campaignStartTime: '08:00' })
@@ -394,10 +405,9 @@ test('active-plan limits and expired full windows hold before browser or paid wo
   const late = await setup()
   late.config.requireFullWindow = true
   await late.service.tick(late.config)
-  assert.equal((await late.run()).status, 'EXPIRED')
-  assert.equal((await late.run()).last_error, 'LATE_ANALYSIS')
-  assert.equal(late.calls.collect, 0)
-  assert.equal(late.calls.create, 0)
+  assert.notEqual((await late.run()).status, 'EXPIRED')
+  assert.equal(late.calls.collect, 1)
+  assert.equal(late.calls.create, 1)
 })
 
 test('controlled shutdown releases its fenced lease without a 30-minute wait', async () => {
@@ -459,7 +469,7 @@ test('next-day retirement uses real cancellation and preserves a concurrent oper
   assert.equal(f.calls.collect, 2)
 })
 
-test('late full-window expiry cancels its unapproved plan through the real service', async (t) => {
+test('a late full window keeps its unapproved plan for automatic approval', async (t) => {
   const date = new Date().toISOString().slice(0, 10)
   t.mock.timers.enable({ apis: ['Date'], now: new Date(`${date}T09:00:00Z`).getTime() })
   const f = await setup()
@@ -471,9 +481,8 @@ test('late full-window expiry cancels its unapproved plan through the real servi
   f.smart.cancel = real.cancel.bind(real)
   t.mock.timers.setTime(new Date(`${date}T13:00:00Z`).getTime())
   await f.service.tick(f.config)
-  assert.equal((await f.run()).status, 'EXPIRED')
-  assert.equal((await f.run()).last_error, 'LATE_ANALYSIS')
-  assert.equal((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'CANCELLED')
+  assert.notEqual((await f.run()).status, 'EXPIRED')
+  assert.notEqual((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'CANCELLED')
 })
 
 test('late run reconciles an already-approved operator plan as scheduled', async (t) => {
@@ -566,7 +575,56 @@ test('real operator retry finishing near the capacity cutoff rejoins without SQL
   assert.equal(f.calls.collect, 1)
 })
 
-test('operator can approve a qualified partial day while automatic approval and early-start controls respect daily limits', async (t) => {
+test('automatic approval replaces novelty conflicts with qualified reserves instead of holding the day', async (t) => {
+  const date = new Date().toISOString().slice(0, 10)
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(`${date}T10:05:00Z`).getTime() }) // 07:05 Sao Paulo
+  const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
+  const f = await setup()
+  const scope = `backfill-${f.user.id}`
+  const audiences = await SmartAudience.findAll({ where: { userId: f.user.id } })
+  const policies = Object.fromEntries(audiences.map(a => [a.slug, { ...a.policy, spreadAcrossWindow: true, windowEndBufferSeconds: 120,
+    dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 80, minCommercialScore: 60 } }]))
+  const item = (slug, audience, index, state, score) => ({
+    id: randomUUID(), audienceSlug: slug, date, state, fitScore: 95, score, reason: 'Qualified daily item',
+    category: `category-${index}`, warnings: [], standout: false, observedAt: new Date().toISOString(),
+    product: { title: `${slug} ${index}`, productId: `MLB${93000000 + f.user.id * 10000 + audience * 1000 + index}`,
+      source: 'mercadolivre', currency: 'BRL', discountedPrice: 100, originalPrice: 150, commissioned: true,
+      commissionedUrlStatus: 'generated_from_page_state', commissionRate: 10, affiliateUrl: `https://meli.la/backfill-${f.user.id}-${slug}-${index}`,
+      extensionEvidence: { extractedAt: new Date().toISOString(), visibleSignals: { rating: 4.9, soldCount: 50000 } } },
+  })
+  const items = ['domestica', 'masculino'].flatMap((slug, audience) => [0, 1, 2].map(index => item(slug, audience, index, 'SELECTED', 95 - index)))
+  const repeatedReserve = item('domestica', 0, 3, 'RESERVE', 90)
+  const replacement = item('domestica', 0, 4, 'RESERVE', 85)
+  const weakReserve = { ...item('domestica', 0, 5, 'RESERVE', 99), fitScore: 72 }
+  items.push(repeatedReserve, replacement, weakReserve)
+  const plan = await SmartPlan.create({ userId: f.user.id, status: 'REVIEW', startDate: date, days: 1, timezone: f.config.timezone,
+    audienceSlugs: ['domestica', 'masculino'], input: { requestId: randomUUID() }, items,
+    settings: { audiences: policies, global: { campaignStartTime: '08:00' },
+      dailyAutomation: { localDate: date, startTime: '08:00', endTime: '19:00', minimumItems: 3 } } })
+  for (const repeated of [items[0], repeatedReserve]) {
+    await ProductGroupDelivery.create({ userId: f.user.id, connectionScope: scope, groupId: 'other@g.us', groupName: 'Other',
+      offerIdentity: `mercadolivre:${repeated.product.productId}`, offerSource: 'mercadolivre', offerProductId: repeated.product.productId,
+      offerUrl: repeated.product.affiliateUrl, offerTitle: repeated.product.title, status: 'SENT', sentAt: new Date() })
+  }
+  const groups = new Map(['domestica', 'masculino'].map(slug => [`${slug}@g.us`, { id: `${slug}@g.us`, name: slug, size: 20, announceOnly: false }]))
+  const connections = { async getConnectionScope() { return scope } }
+  const smart = new SmartCampaignService({}, {}, {}, { async requireCurrentGroups() { return groups } }, connections)
+  await smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: true })
+  await plan.reload()
+  assert.equal(plan.status, 'SCHEDULED')
+  const sends = await SmartSend.findAll({ where: { planId: plan.id } })
+  const sentIds = slug => sends.filter(send => send.audienceSlug === slug).map(send => send.offer.productId).sort()
+  assert.deepEqual(sentIds('domestica'), [items[1], items[2], replacement].map(entry => entry.product.productId).sort())
+  assert.equal(sentIds('masculino').length, 3)
+  const state = id => plan.items.find(entry => entry.id === id)
+  assert.equal(state(items[0].id).state, 'RESERVE', 'The repeated product leaves the selection')
+  assert.equal(state(repeatedReserve.id).state, 'RESERVE', 'A repeated reserve is never promoted')
+  assert.equal(state(weakReserve.id).state, 'RESERVE', 'Reserves below the daily quality gates are never promoted')
+  assert.equal(state(replacement.id).state, 'SELECTED')
+  assert.ok(state(replacement.id).warnings.some(warning => warning.includes('promovida')))
+})
+
+test('operator and automatic approval accept a qualified partial day while early-start controls respect daily limits', async (t) => {
   const date = new Date().toISOString().slice(0, 10)
   t.mock.timers.enable({ apis: ['Date'], now: new Date(`${date}T10:05:00Z`).getTime() }) // 07:05 Sao Paulo
   const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
@@ -604,8 +662,6 @@ test('operator can approve a qualified partial day while automatic approval and 
       const incomplete = await SmartPlan.create({ userId: f.user.id, status: 'REVIEW', startDate: date, days: 1, timezone: f.config.timezone,
         audienceSlugs: ['domestica', 'masculino'], input: { requestId: randomUUID() }, items: items.filter(item => item.state === 'SELECTED' && item.audienceSlug === 'domestica'),
         settings: { ...structuredClone(plan.settings), dailyAutomation: { ...plan.settings.dailyAutomation, minimumItems: 1 } } })
-      await assert.rejects(smart.approve(f.user.id, incomplete.uuid, incomplete.revision, { automatic: true }), { code: 'DAILY_INVENTORY_SHORTAGE' })
-      assert.equal(await SmartSend.count({ where: { planId: incomplete.id } }), 0)
       await smart.cancel(f.user.id, incomplete.uuid, incomplete.revision)
       const originalGroups = groupService.requireCurrentGroups
       for (const race of ['overlap', 'swap']) {
@@ -667,11 +723,7 @@ test('operator can approve a qualified partial day while automatic approval and 
       await smart.updatePlan(f.user.id, plan.uuid, { revision: plan.revision, campaignStartTime: '09:00', items: [] })
       await plan.reload()
     }
-    if (mode !== 'cadenceLate') {
-      await assert.rejects(smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: true }), { code: 'DAILY_INVENTORY_SHORTAGE' })
-      assert.equal(await SmartSend.count({ where: { planId: plan.id } }), 0)
-    }
-    await smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: mode === 'cadenceLate' })
+    await smart.approve(f.user.id, plan.uuid, plan.revision, { automatic: mode === 'cadenceLate' || mode === 'reviewLate' })
     if (mode === 'advance') {
       await plan.reload()
       await smart.advance(f.user.id, plan.uuid, plan.revision)
@@ -919,7 +971,7 @@ test('stale fenced saves produce no alert and alert persistence cannot derail a 
   assert.equal((await f.run()).lease_token, null)
 })
 
-test('D+1 ready preview cannot automatically approve after its first target slot', async t => {
+test('D+1 ready preview still automatically approves after its first target slot', async t => {
   t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
   const f = await setup()
   f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, autoApprove: true })
@@ -932,10 +984,8 @@ test('D+1 ready preview cannot automatically approve after its first target slot
   await SmartPlan.update({ status: 'REVIEW', items }, { where: { uuid: run.plan_uuid } })
   t.mock.timers.setTime(new Date('2026-11-10T11:15:00Z').getTime())
   await f.service.tick(f.config)
-  const held = await f.run()
-  assert.equal(held.status, 'REVIEW')
-  assert.equal(held.last_error, 'PREPARATION_DEADLINE_MISSED')
-  assert.equal(f.calls.approve, 0)
+  assert.equal((await f.run()).status, 'SCHEDULED')
+  assert.equal(f.calls.approve, 1)
   assert.equal(f.calls.collect, 1)
-  assert.equal((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'REVIEW')
+  assert.equal((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'SCHEDULED')
 })

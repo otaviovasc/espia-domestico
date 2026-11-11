@@ -7,7 +7,6 @@ import {
   dailyWindow,
   dailyItemTarget,
   dailyRequiredItems,
-  dailyRemainingCapacity,
   type DailyAutomationConfig,
 } from '@/config/dailyAutomation'
 import { AppError } from '@/middleware/Error/AppError'
@@ -16,7 +15,7 @@ import { Campaign, CAMPAIGN_STATUS_ENUM } from '@/database/models/Campaign'
 import { SmartPlan, SMART_PLAN_STATUS } from '@/database/models/SmartPlan'
 import { ProductGroupDelivery } from '@/database/models/ProductGroupDelivery'
 import { SmartSend, SMART_SEND_STATUS } from '@/database/models/SmartSend'
-import { SmartCampaignService, smartZonedInstant } from '@/services/SmartCampaignService'
+import { SmartCampaignService } from '@/services/SmartCampaignService'
 import {
   DailyCollectionError,
   DailyProductCollector,
@@ -330,33 +329,10 @@ export class DailyAutomationService {
         await this.save(run, ownedPlan.status)
         return
       }
-      if (
-        run.config.planningDaysAhead === 1 && run.config.autoApprove && run.config.requireFullWindow &&
-        now.getTime() >= smartZonedInstant(run.local_date, run.config.startTime, run.config.timezone).getTime()
-      ) {
-        // A ready preview still carries its original 08:00 slots. Automatic
-        // approval must not silently rebuild those into a shortened target day.
-        await this.save(run, this.windowExpired(run.config, run.local_date, now) ? 'EXPIRED' : 'REVIEW', 'PREPARATION_DEADLINE_MISSED')
-        return
-      }
       if (this.windowExpired(run.config, run.local_date, now)) {
         if (ownedPlan && [SMART_PLAN_STATUS.ANALYZING, SMART_PLAN_STATUS.REVIEW].includes(ownedPlan.status))
           await this.smart.cancel(run.user_id, ownedPlan.uuid, ownedPlan.revision)
         await this.save(run, 'EXPIRED', 'WINDOW_CLOSED')
-        return
-      }
-      if (
-        run.config.planningDaysAhead !== 1 &&
-        run.config.autoApprove &&
-        run.config.requireFullWindow &&
-        dailyRemainingCapacity(run.config, now, run.local_date) < dailyRequiredItems(run.config)
-      ) {
-        if (
-          ownedPlan &&
-          [SMART_PLAN_STATUS.ANALYZING, SMART_PLAN_STATUS.REVIEW].includes(ownedPlan.status)
-        )
-          await this.smart.cancel(run.user_id, ownedPlan.uuid, ownedPlan.revision)
-        await this.save(run, 'EXPIRED', 'LATE_ANALYSIS')
         return
       }
       if (
@@ -500,14 +476,6 @@ export class DailyAutomationService {
         await this.save(run, 'EXPIRED', 'WINDOW_CLOSED')
         return
       }
-      if (
-        run.config.autoApprove &&
-        run.config.requireFullWindow &&
-        dailyRemainingCapacity(run.config, new Date(), run.local_date) < dailyRequiredItems(run.config)
-      ) {
-        await this.save(run, run.config.planningDaysAhead === 1 ? 'REVIEW' : 'EXPIRED', 'LATE_ANALYSIS')
-        return
-      }
       // Recover the crash window after plan creation but before checkpointing its UUID.
       let plan = await SmartPlan.findOne({
         where: { userId: run.user_id, 'input.requestId': run.request_id },
@@ -558,19 +526,17 @@ export class DailyAutomationService {
         const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
         if (!coverage.ready) {
           if (run.config.planningDaysAhead === 1 && await this.replenish(run, plan, audiences)) return
-          await this.save(run, 'REVIEW', 'INSUFFICIENT_QUALIFIED_PRODUCTS', coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; '))
-          return
+          // Automatic approval always ships the qualified remainder of a short or late day.
+          if (!run.config.autoApprove || !coverage.audiences.some(a => a.selected)) {
+            await this.save(run, 'REVIEW', 'INSUFFICIENT_QUALIFIED_PRODUCTS', coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; '))
+            return
+          }
         }
         if (!run.config.autoApprove) {
           await this.save(run, 'REVIEW')
           return
         }
         await this.requireLease(run)
-        if (run.config.planningDaysAhead === 1 && run.config.requireFullWindow &&
-          Date.now() >= smartZonedInstant(run.local_date, run.config.startTime, run.config.timezone).getTime()) {
-          await this.save(run, 'REVIEW', 'PREPARATION_DEADLINE_MISSED')
-          return
-        }
         await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
         await this.save(run, 'SCHEDULED')
       } else if (plan.status === SMART_PLAN_STATUS.FAILED) {

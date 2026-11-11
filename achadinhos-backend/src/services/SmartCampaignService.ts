@@ -1902,9 +1902,6 @@ export class SmartCampaignService {
       const approvalNow = new Date()
       const daily = plan.settings.dailyAutomation as { minimumItems?: number; startTime?: string; endTime?: string } | undefined
       const dailySelectedIdentities = new Set<string>()
-      if (daily && options.automatic && plan.audienceSlugs.some(slug => selected.filter(item => item.audienceSlug === slug).length < (daily.minimumItems ?? 1))) {
-        throw new AppError('Todos os públicos precisam de produtos elegíveis suficientes para aprovação automática.', 409, 'DAILY_INVENTORY_SHORTAGE')
-      }
       if (settings.global?.startNow) {
         const earlyStart = immediateTiming(plan.startDate, usedSlugs.map((slug) => settings.audiences[slug].timezone), approvalNow)
         settings.global = { ...settings.global, earlyStart }
@@ -1938,7 +1935,10 @@ export class SmartCampaignService {
             earliest = settings.global?.startNow || plan.settings.dailyAutomation ? approvalNow : new Date(approvalNow.getTime() + policy.minGapSeconds * 1000)
           }
           if (daily) {
-            const minimum = options.automatic ? daily.minimumItems ?? 1 : 1
+            // Automatic approval always proceeds with the qualified remainder;
+            // novelty, quality and political gates stay hard requirements.
+            const minimum = 1
+            const wanted = dayItems.length
             let conflicts = 0
             for (const item of dayItems) {
               const identities = dailyOfferAliases(item.product)
@@ -1952,6 +1952,32 @@ export class SmartCampaignService {
               } else identities.forEach(identity => dailySelectedIdentities.add(identity))
             }
             dayItems = dayItems.filter(item => item.state === 'SELECTED')
+            if (options.automatic && dayItems.length < wanted) {
+              // Replace conflicting products with analysed reserves that pass the
+              // same hard gates, so a repeat never holds the unattended day.
+              const sendBy = smartZonedInstant(date, dayPolicy.endTime, policy.timezone)
+              const reserves = approvalItems
+                .filter(item => item.audienceSlug === slug && item.date === date && item.state === 'RESERVE')
+                .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+              for (const item of reserves) {
+                if (dayItems.length >= wanted) break
+                if (evaluateSmartProductEligibility(item.product, policy, audience.policy).reasons.length
+                  || ((policy.excludePolitical || audience.policy.excludePolitical) && item.political === true)
+                  || (policy.dailySelection && dailySelectionReasons(item.product, item.fitScore ?? 0, item.score, policy.dailySelection).length)
+                  || !isVerifiedOffer(item.product) || !hasCommissionEvidence(item.product)
+                  || (item.fitScore ?? 0) < MIN_SMART_FIT
+                  || !item.observedAt || !isEvidenceFresh(new Date(item.observedAt), sendBy, policy.freshnessHours)) continue
+                const identities = dailyOfferAliases(item.product)
+                if (identities.some(identity => dailySelectedIdentities.has(identity))
+                  || await hasDailyProductConflict(userId, plan.id, plan.uuid, item.product, transaction)) continue
+                identities.forEach(identity => dailySelectedIdentities.add(identity))
+                item.state = 'SELECTED'
+                item.warnings = [...new Set([...(item.warnings ?? []), 'Reserva qualificada promovida para substituir produto repetido.'])]
+                selected.push(item)
+                dayItems.push(item)
+              }
+            }
+            if (options.automatic && !dayItems.length) continue
             if (dayItems.length < minimum) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409,
               conflicts ? 'DAILY_NOVELTY_CONFLICT' : 'DAILY_INVENTORY_SHORTAGE')
             const first = Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0)
@@ -2034,6 +2060,7 @@ export class SmartCampaignService {
           }
         }
       }
+      if (!selected.length) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409, 'DAILY_NOVELTY_CONFLICT')
       const rowsByGroup = new Map<string, Set<string>>()
       const uniqueRows = rows.filter((row) => {
         const aliases = offerIdentityAliases(row.offer)
