@@ -49,6 +49,7 @@ import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampa
 import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 import { dailyDemandScore, dailyEvidenceReasons, dailySelectionReasons } from '@/utils/dailyProductSelection'
 import { dailyCommercialValue, dailyMixedPriceOrder } from '@/utils/dailyCommercialValue'
+import { reconcileDailyApproval } from '@/services/dailyApprovalReconciliation'
 import { hasDailyProductConflict, dailyOfferAliases } from '@/services/dailyNovelty'
 
 const MIN_SMART_FIT = 70
@@ -1770,6 +1771,14 @@ export class SmartCampaignService {
           }
         }
       }
+      if (daily) {
+        const held = await sequelize.query<{ id: string }>(`SELECT id FROM daily_automation_runs
+          WHERE user_id=:userId AND request_id::text=:requestId AND config->>'autoApprove'='true'
+            AND status IN ('REVIEW','OPERATOR_ATTENTION') LIMIT 1`, {
+          replacements: { userId, requestId: String(plan.input.requestId ?? '') }, type: QueryTypes.SELECT, transaction,
+        })
+        if (held.length) plan.settings = { ...plan.settings, dailyAutomation: { ...daily, operatorHold: true } }
+      }
       plan.items = items
       plan.revision += 1
       await plan.save({ transaction })
@@ -1834,6 +1843,8 @@ export class SmartCampaignService {
       if (plan.status === SMART_PLAN_STATUS.SCHEDULED) return
       if (plan.status !== SMART_PLAN_STATUS.REVIEW)
         throw ConflictError('O plano não está mais em revisão')
+      if (options.automatic && (plan.settings.dailyAutomation as { operatorHold?: boolean } | undefined)?.operatorHold)
+        throw new AppError('Plano editado pelo operador; aprovação automática suspensa.', 409, 'DAILY_OPERATOR_HOLD')
       if (plan.revision !== revision) throw new AppError('O plano foi alterado; atualize a tela', 409, 'SMART_PLAN_REVISION_CONFLICT')
       const freshScope = await this.connections.getConnectionScope(userId)
       if (freshScope !== connectionScope)
@@ -1898,10 +1909,20 @@ export class SmartCampaignService {
         throw BadRequestError('O plano contém produtos em datas passadas; mova-os antes de aprovar')
       }
       const rows: CreationAttributes<SmartSend>[] = []
-      validateAudienceDailyCaps(selected, settings.audiences)
+      if (!(plan.settings.dailyAutomation && options.automatic)) validateAudienceDailyCaps(selected, settings.audiences)
       const approvalNow = new Date()
       const daily = plan.settings.dailyAutomation as { minimumItems?: number; startTime?: string; endTime?: string } | undefined
       const dailySelectedIdentities = new Set<string>()
+      const residualCapacity = async (groupId: string, date: string, policy: SmartAudiencePolicy) => {
+        const reserved = await SmartSend.count({ where: { userId, connectionScope, groupId, localDate: date,
+          status: { [Op.in]: RESERVED_SEND_STATUSES } }, transaction })
+        const legacy = await CampaignLog.count({ where: { groupId, connectionScope, success: true,
+          sentAt: { [Op.gte]: smartZonedInstant(date, '00:00', policy.timezone),
+            [Op.lt]: smartZonedInstant(addDays(date, 1), '00:00', policy.timezone) } },
+          include: [{ model: Campaign, as: 'campaign', required: true, where: { userId }, attributes: [] }], transaction })
+        return Math.max(0, policy.dailyCap - reserved - legacy)
+      }
+
       if (settings.global?.startNow) {
         const earlyStart = immediateTiming(plan.startDate, usedSlugs.map((slug) => settings.audiences[slug].timezone), approvalNow)
         settings.global = { ...settings.global, earlyStart }
@@ -1921,10 +1942,10 @@ export class SmartCampaignService {
           let dayItems = selected
             .filter((item) => item.audienceSlug === slug && item.date === date)
             .sort(compareSmartOrder)
-          if (policy.dailySelection && dayItems.some(item => dailySelectionReasons(item.product, item.fitScore ?? 0, item.score, policy.dailySelection!).length)) {
+          if (!(plan.settings.dailyAutomation && options.automatic) && policy.dailySelection && dayItems.some(item => dailySelectionReasons(item.product, item.fitScore ?? 0, item.score, policy.dailySelection!).length)) {
             throw BadRequestError('A seleção diária contém produtos abaixo dos critérios de qualidade; revise o plano')
           }
-          if ((policy.excludePolitical || audience.policy.excludePolitical) && dayItems.some(item => item.political === true)) throw BadRequestError('A seleção contém conteúdo político identificado na análise')
+          if (!(plan.settings.dailyAutomation && options.automatic) && (policy.excludePolitical || audience.policy.excludePolitical) && dayItems.some(item => item.political === true)) throw BadRequestError('A seleção contém conteúdo político identificado na análise')
           const explicitStart = explicitSmartStart(settings.global, date, policy.startTime)
           const dayPolicy = { ...policy,
             startTime: daily?.startTime && daily.startTime > explicitStart ? daily.startTime : explicitStart,
@@ -1934,50 +1955,44 @@ export class SmartCampaignService {
           if (date === getSmartLocalDate(approvalNow, policy.timezone)) {
             earliest = settings.global?.startNow || plan.settings.dailyAutomation ? approvalNow : new Date(approvalNow.getTime() + policy.minGapSeconds * 1000)
           }
-          if (daily) {
-            // Automatic approval always proceeds with the qualified remainder;
-            // novelty, quality and political gates stay hard requirements.
+          if (daily && options.automatic) {
+            const first = Math.ceil(Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0) / 60_000) * 60_000
+            const available = smartZonedInstant(date, dayPolicy.endTime, policy.timezone).getTime() - first - Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)
+            const capacity = Math.max(0, Math.floor(available / (policy.minGapSeconds * 1000)) + 1)
+            const groupCapacities = await Promise.all(audience.destinations.map(destination => residualCapacity(destination.groupId, date, policy)))
+            const retained = await reconcileDailyApproval({
+              items: approvalItems.filter(item => item.audienceSlug === slug && item.date === date && ['SELECTED', 'RESERVE'].includes(item.state)),
+              capacity: Math.min(capacity, policy.dailyCap, ...groupCapacities),
+              invalid: item => !isVerifiedOffer(item.product) || !hasCommissionEvidence(item.product) || (item.fitScore ?? 0) < MIN_SMART_FIT
+                || !evaluateSmartProductEligibility(item.product, policy, audience.policy).eligible
+                || Boolean((policy.excludePolitical || audience.policy.excludePolitical) && item.political === true)
+                || Boolean(policy.dailySelection && dailySelectionReasons(item.product, item.fitScore ?? 0, item.score, policy.dailySelection).length),
+              conflict: item => hasDailyProductConflict(userId, plan.id, plan.uuid, item.product, transaction),
+              aliases: item => dailyOfferAliases(item.product), occupied: dailySelectedIdentities,
+              schedule: count => buildSmartSchedule(date, count, dayPolicy, `${plan.uuid}:${slug}:${date}:approved`, earliest),
+              fresh: (item, slot) => Boolean(item.observedAt && isEvidenceFresh(new Date(item.observedAt), slot, policy.freshnessHours)),
+              maxStandouts: policy.maxStandouts,
+            })
+            selected.splice(0, selected.length, ...approvalItems.filter(item => item.state === 'SELECTED'))
+            dayItems = retained
+            if (!dayItems.length) continue
+          }
+          if (daily && !options.automatic) {
             const minimum = 1
-            const wanted = dayItems.length
             let conflicts = 0
+            const dayIdentities = new Set<string>()
             for (const item of dayItems) {
               const identities = dailyOfferAliases(item.product)
-              if (identities.some(identity => dailySelectedIdentities.has(identity))
+              if (identities.some(identity => dailySelectedIdentities.has(identity) || dayIdentities.has(identity))
                 || await hasDailyProductConflict(userId, plan.id, plan.uuid, item.product, transaction)) {
                 item.state = 'RESERVE'
                 item.scheduledAt = undefined
                 item.warnings = [...new Set([...(item.warnings ?? []), 'Produto reservado ou entregue por outro plano; removido da seleção diária.'])]
                 selected.splice(selected.indexOf(item), 1)
                 conflicts++
-              } else identities.forEach(identity => dailySelectedIdentities.add(identity))
+              } else identities.forEach(identity => dayIdentities.add(identity))
             }
             dayItems = dayItems.filter(item => item.state === 'SELECTED')
-            if (options.automatic && dayItems.length < wanted) {
-              // Replace conflicting products with analysed reserves that pass the
-              // same hard gates, so a repeat never holds the unattended day.
-              const sendBy = smartZonedInstant(date, dayPolicy.endTime, policy.timezone)
-              const reserves = approvalItems
-                .filter(item => item.audienceSlug === slug && item.date === date && item.state === 'RESERVE')
-                .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
-              for (const item of reserves) {
-                if (dayItems.length >= wanted) break
-                if (evaluateSmartProductEligibility(item.product, policy, audience.policy).reasons.length
-                  || ((policy.excludePolitical || audience.policy.excludePolitical) && item.political === true)
-                  || (policy.dailySelection && dailySelectionReasons(item.product, item.fitScore ?? 0, item.score, policy.dailySelection).length)
-                  || !isVerifiedOffer(item.product) || !hasCommissionEvidence(item.product)
-                  || (item.fitScore ?? 0) < MIN_SMART_FIT
-                  || !item.observedAt || !isEvidenceFresh(new Date(item.observedAt), sendBy, policy.freshnessHours)) continue
-                const identities = dailyOfferAliases(item.product)
-                if (identities.some(identity => dailySelectedIdentities.has(identity))
-                  || await hasDailyProductConflict(userId, plan.id, plan.uuid, item.product, transaction)) continue
-                identities.forEach(identity => dailySelectedIdentities.add(identity))
-                item.state = 'SELECTED'
-                item.warnings = [...new Set([...(item.warnings ?? []), 'Reserva qualificada promovida para substituir produto repetido.'])]
-                selected.push(item)
-                dayItems.push(item)
-              }
-            }
-            if (options.automatic && !dayItems.length) continue
             if (dayItems.length < minimum) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409,
               conflicts ? 'DAILY_NOVELTY_CONFLICT' : 'DAILY_INVENTORY_SHORTAGE')
             const first = Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0)
@@ -1996,6 +2011,7 @@ export class SmartCampaignService {
               }
               dayItems = dayItems.filter(item => retained.has(item.id))
             }
+            for (const item of dayItems) dailyOfferAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
           }
           const slots = buildSmartSchedule(
             date,
@@ -2060,7 +2076,7 @@ export class SmartCampaignService {
           }
         }
       }
-      if (!selected.length) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409, 'DAILY_NOVELTY_CONFLICT')
+      if (!selected.length) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409, 'DAILY_INVENTORY_SHORTAGE')
       const rowsByGroup = new Map<string, Set<string>>()
       const uniqueRows = rows.filter((row) => {
         const aliases = offerIdentityAliases(row.offer)

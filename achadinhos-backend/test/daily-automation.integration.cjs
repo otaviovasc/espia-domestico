@@ -2,7 +2,7 @@
 const { test: nodeTest, before, after, afterEach } = require('node:test')
 // Freeze ordinary fixtures independently; explicit timer tests keep their own clock.
 const test = (name, fn) => nodeTest(name, async t => {
-  if (!fn.toString().includes('timers.enable')) t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T10:00:00Z').getTime() })
+  if (!fn.toString().includes('timers.enable') && !fn.toString().includes('approvalFixture')) t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T10:00:00Z').getTime() })
   return fn(t)
 })
 const { Op } = require('sequelize')
@@ -499,7 +499,7 @@ test('late run reconciles an already-approved operator plan as scheduled', async
   assert.equal((await f.run()).last_error, null)
 })
 
-test('approval crossing the last full-window minute expires and cancels without an attention dead end', async (t) => {
+test('late approval with remaining capacity backs off and expires only when the window closes', async (t) => {
   const date = new Date().toISOString().slice(0, 10)
   t.mock.timers.enable({ apis: ['Date'], now: new Date(`${date}T09:00:00Z`).getTime() })
   const f = await setup()
@@ -517,9 +517,15 @@ test('approval crossing the last full-window minute expires and cancels without 
   }
   t.mock.timers.setTime(new Date(`${date}T12:57:00Z`).getTime())
   await f.service.tick(f.config)
-  assert.equal((await f.run()).status, 'EXPIRED')
+  assert.equal((await f.run()).status, 'OPERATOR_ATTENTION')
   assert.equal((await f.run()).last_error, 'LATE_ANALYSIS')
   const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  assert.equal(plan.status, 'REVIEW')
+  t.mock.timers.setTime(new Date(`${date}T22:00:00Z`).getTime())
+  await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  await f.service.tick(f.config)
+  await plan.reload()
+  assert.equal((await f.run()).status, 'EXPIRED')
   assert.equal(plan.status, 'CANCELLED')
   assert.equal(await real.processPendingAnalysis(plan.id), false)
 })
@@ -988,4 +994,257 @@ test('D+1 ready preview still automatically approves after its first target slot
   assert.equal(f.calls.approve, 1)
   assert.equal(f.calls.collect, 1)
   assert.equal((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'SCHEDULED')
+})
+
+async function approvalFixture(t, time = '2026-11-09T10:00:00Z') {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(time).getTime() })
+  const f = await setup()
+  const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
+  const audiences = await SmartAudience.findAll({ where: { userId: f.user.id } })
+  const policies = Object.fromEntries(audiences.map(a => [a.slug, { ...a.policy, spreadAcrossWindow: true, windowEndBufferSeconds: 120 }]))
+  const scope = `approval-${f.user.id}`
+  const groups = new Map(audiences.map(a => [a.destinations[0].groupId, { id: a.destinations[0].groupId, name: a.slug }]))
+  const smart = new SmartCampaignService({}, {}, {}, { async requireCurrentGroups() { return groups } }, { async getConnectionScope() { return scope } })
+  let sequence = 0
+  const item = (patch = {}) => {
+    const n = sequence++
+    return { id: randomUUID(), audienceSlug: 'domestica', date: '2026-11-09', state: 'SELECTED', fitScore: 95, score: 95 - n,
+      category: `category-${n}`, reason: 'Qualified', warnings: [], standout: false, observedAt: new Date().toISOString(),
+      product: { title: `Qualified ${n}`, productId: `MLB${93000000 + f.user.id * 10000 + n}`, source: 'mercadolivre', currency: 'BRL',
+        discountedPrice: 90, originalPrice: 150, commissioned: true, commissionedUrlStatus: 'generated_from_page_state', commissionRate: 10,
+        affiliateUrl: `https://meli.la/approval-${f.user.id}-${n}`, extensionEvidence: { extractedAt: new Date().toISOString(), visibleSignals: { rating: 4.9, soldCount: 50000 } } }, ...patch }
+  }
+  const plan = async items => SmartPlan.create({ userId: f.user.id, status: 'REVIEW', startDate: '2026-11-09', days: 1,
+    timezone: f.config.timezone, audienceSlugs: ['domestica', 'masculino'], input: { requestId: dailyRequestId(f.user.id, '2026-11-09') }, items,
+    settings: { audiences: policies, global: { campaignStartTime: '08:00' }, dailyAutomation: { localDate: '2026-11-09', startTime: '08:00', endTime: '19:00', minimumItems: 30 } } })
+  const approve = async p => { await smart.approve(f.user.id, p.uuid, p.revision, { automatic: true }); await p.reload(); return SmartSend.findAll({ where: { planId: p.id }, order: [['scheduledAt', 'ASC']] }) }
+  return { ...f, smart, item, plan, approve, scope, policies }
+}
+
+test('robust approval drops stale, ineligible and excess standout items and fills exact-slot-fresh reserves', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:00:00Z') // 18:00, evidence expires at 18:30.
+  const stale = f.item({ observedAt: '2026-11-08T20:00:00Z' })
+  const weak = f.item({ fitScore: 20 })
+  const standout = f.item({ standout: true })
+  const reserves = Array.from({ length: 3 }, () => f.item({ state: 'RESERVE', observedAt: '2026-11-08T21:30:00Z' }))
+  const p = await f.plan([stale, weak, standout, ...reserves])
+  const rows = await f.approve(p)
+  assert.ok(rows.length >= 1)
+  assert.ok(rows.every(r => reserves.some(i => i.product.productId === r.offer.productId)))
+  for (const bad of [stale, weak, standout]) {
+    const dropped = p.items.find(i => i.id === bad.id)
+    assert.equal(dropped.state, 'RESERVE'); assert.ok(dropped.warnings.length)
+  }
+  assert.ok(rows.every(r => new Date(r.scheduledAt) <= new Date('2026-11-09T21:30:00Z')))
+})
+
+test('robust approval releases trimmed cross-audience identities including promoted reserves', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:45:00Z')
+  const keep = f.item({ score: 99 })
+  const shared = f.item({ score: 80 })
+  const other = { ...structuredClone(shared), id: randomUUID(), audienceSlug: 'masculino' }
+  const p = await f.plan([keep, shared, other])
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 2)
+  assert.equal(rows.filter(r => r.audienceSlug === 'masculino').length, 1)
+})
+
+test('robust approval preserves replacement price bands, pins and contiguous sendOrder', async t => {
+  const f = await approvalFixture(t)
+  const bad = f.item({ sendOrder: 1 })
+  const keep = f.item({ sendOrder: 2 })
+  const premium = f.item({ state: 'RESERVE', score: 99 }); premium.product.discountedPrice = 800
+  const affordable = f.item({ state: 'RESERVE', score: 80, pinned: true, sendOrder: 0 })
+  const p = await f.plan([bad, keep, premium, affordable])
+  await ProductGroupDelivery.create({ userId: f.user.id, connectionScope: f.scope, groupId: 'other@g.us', groupName: 'Other',
+    offerIdentity: `mercadolivre:${bad.product.productId}`, offerSource: 'mercadolivre', offerProductId: bad.product.productId,
+    offerUrl: bad.product.affiliateUrl, offerTitle: bad.product.title, status: 'SENT', sentAt: new Date() })
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 2)
+  const retained = p.items.filter(i => i.state === 'SELECTED').sort((a, b) => a.sendOrder - b.sendOrder)
+  assert.deepEqual(retained.map(i => i.id), [affordable.id, keep.id])
+  assert.deepEqual(retained.map(i => i.sendOrder), [0, 1])
+  assert.equal(rows[0].offer.productId, affordable.product.productId)
+})
+
+test('robust approval degrades excess pins by score within late capacity', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:45:00Z')
+  const items = [f.item({ pinned: true, score: 80 }), f.item({ pinned: true, score: 99 }), f.item({ pinned: true, score: 90 })]
+  const p = await f.plan(items)
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 1); assert.equal(rows[0].offer.productId, items[1].product.productId)
+})
+
+test('robust approval trims to residual group dailyCap under reservation locks', async t => {
+  const f = await approvalFixture(t)
+  f.policies.domestica.dailyCap = 3
+  const previous = await SmartPlan.create({ userId: f.user.id, status: 'SCHEDULED', startDate: '2026-11-09', days: 1, timezone: f.config.timezone, audienceSlugs: [], input: {}, settings: {}, items: [] })
+  for (let i = 0; i < 2; i++) await SmartSend.create({ userId: f.user.id, planId: previous.id, audienceSlug: 'domestica', groupId: 'domestica@g.us', groupName: 'domestica', connectionScope: f.scope,
+    offerIdentity: `previous-${i}`, offer: {}, scheduledAt: new Date('2026-11-09T11:00:00Z'), localDate: '2026-11-09', timezone: f.config.timezone, evidenceObservedAt: new Date(), status: i ? 'UNKNOWN' : 'PENDING' })
+  const items = [f.item({ score: 80 }), f.item({ score: 99 }), f.item({ score: 90 }), f.item({ score: 85 })]
+  const p = await f.plan(items)
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 1); assert.equal(rows[0].offer.productId, items[1].product.productId)
+})
+
+for (const held of ['REVIEW', 'OPERATOR_ATTENTION']) test(`robust approval reclaims existing ${held} without recollection and persists backoff`, async t => {
+  const f = await approvalFixture(t)
+  const p = await f.plan([f.item()])
+  await sequelize.query(`INSERT INTO daily_automation_runs(user_id,local_date,request_id,config,status,plan_uuid,last_error,payloads)
+    VALUES(:userId,'2026-11-09',:requestId,CAST(:config AS JSONB),:status,:uuid,:error,CAST(:payloads AS JSONB))`, {
+    replacements: { userId: f.user.id, requestId: p.input.requestId, config: JSON.stringify(f.config), status: held, uuid: p.uuid,
+      error: held === 'REVIEW' ? null : 'DAILY_NOVELTY_CONFLICT', payloads: JSON.stringify(f.payloads) } })
+  const { AppError } = require('../dist/middleware/Error/AppError')
+  let calls = 0
+  const approve = f.smart.approve.bind(f.smart)
+  f.smart.approve = async (...args) => { calls++; if (calls === 1) throw new AppError('race', 409, 'SMART_PLAN_REVISION_CONFLICT'); return approve(...args) }
+  const worker = new DailyAutomationService(f.smart, { async collect() { assert.fail('No recollection') } })
+  await worker.tick(f.config)
+  let run = await f.run()
+  assert.equal(calls, 1); assert.equal(run.approval_attempts, 1)
+  assert.ok(new Date(run.next_attempt_at) > new Date(run.updated_at))
+  await worker.tick(f.config); assert.equal(calls, 1, 'Backoff prevents hot retries')
+  await p.update({ revision: p.revision + 1 })
+  await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  await worker.tick(f.config)
+  run = await f.run(); assert.equal(run.status, 'SCHEDULED'); assert.equal(calls, 2)
+  assert.equal(await SmartSend.count({ where: { planId: p.id } }), 1)
+})
+
+test('robust alerts distinguish accepted partial, stalled automatic and explicitly manual approval with frozen config', async t => {
+  const f = await approvalFixture(t, '2026-11-09T10:30:00Z')
+  const { DailyAutomationAlerts } = require('../dist/services/DailyAutomationAlerts')
+  const alerts = new DailyAutomationAlerts({}, {}, {})
+  f.config.alertGroupId = '123456789012345678@g.us'
+  const p = await f.plan([f.item()])
+  await sequelize.query(`INSERT INTO daily_automation_runs(user_id,local_date,request_id,config,status,plan_uuid,last_error)
+    VALUES(:userId,'2026-11-09',:requestId,CAST(:config AS JSONB),'OPERATOR_ATTENTION',:uuid,'DAILY_NOVELTY_CONFLICT')`, {
+    replacements: { userId: f.user.id, requestId: p.input.requestId, config: JSON.stringify(f.config), uuid: p.uuid } })
+  await alerts.monitor({ ...f.config, autoApprove: false }, new Date())
+  await p.update({ status: 'SCHEDULED' })
+  await alerts.monitor(f.config, new Date())
+  await p.update({ status: 'REVIEW' })
+  await sequelize.query(`UPDATE daily_automation_runs SET config=jsonb_set(config,'{autoApprove}','false') WHERE user_id=:id`, { replacements: { id: f.user.id } })
+  await alerts.monitor(f.config, new Date())
+  const rows = await sequelize.query('SELECT body FROM daily_automation_alerts WHERE user_id=:id', { replacements: { id: f.user.id }, type: 'SELECT' })
+  assert.equal(rows.length, 3)
+  for (const code of ['AUTO_APPROVAL_STALLED', 'DAILY_PARTIAL_DAY', 'MANUAL_APPROVAL_REQUIRED']) assert.ok(rows.some(r => r.body.includes(code)), code)
+  assert.ok(rows.every(r => /selected=1/.test(r.body)))
+})
+
+test('robust held-run recovery preserves operator edits, cancellation and frozen manual runs', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T10:00:00Z').getTime() })
+  for (const intent of ['edit', 'cancel', 'manual', 'auth', 'config', 'active', 'campaign']) {
+    const f = await setup()
+    await f.service.tick(f.config)
+    const run = await f.run()
+    const p = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+    await p.update({ status: intent === 'cancel' ? 'CANCELLED' : 'REVIEW', items: [{ id: randomUUID(), state: 'SELECTED', audienceSlug: 'domestica', date: '2026-11-09' }] })
+    const error = { auth: 'AUTH_REQUIRED', config: 'CONFIG_REQUIRED', active: 'ACTIVE_PLAN_LIMIT', campaign: 'SMART_MANUAL_CAMPAIGN_CONFLICT' }[intent] ?? 'DAILY_NOVELTY_CONFLICT'
+    const config = { ...f.config, autoApprove: intent !== 'manual' }
+    await sequelize.query(`UPDATE daily_automation_runs SET config=CAST(:config AS JSONB),status='OPERATOR_ATTENTION',last_error=:error,next_attempt_at=NOW() WHERE id=:id`, { replacements: { id: run.id, config: JSON.stringify(config), error } })
+    if (intent === 'edit') {
+      const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
+      const real = new SmartCampaignService({}, {}, {}, {}, {})
+      await p.update({ items: [] })
+      await real.updatePlan(f.user.id, p.uuid, { revision: p.revision, items: [] })
+    }
+    await f.service.tick(f.config)
+    assert.equal(f.calls.approve, 0, intent)
+  }
+})
+
+test('robust approval keeps manual freshness and standout validation strict', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:00:00Z')
+  for (const patch of [{ observedAt: '2026-11-08T20:00:00Z' }, { standout: true }, { fitScore: 20 }]) {
+    const p = await f.plan([f.item(patch), f.item({ state: 'RESERVE' })])
+    // Independent request IDs permit several manual-review plans in this fixture.
+    await p.update({ input: { requestId: randomUUID() } })
+    await assert.rejects(f.smart.approve(f.user.id, p.uuid, p.revision), error => ['CONFLICT', 'BAD_REQUEST'].includes(error.code))
+    assert.equal(await SmartSend.count({ where: { planId: p.id } }), 0)
+    assert.equal((await p.reload()).status, 'REVIEW')
+  }
+})
+
+test('robust approval can backfill with an initially capacity-trimmed fresh selection', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:45:00Z')
+  const stale = f.item({ score: 99, observedAt: '2026-11-08T20:00:00Z' })
+  const fresh = f.item({ score: 80 })
+  const p = await f.plan([stale, fresh])
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 1); assert.equal(rows[0].offer.productId, fresh.product.productId)
+})
+
+test('robust approval releases aliases of promoted items lost during exact-slot reconciliation', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:00:00Z')
+  const keep = f.item({ sendOrder: 0 })
+  const invalid = f.item({ fitScore: 10 })
+  const shared = f.item({ state: 'RESERVE', score: 99, observedAt: '2026-11-08T21:01:00Z', sendOrder: 1 })
+  const other = { ...structuredClone(shared), id: randomUUID(), audienceSlug: 'masculino', state: 'SELECTED', sendOrder: 0 }
+  const replacement = f.item({ state: 'RESERVE', score: 80, sendOrder: 1 })
+  const p = await f.plan([keep, invalid, shared, other, replacement])
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 3)
+  assert.equal(rows.find(r => r.audienceSlug === 'masculino').offer.productId, shared.product.productId)
+  assert.equal(p.items.find(i => i.id === shared.id).state, 'RESERVE')
+})
+
+for (const cause of ['SMART_CONNECTION_CHANGED', 'SMART_BINDINGS_CHANGED', 'DAILY_INVENTORY_SHORTAGE', 'CONFLICT', 'LATE_ANALYSIS']) test(`robust worker retries transient ${cause} with the latest revision`, async t => {
+  const f = await approvalFixture(t)
+  const p = await f.plan([f.item()])
+  await sequelize.query(`INSERT INTO daily_automation_runs(user_id,local_date,request_id,config,status,plan_uuid,last_error)
+    VALUES(:userId,'2026-11-09',:requestId,CAST(:config AS JSONB),'OPERATOR_ATTENTION',:uuid,:code)`, {
+    replacements: { userId: f.user.id, requestId: p.input.requestId, config: JSON.stringify(f.config), uuid: p.uuid, code: cause } })
+  await new DailyAutomationService(f.smart, { async collect() { assert.fail('No recollection') } }).tick(f.config)
+  assert.equal((await f.run()).status, 'SCHEDULED')
+  assert.equal(await SmartSend.count({ where: { planId: p.id } }), 1)
+})
+
+test('robust worker preserves an unmarked legacy operator edit after the held checkpoint', async t => {
+  const f = await approvalFixture(t)
+  const p = await f.plan([f.item()])
+  await sequelize.query(`INSERT INTO daily_automation_runs(user_id,local_date,request_id,config,status,plan_uuid,last_error)
+    VALUES(:userId,'2026-11-09',:requestId,CAST(:config AS JSONB),'OPERATOR_ATTENTION',:uuid,'DAILY_NOVELTY_CONFLICT')`, {
+    replacements: { userId: f.user.id, requestId: p.input.requestId, config: JSON.stringify(f.config), uuid: p.uuid } })
+  await sequelize.query("UPDATE smart_plans SET updated_at=NOW()+INTERVAL '1 second',revision=revision+1 WHERE id=:id", { replacements: { id: p.id } })
+  await new DailyAutomationService(f.smart, { async collect() { assert.fail('No recollection') } }).tick(f.config)
+  assert.equal((await f.run()).last_error, 'DAILY_OPERATOR_HOLD')
+  assert.equal(await SmartSend.count({ where: { planId: p.id } }), 0)
+})
+
+test('robust reserve freshness uses the actual slot rather than end of window', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:00:00Z')
+  const repeated = f.item()
+  const reserve = f.item({ state: 'RESERVE', observedAt: '2026-11-08T21:30:00Z' })
+  const p = await f.plan([repeated, reserve])
+  await ProductGroupDelivery.create({ userId: f.user.id, connectionScope: f.scope, groupId: 'other@g.us', groupName: 'Other',
+    offerIdentity: `mercadolivre:${repeated.product.productId}`, offerSource: 'mercadolivre', offerProductId: repeated.product.productId,
+    offerUrl: repeated.product.affiliateUrl, offerTitle: repeated.product.title, status: 'SENT', sentAt: new Date() })
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 1); assert.equal(rows[0].offer.productId, reserve.product.productId)
+  assert.equal(rows[0].scheduledAt.toISOString(), '2026-11-09T21:00:00.000Z')
+})
+
+test('robust approval reevaluates local duplicates and standout counts after dropping stale evidence', async t => {
+  const f = await approvalFixture(t)
+  f.policies.domestica.maxStandouts = 1
+  const stale = f.item({ standout: true, score: 99, observedAt: '2026-11-07T10:00:00Z' })
+  const fresh = { ...structuredClone(stale), id: randomUUID(), score: 90, observedAt: new Date().toISOString() }
+  const p = await f.plan([stale, fresh])
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 1)
+  assert.equal(p.items.find(i => i.id === fresh.id).state, 'SELECTED')
+})
+
+test('robust worker prioritizes a current-day held approval over expired historical holds', async t => {
+  const f = await approvalFixture(t)
+  const current = await f.plan([f.item()])
+  const old = await SmartPlan.create({ userId: f.user.id, status: 'REVIEW', startDate: '2026-11-08', days: 1, timezone: f.config.timezone,
+    audienceSlugs: [], input: { requestId: dailyRequestId(f.user.id, '2026-11-08') }, items: [], settings: { dailyAutomation: {} } })
+  for (const p of [old, current]) await sequelize.query(`INSERT INTO daily_automation_runs(user_id,local_date,request_id,config,status,plan_uuid,last_error)
+    VALUES(:userId,:date,:requestId,CAST(:config AS JSONB),'OPERATOR_ATTENTION',:uuid,'DAILY_NOVELTY_CONFLICT')`, {
+    replacements: { userId: f.user.id, date: p.startDate, requestId: p.input.requestId, config: JSON.stringify(f.config), uuid: p.uuid } })
+  await new DailyAutomationService(f.smart, {}).tick(f.config)
+  assert.equal((await current.reload()).status, 'SCHEDULED')
+  assert.equal((await old.reload()).status, 'CANCELLED')
 })

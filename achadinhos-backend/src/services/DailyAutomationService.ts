@@ -7,6 +7,7 @@ import {
   dailyWindow,
   dailyItemTarget,
   dailyRequiredItems,
+  dailyRemainingCapacity,
   type DailyAutomationConfig,
 } from '@/config/dailyAutomation'
 import { AppError } from '@/middleware/Error/AppError'
@@ -38,6 +39,10 @@ interface DailyRun {
   payloads: DailyPayload[] | null
   plan_uuid: string | null
   attempts: number
+  approval_attempts: number
+  approval_revision: number | null
+  last_error: string | null
+  updated_at: Date
   discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>> }
   lease_token: string
 }
@@ -46,6 +51,16 @@ export function dailyRequestId(userId: number, date: string): string {
   const hex = createHash('sha256').update(`daily-automation:v1:${userId}:${date}`).digest('hex')
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
+
+const APPROVAL_RECOVERABLE_CODES = [
+  'SMART_PLAN_REVISION_CONFLICT', 'SMART_CONNECTION_CHANGED', 'SMART_BINDINGS_CHANGED',
+  'DAILY_NOVELTY_CONFLICT', 'DAILY_INVENTORY_SHORTAGE', 'CONFLICT', 'LATE_ANALYSIS',
+  'INSUFFICIENT_QUALIFIED_PRODUCTS', 'PREPARATION_DEADLINE_MISSED',
+]
+const CLAIMABLE_RUN = `(status IN ('COLLECTING','ANALYZING','ANALYSIS_HOLD','RETRY','REPLENISHING')
+  OR (config->>'autoApprove'='true' AND approval_attempts<256 AND
+    ((status='REVIEW' AND (last_error IS NULL OR last_error IN (:approvalCodes)))
+      OR (status='OPERATOR_ATTENTION' AND last_error IN (:approvalCodes)))))`
 
 @injectable()
 export class DailyAutomationService {
@@ -87,6 +102,32 @@ export class DailyAutomationService {
         logger.warn({ dailyRunId: run.id, code: 'ALERT_PERSIST_FAILED' }, 'Daily checkpoint saved; alert persistence failed')
       }
     }
+  }
+
+  private async approveCheckpoint(run: DailyRun, plan: SmartPlan): Promise<void> {
+    if ((plan.settings.dailyAutomation as { operatorHold?: boolean } | undefined)?.operatorHold) {
+      await this.save(run, 'OPERATOR_ATTENTION', 'DAILY_OPERATOR_HOLD')
+      return
+    }
+    await this.requireLease(run)
+    await sequelize.query(`UPDATE daily_automation_runs SET approval_attempts=approval_attempts+1,
+      approval_revision=:revision WHERE id=:id AND lease_token=:token`, {
+      replacements: { id: run.id, token: run.lease_token, revision: plan.revision },
+    })
+    run.approval_attempts++
+    run.approval_revision = plan.revision
+    await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
+    await this.save(run, 'SCHEDULED')
+  }
+
+  private async approvalBackoff(run: DailyRun, code: string): Promise<void> {
+    const seconds = Math.min(900, 30 * 2 ** Math.min(5, Math.max(0, run.approval_attempts - 1)))
+    await sequelize.query(`UPDATE daily_automation_runs SET status='OPERATOR_ATTENTION',last_error=:code,
+      lease_token=NULL,lease_until=NULL,next_attempt_at=NOW() + :seconds * INTERVAL '1 second',updated_at=NOW()
+      WHERE id=:id AND lease_token=:token`, { replacements: { id: run.id, token: run.lease_token, code, seconds } })
+    await this.alerts?.enqueue(run.config, run.local_date, `${run.id}:${code}`, 'AUTO_APPROVAL_STALLED').catch(() => {
+      logger.warn({ dailyRunId: run.id, code: 'ALERT_PERSIST_FAILED' }, 'Daily approval retry saved; alert persistence failed')
+    })
   }
 
   private async discoveryCheckpoint(run: DailyRun): Promise<void> {
@@ -249,9 +290,9 @@ export class DailyAutomationService {
     const startupWindow = dailyWindow(config, now)
     const existing = await sequelize.query<{ config: DailyAutomationConfig; local_date: string }>(
       `SELECT config, local_date FROM daily_automation_runs WHERE user_id=:userId
-       AND status IN ('COLLECTING','ANALYZING','ANALYSIS_HOLD','RETRY','REPLENISHING')
-       ORDER BY local_date ASC LIMIT 1`,
-      { replacements: { userId: config.userId }, type: QueryTypes.SELECT },
+       AND ${CLAIMABLE_RUN} AND next_attempt_at<=NOW() AND (lease_until IS NULL OR lease_until<NOW())
+       ORDER BY (local_date<CAST(:today AS DATE)),local_date ASC LIMIT 1`,
+      { replacements: { userId: config.userId, today: startupWindow.date, approvalCodes: APPROVAL_RECOVERABLE_CODES }, type: QueryTypes.SELECT },
     )
     config = existing[0]?.config ?? config
     const window = dailyWindow(config, now)
@@ -272,13 +313,13 @@ export class DailyAutomationService {
     const token = randomUUID()
     const rows = await sequelize.query<DailyRun>(
       `UPDATE daily_automation_runs
-      SET lease_token=:token, lease_until=NOW() + INTERVAL '30 minutes', updated_at=NOW()
+      SET lease_token=:token, lease_until=NOW() + INTERVAL '30 minutes'
       WHERE user_id=:userId AND local_date=:date
-        AND status IN ('COLLECTING', 'ANALYZING', 'ANALYSIS_HOLD', 'RETRY', 'REPLENISHING')
+        AND ${CLAIMABLE_RUN}
         AND (lease_until IS NULL OR lease_until<NOW()) AND next_attempt_at<=NOW()
       RETURNING *`,
       {
-        replacements: { userId: config.userId, date: targetDate, token },
+        replacements: { userId: config.userId, date: targetDate, token, approvalCodes: APPROVAL_RECOVERABLE_CODES },
         type: QueryTypes.SELECT,
       },
     )
@@ -333,6 +374,16 @@ export class DailyAutomationService {
         if (ownedPlan && [SMART_PLAN_STATUS.ANALYZING, SMART_PLAN_STATUS.REVIEW].includes(ownedPlan.status))
           await this.smart.cancel(run.user_id, ownedPlan.uuid, ownedPlan.revision)
         await this.save(run, 'EXPIRED', 'WINDOW_CLOSED')
+        return
+      }
+      if (ownedPlan?.status === SMART_PLAN_STATUS.REVIEW && run.config.autoApprove &&
+        (['REVIEW', 'OPERATOR_ATTENTION'].includes(run.status) || run.approval_attempts > 0)) {
+        if (run.approval_revision === null && ownedPlan.updatedAt.getTime() > new Date(run.updated_at).getTime()) {
+          await this.save(run, 'OPERATOR_ATTENTION', 'DAILY_OPERATOR_HOLD')
+          return
+        }
+        await this.checkpointPlan(run, ownedPlan)
+        await this.approveCheckpoint(run, ownedPlan)
         return
       }
       if (
@@ -537,8 +588,7 @@ export class DailyAutomationService {
           return
         }
         await this.requireLease(run)
-        await this.smart.approve(run.user_id, plan.uuid, plan.revision, { automatic: true })
-        await this.save(run, 'SCHEDULED')
+        await this.approveCheckpoint(run, plan)
       } else if (plan.status === SMART_PLAN_STATUS.FAILED) {
         await this.save(run, 'ANALYSIS_HOLD', 'SMART_ANALYSIS_FAILED')
       } else {
@@ -568,6 +618,12 @@ export class DailyAutomationService {
             ? appError.code?.replace(/[^A-Z0-9_]/gi, '').slice(0, 64) ||
               `HTTP_${appError.statusCode}`
             : 'PIPELINE_FAILED'
+      if (run.config.autoApprove && run.plan_uuid && APPROVAL_RECOVERABLE_CODES.includes(code) &&
+        !this.windowExpired(run.config, run.local_date) &&
+        (code !== 'LATE_ANALYSIS' || dailyRemainingCapacity(run.config, new Date(), run.local_date) > 0)) {
+        await this.approvalBackoff(run, code)
+        return
+      }
       if (code === 'LATE_ANALYSIS') {
         const plan = await SmartPlan.findOne({
           where: { userId: run.user_id, 'input.requestId': run.request_id },
