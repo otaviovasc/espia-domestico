@@ -49,7 +49,7 @@ import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampa
 import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 import { dailyDemandScore, dailyEvidenceReasons, dailySelectionReasons } from '@/utils/dailyProductSelection'
 import { dailyCommercialValue, dailyMixedPriceOrder } from '@/utils/dailyCommercialValue'
-import { hasDailyProductConflict, dailyOfferAliases } from '@/services/dailyNovelty'
+import { hasDailyProductConflict, dailyOfferAliases, dailyProductConflicts } from '@/services/dailyNovelty'
 
 const MIN_SMART_FIT = 70
 
@@ -1305,6 +1305,9 @@ export class SmartCampaignService {
     workerToken: string,
   ): Promise<SmartPlanItem[]> {
     const items: SmartPlanItem[] = []
+    const daily = Boolean(plan.settings.dailyAutomation)
+    const conflicts = daily ? await dailyProductConflicts(plan.userId, plan.id, plan.uuid, offers) : new Set<string>()
+    const dailySelectedIdentities = new Set<string>()
     const settings = plan.settings as {
       audiences: Record<string, SmartAudiencePolicy>
       audienceProfiles?: NicheIntelligenceOverrides
@@ -1365,6 +1368,7 @@ export class SmartCampaignService {
         const analysis = analyses[String(index)]
           const fit = analysis?.fits.find((entry) => entry.slug === audience.slug)
           const hardReasons = evaluateSmartProductEligibility(offer, policy, audience.policy).reasons
+          if (daily && dailyOfferAliases(offer).some(identity => conflicts.has(identity))) hardReasons.push('Produto já enviado ou reservado por outro plano')
           if ((policy.excludePolitical || audience.policy.excludePolitical) && analysis?.political === true) hardReasons.push('Conteúdo político identificado na análise')
           if (policy.dailySelection) hardReasons.push(...dailyEvidenceReasons(offer, policy.dailySelection))
           if (!isVerifiedOffer(offer)) hardReasons.push('Atribuição afiliada não verificada')
@@ -1446,6 +1450,7 @@ export class SmartCampaignService {
           const scheduledToday = selected.filter((entry) => entry.date === date).length
           if (chosen.length >= Math.min(maximum, audienceTarget - scheduledToday)) break
           if (chosen.length >= maximum) break
+          if (daily && dailyOfferAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
           const category = item.category ?? 'outros'
           const categoryKey = `${date}:${category}`
           const count = audienceCategoryCounts.get(categoryKey) ?? 0
@@ -1469,6 +1474,7 @@ export class SmartCampaignService {
           if (tentative.some((candidate, index) =>
             !isEvidenceFresh(candidate.observedAt, tentativeSlots[index], policy.freshnessHours))) continue
           chosen.push(item)
+          if (daily) dailyOfferAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
           audienceCategoryCounts.set(categoryKey, count + 1)
         }
         // Diversity is a preference for daily plans, never an artificial quality
@@ -1481,6 +1487,7 @@ export class SmartCampaignService {
           for (const item of dayCandidates) {
             if (chosen.length >= minimumTarget) break
             if (chosenIds.has(item.id)) continue
+            if (daily && dailyOfferAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
             const tentative = [...chosen, item]
             let candidateSlots: Date[]
             try {
@@ -1492,6 +1499,7 @@ export class SmartCampaignService {
             if (tentative.some((candidate, index) => !isEvidenceFresh(candidate.observedAt, candidateSlots[index], policy.freshnessHours))) continue
             item.warnings = [...new Set([...item.warnings, 'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
             chosen.push(item)
+            if (daily) dailyOfferAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
             chosenIds.add(item.id)
           }
         }

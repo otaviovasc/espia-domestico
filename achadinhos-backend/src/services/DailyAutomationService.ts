@@ -13,8 +13,6 @@ import { AppError } from '@/middleware/Error/AppError'
 import { SmartAudience } from '@/database/models/SmartAudience'
 import { Campaign, CAMPAIGN_STATUS_ENUM } from '@/database/models/Campaign'
 import { SmartPlan, SMART_PLAN_STATUS } from '@/database/models/SmartPlan'
-import { ProductGroupDelivery } from '@/database/models/ProductGroupDelivery'
-import { SmartSend, SMART_SEND_STATUS } from '@/database/models/SmartSend'
 import { SmartCampaignService } from '@/services/SmartCampaignService'
 import {
   DailyCollectionError,
@@ -26,7 +24,8 @@ import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
 import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryKeywords } from '@/utils/dailyDiscovery'
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
-import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
+import { normalizedMercadoLivreProductId, type OfferIdentityInput } from '@/utils/offerIdentity'
+import { dailyExcludedProductIds, dailyOfferAliases, dailyProductConflicts } from '@/services/dailyNovelty'
 
 interface DailyRun {
   id: string
@@ -96,7 +95,7 @@ export class DailyAutomationService {
     })
   }
 
-  private async replenish(run: DailyRun, plan: SmartPlan, audiences: SmartAudience[]): Promise<boolean> {
+  private async replenish(run: DailyRun, plan: SmartPlan, audiences: SmartAudience[], coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)): Promise<boolean> {
     // Round payloads are durable before append. Replaying an interrupted append uses
     // the same request ID and therefore cannot purchase the same analysis twice.
     const state = run.discovery_state ??= { round: 1 }
@@ -104,8 +103,7 @@ export class DailyAutomationService {
     if (state.exhausted || this.windowExpired(run.config, run.local_date)) return false
     const pooled = (run.payloads ?? []).flatMap(p => Array.isArray(p.json.cards) ? p.json.cards : [])
     const ids = pooled.map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter((id): id is string => Boolean(id))
-    const history = await this.exclusions(run.user_id)
-    const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
+    const history = await this.exclusions(run.user_id, plan)
     const requests = DAILY_AUDIENCES.flatMap(slug => {
       if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule))) return []
       const existing = (run.payloads ?? []).filter(p => p.targetAudienceSlug === slug).reduce((n, p) => n + (Array.isArray(p.json.cards) ? p.json.cards.length : 0), 0)
@@ -124,10 +122,11 @@ export class DailyAutomationService {
       state.pending ??= []
       await this.discoveryCheckpoint(run)
       const payloads = await this.collector.collect(requests.filter(r => !state.pending?.some(p => p.targetAudienceSlug === r.slug)), this.abort.signal, async payload => {
-        state.pending = [...(state.pending ?? []).filter(p => p.targetAudienceSlug !== payload.targetAudienceSlug), payload]
+        state.pending = [...(state.pending ?? []).filter(p => p.targetAudienceSlug !== payload.targetAudienceSlug), await this.filterPayload(run, payload, plan)]
         await this.discoveryCheckpoint(run)
       })
-      state.pending = [...state.pending, ...payloads.filter(p => !state.pending?.some(old => old.targetAudienceSlug === p.targetAudienceSlug))]
+      const remaining = payloads.filter(p => !state.pending?.some(old => old.targetAudienceSlug === p.targetAudienceSlug))
+      state.pending = [...state.pending, ...await Promise.all(remaining.map(payload => this.filterPayload(run, payload, plan)))]
       state.collected = true
       await this.discoveryCheckpoint(run)
     }
@@ -152,6 +151,7 @@ export class DailyAutomationService {
   }
 
   private async checkpointPayload(run: DailyRun, payload: DailyPayload): Promise<void> {
+    payload = await this.filterPayload(run, payload)
     if (!Array.isArray(payload.json.cards) || !payload.json.cards.length) return
     await this.requireLease(run)
     const payloads = [
@@ -205,42 +205,21 @@ export class DailyAutomationService {
     if (!rows.length) throw new DailyCollectionError('STOPPED')
   }
 
-  private async exclusions(userId: number): Promise<string[]> {
-    const [deliveries, sends] = await Promise.all([
-      ProductGroupDelivery.findAll({
-        where: { userId },
-        attributes: ['offerProductId', 'offerSource'],
-      }),
-      SmartSend.findAll({
-        where: {
-          userId,
-          status: {
-            [Op.in]: [
-              SMART_SEND_STATUS.PENDING,
-              SMART_SEND_STATUS.SENDING,
-              SMART_SEND_STATUS.SENT,
-              SMART_SEND_STATUS.UNKNOWN,
-            ],
-          },
-        },
-        attributes: ['offer'],
-      }),
-    ])
-    const values = [
-      ...deliveries
-        .filter((row) => row.offerSource?.trim().toLowerCase() === 'mercadolivre')
-        .map((row) => row.offerProductId),
-      ...sends
-        .filter((row) => row.offer.source?.trim().toLowerCase() === 'mercadolivre')
-        .map((row) => row.offer.productId),
-    ]
-    return [
-      ...new Set(
-        values
-          .map((id) => normalizedMercadoLivreProductId(id))
-          .filter((id): id is string => Boolean(id)),
-      ),
-    ]
+  private async exclusions(userId: number, plan?: SmartPlan): Promise<string[]> {
+    return dailyExcludedProductIds(userId, plan?.id, plan?.uuid)
+  }
+
+  private async filterPayload(run: DailyRun, payload: DailyPayload, plan?: SmartPlan): Promise<DailyPayload> {
+    if (!Array.isArray(payload.json.cards)) return payload
+    const offers = payload.json.cards.map(card => {
+      const value = card as { productId?: string; commissionedUrl?: string; productUrl?: string } | null
+      const url = value?.commissionedUrl || value?.productUrl
+      return { source: 'mercadolivre', productId: typeof value?.productId === 'string' ? value.productId : undefined,
+        affiliateUrl: typeof url === 'string' ? url : '' }
+    })
+    const conflicts = await dailyProductConflicts(run.user_id, plan?.id ?? null, plan?.uuid ?? null, offers)
+    return { ...payload, json: { ...payload.json, cards: payload.json.cards.filter((_card, index) =>
+      !dailyOfferAliases(offers[index]).some(identity => conflicts.has(identity))) } }
   }
 
   async tick(config: DailyAutomationConfig, now = new Date()): Promise<void> {
@@ -523,9 +502,25 @@ export class DailyAutomationService {
       if (plan.status === SMART_PLAN_STATUS.ANALYZING) {
         await this.save(run, 'ANALYZING')
       } else if (plan.status === SMART_PLAN_STATUS.REVIEW) {
-        const coverage = dailyPlanCoverage(plan.items, run.config, run.local_date)
+        const selected = plan.items.filter(item => item.state === 'SELECTED')
+        const conflicts = await dailyProductConflicts(run.user_id, plan.id, plan.uuid,
+          selected.flatMap(item => item.product ? [item.product as OfferIdentityInput] : []))
+        const identities = new Set<string>()
+        const effective = plan.items.filter(item => {
+          if (item.state !== 'SELECTED' || !item.product) return true
+          const aliases = dailyOfferAliases(item.product as OfferIdentityInput)
+          if (aliases.some(identity => conflicts.has(identity) || identities.has(identity))) return false
+          aliases.forEach(identity => identities.add(identity))
+          return true
+        })
+        const coverage = dailyPlanCoverage(effective, run.config, run.local_date)
+        for (const audience of coverage.audiences) {
+          audience.required = Math.max(audience.required, selected.filter(item => item.audienceSlug === audience.slug).length)
+          audience.missing = Math.max(0, audience.required - audience.selected)
+        }
+        coverage.ready = coverage.audiences.every(audience => !audience.missing && audience.completeSchedule)
         if (!coverage.ready) {
-          if (run.config.planningDaysAhead === 1 && await this.replenish(run, plan, audiences)) return
+          if ((run.config.planningDaysAhead === 1 || effective.length < plan.items.length) && await this.replenish(run, plan, audiences, coverage)) return
           // Automatic approval always ships the qualified remainder of a short or late day.
           if (!run.config.autoApprove || !coverage.audiences.some(a => a.selected)) {
             await this.save(run, 'REVIEW', 'INSUFFICIENT_QUALIFIED_PRODUCTS', coverage.audiences.map(a => `${a.slug} selected=${a.selected} required=${a.required} missing=${a.missing}`).join('; '))

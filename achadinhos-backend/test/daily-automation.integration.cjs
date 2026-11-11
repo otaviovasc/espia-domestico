@@ -768,6 +768,7 @@ test('real daily collection-to-approval-to-sender honors late capacity and catch
   t.mock.timers.enable({ apis: ['Date'], now: new Date(`${date}T09:00:00Z`).getTime() }) // 06:00 Sao Paulo
   const f = await setup()
   f.config.requireFullWindow = true
+  f.config.candidateLimit = 30 // Exhausted collection budget exercises the qualified-remainder fallback.
   const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
   const { OfferImportService } = require('../dist/services/OfferImportService')
   const { SmartCampaignSender } = require('../dist/services/SmartCampaignSender')
@@ -988,4 +989,161 @@ test('D+1 ready preview still automatically approves after its first target slot
   assert.equal(f.calls.approve, 1)
   assert.equal(f.calls.collect, 1)
   assert.equal((await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).status, 'SCHEDULED')
+})
+
+function noveltyOffer(index, slug = 'domestica') {
+  return { title: `${slug} QA ${index}`, productId: `MLB${97000000 + index}`, source: 'mercadolivre', currency: 'BRL',
+    discountedPrice: 100, originalPrice: 150, commissioned: true, commissionedUrlStatus: 'generated_from_page_state', commissionRate: 10,
+    affiliateUrl: `https://meli.la/novelty-${index}`, extensionEvidence: { extractedAt: new Date().toISOString(),
+      visibleSignals: { rating: 4.9, soldCount: 50000, bestSeller: true } } }
+}
+
+async function noveltySend(userId, plan, offer, status = 'PENDING', extra = {}) {
+  const { offerIdentity } = require('../dist/utils/offerIdentity')
+  return SmartSend.create({ userId, planId: plan.id, audienceSlug: 'domestica', groupId: 'history@g.us', groupName: 'History',
+    connectionScope: 'another-connection', offerIdentity: offerIdentity(offer), offer, status, scheduledAt: new Date(),
+    localDate: plan.startDate, timezone: plan.timezone, evidenceObservedAt: new Date(), ...extra })
+}
+
+async function noveltyDelivery(userId, offer, extra = {}) {
+  const { offerIdentity } = require('../dist/utils/offerIdentity')
+  return ProductGroupDelivery.create({ userId, connectionScope: 'old-connection', groupId: 'history@g.us', groupName: 'History',
+    offerIdentity: offerIdentity(offer), offerSource: offer.source, offerProductId: offer.productId,
+    offerUrl: offer.affiliateUrl, offerTitle: offer.title, status: 'SENDING', ...extra })
+}
+
+test('daily novelty-aware analysis fills both audiences without history or identity-alias duplicates in one batch', async () => {
+  const f = await setup()
+  const { SmartCampaignService } = require('../dist/services/SmartCampaignService')
+  const offers = Array.from({ length: 20 }, (_, index) => noveltyOffer(index, index % 2 ? 'masculino' : 'domestica'))
+  const history = await SmartPlan.create({ userId: f.user.id, status: 'COMPLETED', startDate: dailyWindow(f.config).date, days: 1,
+    timezone: f.config.timezone, audienceSlugs: ['domestica'], input: {}, settings: {}, items: [] })
+  for (const [index, status] of ['PENDING', 'SENDING', 'SENT', 'UNKNOWN'].entries()) {
+    await noveltySend(f.user.id, history, { ...offers[index], source: ' MercadoLivre ', productId: ` mlb - ${97000000 + index} ` }, status)
+  }
+  offers[4].savedProductId = 123456
+  await noveltyDelivery(f.user.id, offers[4], { offerSource: null, offerProductId: null })
+  offers[5].savedProductId = 123457
+  await noveltyDelivery(f.user.id, { ...offers[5], savedProductId: undefined }, { offerSource: null, offerProductId: null, status: 'SENT' })
+  offers[7].productId = ' mlb - 97000006 '
+  offers[8].savedProductId = 123458
+  offers[9].savedProductId = 123458
+  await noveltySend(f.user.id, history, offers[10], 'FAILED')
+  await noveltySend(f.user.id, history, offers[11], 'SKIPPED')
+  const intelligence = { async analyze(products, slugs) {
+    return products.map((offer, index) => ({ index, political: false, fits: slugs.map(slug => ({ slug,
+      score: offer.title.startsWith(slug) ? 100 - Number(offer.title.split(' ').at(-1)) : 5, category: 'utilidades', reason: 'Relevant daily use', seasonalScore: 50 })), warnings: [] }))
+  }, async standoutCopy() { assert.fail('No standout copy') } }
+  const smart = new SmartCampaignService({ parsePayloads() { return { offers, source: 'mercadolivre', errors: [], totalSeen: offers.length } } },
+    { async save(_user, values) { return values } }, intelligence, {}, {})
+  const created = await smart.createPlan(f.user.id, { requestId: randomUUID(), date: history.startDate, days: 1,
+    audienceSlugs: ['domestica', 'masculino'], payloads: [{ name: 'fixture', json: {} }], campaignStartTime: '08:00',
+    settings: { dailyCap: 4, maxStandouts: 0, excludePolitical: true,
+      dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 80, minCommercialScore: 60 } },
+  }, { runId: randomUUID(), localDate: history.startDate, startTime: '08:00', endTime: '19:00', minimumItems: 4 })
+  const plan = await SmartPlan.findOne({ where: { uuid: created.id } })
+  // Own-plan reservations/deliveries never consume this plan's novelty inventory.
+  await noveltySend(f.user.id, plan, offers[12])
+  await noveltyDelivery(f.user.id, offers[13], { planUuid: plan.uuid })
+  const query = sequelize.query.bind(sequelize)
+  let historyQueries = 0
+  sequelize.query = (sql, ...args) => {
+    if (typeof sql === 'string' && /product_group_deliveries/.test(sql)) historyQueries++
+    return query(sql, ...args)
+  }
+  try { await smart.processPendingAnalysis(plan.id) } finally { sequelize.query = query }
+  await plan.reload()
+  assert.equal(plan.status, 'REVIEW')
+  const selected = plan.items.filter(item => item.state === 'SELECTED')
+  assert.ok(selected.every(item => !offers.slice(0, 6).some(offer => offer.productId === item.product.productId)), 'History conflicts must leave selection before approval')
+  for (const index of [6, 8, 10, 11, 12, 13]) assert.ok(selected.some(item => item.product.affiliateUrl === offers[index].affiliateUrl))
+  for (const index of [7, 9]) assert.ok(!selected.some(item => item.product.affiliateUrl === offers[index].affiliateUrl), 'Aliased duplicates must yield their slots to the next qualified candidates')
+  const { dailyOfferAliases } = require('../dist/services/dailyNovelty')
+  const identities = selected.flatMap(item => dailyOfferAliases(item.product))
+  assert.equal(identities.length, new Set(identities).size, 'Normalized product and saved-product aliases dedupe across audiences')
+  for (const slug of ['domestica', 'masculino']) assert.equal(selected.filter(item => item.audienceSlug === slug).length, 4)
+  assert.equal(historyQueries, 1, 'Selection uses one set-based novelty query for the whole candidate pool')
+})
+
+test('daily novelty readiness rechecks later reservations and replenishes only the effectively short audience', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, autoApprove: true })
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  const { buildSmartSchedule } = require('../dist/services/SmartCampaignService')
+  const items = ['domestica', 'masculino'].flatMap((slug, audience) => {
+    const slots = buildSmartSchedule(run.local_date, 30, { ...f.config, minGapSeconds: 1200, maxGapSeconds: 1500, spreadAcrossWindow: true, windowEndBufferSeconds: 120 }, slug)
+    return slots.map((slot, index) => ({ id: `${slug}:${index}`, state: 'SELECTED', audienceSlug: slug, product: noveltyOffer(audience * 100 + index, slug), scheduledAt: slot.toISOString() }))
+  })
+  await plan.update({ status: 'REVIEW', items })
+  const other = await SmartPlan.create({ userId: f.user.id, status: 'COMPLETED', startDate: run.local_date, days: 1,
+    timezone: f.config.timezone, audienceSlugs: ['domestica'], input: {}, settings: {}, items: [] })
+  await noveltySend(f.user.id, other, items[0].product, 'UNKNOWN')
+  const appended = []
+  f.smart.appendDailyProducts = async (_user, _uuid, _revision, payloads) => { appended.push(...payloads); await plan.update({ status: 'ANALYZING' }) }
+  f.collector.collect = async requests => {
+    f.calls.collect++
+    assert.deepEqual(requests.map(r => r.slug), ['domestica'])
+    assert.ok(requests[0].options.excludeProductIds.includes(items[0].product.productId))
+    return [{ ...f.payloads[0], json: { cards: [{ productId: 'MLB99999991' }] } }]
+  }
+  await f.service.tick(f.config)
+  assert.equal(f.calls.approve, 0, 'A raw 30/30 plan with a new reservation must replenish before approval')
+  assert.equal(f.calls.collect, 2)
+  assert.equal(appended.length, 1)
+  assert.equal((await f.run()).status, 'ANALYZING')
+})
+
+test('daily novelty readiness detects cross-audience aliases even without external history', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id, autoApprove: true, requireFullWindow: false })
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  await plan.update({ status: 'REVIEW', items: ['domestica', 'masculino'].map((slug, index) => ({ state: 'SELECTED', audienceSlug: slug,
+    product: { ...noveltyOffer(1, slug), productId: index ? ' mlb - 97000001 ' : 'MLB97000001' } })) })
+  f.collector.collect = async requests => {
+    assert.deepEqual(requests.map(r => r.slug), ['masculino'])
+    return [{ ...f.payloads[1], json: { cards: [{ productId: 'MLB99999992' }] } }]
+  }
+  f.smart.appendDailyProducts = async () => plan.update({ status: 'ANALYZING' })
+  await f.service.tick(f.config)
+  assert.equal(f.calls.approve, 0)
+  assert.equal((await f.run()).status, 'ANALYZING')
+})
+
+test('daily novelty collection excludes all active history and post-filters URL identities before paid planning', async () => {
+  const f = await setup()
+  const history = await SmartPlan.create({ userId: f.user.id, status: 'COMPLETED', startDate: dailyWindow(f.config).date, days: 1,
+    timezone: f.config.timezone, audienceSlugs: ['domestica'], input: {}, settings: {}, items: [] })
+  const blocked = []
+  for (const [index, status] of ['PENDING', 'SENDING', 'SENT', 'UNKNOWN', 'FAILED', 'SKIPPED'].entries()) {
+    const offer = noveltyOffer(index)
+    await noveltySend(f.user.id, history, { ...offer, source: ' MercadoLivre ', productId: ` mlb - ${97000000 + index} ` }, status)
+    if (index < 4) blocked.push(offer.productId)
+  }
+  await noveltyDelivery(f.user.id, noveltyOffer(6))
+  blocked.push('MLB97000006')
+  const urlOnly = { ...noveltyOffer(7), productId: undefined }
+  await noveltyDelivery(f.user.id, urlOnly, { offerSource: null, offerProductId: null })
+  const card = offer => ({ productId: offer.productId, title: offer.title, commissionedUrl: offer.affiliateUrl,
+    commissionedUrlStatus: 'generated_from_page_state', pricing: { currentAmount: 100, originalAmount: 150 } })
+  f.payloads[0].json.cards = [card(urlOnly), card(noveltyOffer(0)), card(noveltyOffer(4)), card(noveltyOffer(5)), card(noveltyOffer(10))]
+  f.collector.collect = async (requests, _signal, checkpoint) => {
+    f.calls.collect++
+    for (const request of requests) {
+      for (const id of blocked) assert.ok(request.options.excludeProductIds.includes(id))
+      for (const id of ['MLB97000004', 'MLB97000005']) assert.ok(!request.options.excludeProductIds.includes(id))
+    }
+    for (const payload of f.payloads) await checkpoint(payload)
+    return f.payloads
+  }
+  await f.service.tick(f.config)
+  const run = await f.run()
+  assert.equal(run.status, 'ANALYZING')
+  assert.deepEqual(run.payloads[0].json.cards.map(c => c.productId), ['MLB97000004', 'MLB97000005', 'MLB97000010'], 'URL-only aliases and ignored product exclusions must be removed before paid planning')
+  assert.equal(f.calls.create, 1)
 })
