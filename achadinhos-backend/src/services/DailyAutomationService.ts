@@ -21,11 +21,13 @@ import {
   DailyProductCollector,
   DAILY_AUDIENCES,
   type DailyPayload,
+  type DailyCollectionRequest,
 } from '@/services/DailyProductCollector'
 import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
 import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryPage } from '@/utils/dailyDiscovery'
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
 import { logger } from '@/utils/logger'
+import { dailyCollectionObservation, dailyCollectionSummary, type DailyCollectionMetrics } from '@/utils/dailyObservability'
 import { normalizedMercadoLivreProductId, type OfferIdentityInput } from '@/utils/offerIdentity'
 import { dailyExcludedProductIds, dailyOfferAliases, dailySelectionAliases, dailyProductConflicts, dailyRepeatCooldown, type DailyRepeatPolicy } from '@/services/dailyNovelty'
 
@@ -39,7 +41,7 @@ interface DailyRun {
   payloads: DailyPayload[] | null
   plan_uuid: string | null
   attempts: number
-  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>>; repeatSelected?: number }
+  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>>; repeatSelected?: number; collectionMetrics?: DailyCollectionMetrics; collectionSummary?: ReturnType<typeof dailyCollectionSummary> }
   approval_attempts: number
   approval_revision: number | null
   last_error: string | null
@@ -87,18 +89,38 @@ export class DailyAutomationService {
   }
 
   private async save(run: DailyRun, status: string, error: string | null = null, detail = ''): Promise<void> {
+    let state = run.discovery_state ?? {}
+    let summaryLog: ReturnType<typeof dailyCollectionSummary> | undefined
+    if (['SCHEDULED', 'REVIEW', 'COMPLETED', 'CANCELLED', 'EXPIRED', 'FAILED', 'AUTH_REQUIRED', 'CONFIG_REQUIRED'].includes(status)) {
+      const plan = run.plan_uuid ? await SmartPlan.findOne({ where: { uuid: run.plan_uuid, userId: run.user_id } }) : null
+      const metrics = state.collectionMetrics ?? { observations: {} }
+      const summary = dailyCollectionSummary(metrics, plan?.items ?? [], run.config.repeatCooldownDays)
+      if (!metrics.summaryLogged) summaryLog = summary
+      state = { ...state, collectionSummary: summary, collectionMetrics: { ...metrics, summaryLogged: true } }
+    }
     const saved = await sequelize.query<{ id: string }>(
       `UPDATE daily_automation_runs
-      SET status=:status, last_error=:error, lease_token=NULL, lease_until=NULL,
+      SET status=:status, last_error=:error, discovery_state=CAST(:discoveryState AS JSONB), lease_token=NULL, lease_until=NULL,
           attempts=attempts + CASE WHEN :error IS NOT NULL AND :status IN ('RETRY','FAILED') THEN 1 ELSE 0 END,
           next_attempt_at=CASE WHEN :status IN ('ANALYZING','ANALYSIS_HOLD') THEN NOW()
             ELSE NOW() + INTERVAL '15 minutes' END, updated_at=NOW()
       WHERE id=:id AND lease_token=:token RETURNING id`,
       {
         type: QueryTypes.SELECT,
-        replacements: { status, error, id: run.id, token: run.lease_token },
+        replacements: { status, error, discoveryState: JSON.stringify(state), id: run.id, token: run.lease_token },
       },
     )
+    if (saved.length) {
+      run.discovery_state = state
+      if (summaryLog) logger.info(
+        { dailyRunId: run.id, planUuid: run.plan_uuid, date: run.local_date, status, ...summaryLog },
+        'Daily collection summary',
+      )
+      if (run.status !== status || run.last_error !== error) logger.info(
+        { dailyRunId: run.id, planUuid: run.plan_uuid, date: run.local_date, previousStatus: run.status, status, code: error },
+        'Daily automation checkpoint',
+      )
+    }
     if (saved.length && error) {
       try {
         await this.alerts?.enqueue(run.config, run.local_date, run.plan_uuid ? `${run.plan_uuid}:${error}` : `${run.id}:${status}:${error}`, error, detail)
@@ -154,6 +176,21 @@ export class DailyAutomationService {
     await sequelize.query(`UPDATE daily_automation_runs SET discovery_state=CAST(:state AS JSONB), updated_at=NOW() WHERE id=:id AND lease_token=:token`, {
       replacements: { id: run.id, token: run.lease_token, state: JSON.stringify(run.discovery_state) },
     })
+  }
+
+  private async collectObserved(run: DailyRun, requests: DailyCollectionRequest[], signal: AbortSignal,
+    checkpoint: (payload: DailyPayload) => Promise<void>): Promise<DailyPayload[]> {
+    const state = run.discovery_state ??= {}
+    const metrics = state.collectionMetrics ??= { observations: {} }
+    const startedAt = performance.now()
+    try {
+      return await this.collector.collect(requests, signal, checkpoint)
+    } finally {
+      // Include failed attempts and browser setup/teardown in total collection time.
+      metrics.durationMs = (metrics.durationMs ?? 0) + Math.round(performance.now() - startedAt)
+      state.collectionSummary = dailyCollectionSummary(metrics, [], run.config.repeatCooldownDays)
+      if (!signal.aborted) await this.discoveryCheckpoint(run)
+    }
   }
 
   private async inventoryWarning(run: DailyRun, payload: DailyPayload, limit = dailyCandidateTarget(run.config)): Promise<void> {
@@ -224,7 +261,7 @@ export class DailyAutomationService {
     if (!state.collected) {
       state.pending ??= []
       await this.discoveryCheckpoint(run)
-      const payloads = await this.collector.collect(requests.filter(r => !state.pending?.some(p => p.targetAudienceSlug === r.slug)), this.abort.signal, async payload => {
+      const payloads = await this.collectObserved(run, requests.filter(r => !state.pending?.some(p => p.targetAudienceSlug === r.slug)), this.abort.signal, async payload => {
         const filtered = await this.filterPayload(run, payload, plan)
         state.pending = [...(state.pending ?? []).filter(p => p.targetAudienceSlug !== payload.targetAudienceSlug), filtered]
         await this.discoveryCheckpoint(run)
@@ -259,6 +296,7 @@ export class DailyAutomationService {
 
   private async checkpointPayload(run: DailyRun, payload: DailyPayload): Promise<void> {
     payload = await this.filterPayload(run, payload)
+    await this.discoveryCheckpoint(run)
     if (!Array.isArray(payload.json.cards) || !payload.json.cards.length) {
       await this.requireLease(run)
       await this.inventoryWarning(run, payload)
@@ -322,6 +360,10 @@ export class DailyAutomationService {
   }
 
   private async filterPayload(run: DailyRun, payload: DailyPayload, plan?: SmartPlan): Promise<DailyPayload> {
+    const state = run.discovery_state ??= {}
+    const metrics = state.collectionMetrics ??= { observations: {} }
+    const key = `${plan ? 'replenish' : 'initial'}:${plan ? state.round ?? 1 : state.initialRounds?.[payload.targetAudienceSlug] ?? 0}:${payload.targetAudienceSlug}`
+    metrics.observations[key] = dailyCollectionObservation(payload)
     if (!Array.isArray(payload.json.cards)) return payload
     const offers = payload.json.cards.map(card => {
       const value = card as { productId?: string; title?: string; commissionedUrl?: string; productUrl?: string } | null
@@ -335,9 +377,14 @@ export class DailyAutomationService {
       undefined, { ...run.config, groupIds: audience?.destinations.map(d => d.groupId) })
     const cards = payload.json.cards.flatMap((card, index) => {
       const aliases = dailyOfferAliases(offers[index])
-      if (aliases.some(identity => conflicts.has(identity))) return []
+      if (aliases.some(identity => conflicts.has(identity))) {
+        const code = aliases.some(identity => conflicts.cooldowns?.has(identity)) ? 'cooldown' : 'novelty'
+        metrics.observations[key].rejectedByReason[code]++
+        return []
+      }
       return [{ ...(card as Record<string, unknown>), repeatFallback: aliases.some(identity => conflicts.repeats.has(identity)) }]
     })
+    state.collectionSummary = dailyCollectionSummary(metrics, plan?.items ?? [], run.config.repeatCooldownDays)
     return { ...payload, json: { ...payload.json, cards } }
   }
 
@@ -534,8 +581,8 @@ export class DailyAutomationService {
           await this.save(run, 'REVIEW', 'DISCOVERY_KEYWORDS_EXHAUSTED')
           return
         }
-        const payloads = await this.collector.collect(
-          discoverable.map((slug) => {
+        const payloads = await this.collectObserved(
+          run, discoverable.map((slug) => {
             const audience = audiences.find((value) => value.slug === slug)!
             const policy = audience.policy
             return {
@@ -675,10 +722,6 @@ export class DailyAutomationService {
       } else {
         await this.save(run, plan.status)
       }
-      logger.info(
-        { dailyRunId: run.id, planUuid: plan.uuid, date: run.local_date },
-        'Daily automation checkpoint',
-      )
     } catch (error) {
       if (error instanceof DailyCollectionError && error.code === 'STOPPED') {
         await sequelize

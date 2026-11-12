@@ -104,6 +104,7 @@ export class DailyProductCollector {
       const payloads: DailyPayload[] = []
       const collectedIds = new Set<string>()
       for (const request of requests) {
+        const collectionStartedAt = performance.now()
         const excluded = [
           ...new Set(
             [
@@ -167,6 +168,7 @@ export class DailyProductCollector {
             if (productId) collectedIds.add(productId)
             return compact
           })
+        json.collectionDurationMs = Math.round(performance.now() - collectionStartedAt)
         payloads.push({
           name: `daily-${request.slug}.json`,
           targetAudienceSlug: request.slug,

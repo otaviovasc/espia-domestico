@@ -2195,3 +2195,72 @@ test('daily cooldown catches known models sold under different listing IDs witho
   const cooled = await history(cooldownOffer('MLB99886104', 'Liquidificador Turbo Power Mondial 550W - L-99 FB'))
   assert.deepEqual(cooled, { conflict: false, repeat: true })
 })
+
+test('collection summary persists round counters, suppresses unchanged checkpoints, and logs once after approval', async (t) => {
+  const { logger } = require('../dist/utils/logger')
+  const logs = []
+  t.mock.method(logger, 'info', (data, message) => logs.push({ data, message }))
+  const f = await setup()
+  f.payloads.forEach(payload => Object.assign(payload.json, {
+    collectionDurationMs: 200,
+    search: { keywords: ['private query', 'another query'] },
+    dailyCollection: { rejectedByReason: { offAudience: 3, price: 2, freshness: 1 } },
+  }))
+  f.collector.collect = async (_requests, _signal, checkpoint) => {
+    f.calls.collect++
+    for (const payload of f.payloads) await checkpoint(payload)
+    return f.payloads // The second checkpoint pass must not double count.
+  }
+  await f.service.tick(f.config)
+  const run = await f.run()
+  assert.equal(run.discovery_state.collectionSummary.audiences.domestica.candidatesReturned, 1)
+  assert.equal(Object.keys(run.discovery_state.collectionMetrics.observations).length, 2)
+  const before = logs.filter(log => log.message === 'Daily automation checkpoint').length
+  await new DailyAutomationService(f.smart, f.collector).tick(f.config)
+  assert.equal(logs.filter(log => log.message === 'Daily automation checkpoint').length, before)
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  await plan.update({ status: 'REVIEW', items: [
+    { audienceSlug: 'domestica', state: 'SELECTED' },
+    { audienceSlug: 'masculino', state: 'SELECTED', repeatFallback: true },
+    { audienceSlug: 'domestica', state: 'RESERVE' },
+  ] })
+  await f.service.tick(f.config)
+  const final = await f.run()
+  const summary = final.discovery_state.collectionSummary
+  assert.equal(final.status, 'SCHEDULED')
+  assert.equal(summary.audiences.domestica.keywordsTried, 2)
+  assert.equal(summary.audiences.domestica.rejectedByReason.offAudience, 3)
+  assert.equal(summary.audiences.domestica.reservesKept, 1)
+  assert.equal(summary.audiences.domestica.freshSelected, 1)
+  assert.equal(summary.audiences.masculino.repeatSelected, 1)
+  assert.equal(final.discovery_state.repeatSelected, 1)
+  assert.ok(Number.isInteger(summary.collectionDurationMs))
+  const summaries = logs.filter(log => log.message === 'Daily collection summary')
+  assert.equal(summaries.length, 1)
+  assert.deepEqual(summaries[0].data.audiences, summary.audiences)
+  assert.equal(summaries[0].data.collectionDurationMs, summary.collectionDurationMs)
+  assert.doesNotMatch(JSON.stringify(summaries), /private query|another query|@g\.us/)
+  await new DailyAutomationService(f.smart, f.collector).tick(f.config)
+  assert.equal(logs.filter(log => log.message === 'Daily collection summary').length, 1)
+})
+
+test('collection telemetry distinguishes recent destination cooldown from uncertain reservations', async () => {
+  const f = await setup()
+  const recent = cooldownOffer('MLB99886201', 'Panela recente QA')
+  const uncertain = cooldownOffer('MLB99886202', 'Ferro reservado QA')
+  const old = cooldownOffer('MLB99886203', 'Aspirador antigo QA')
+  await cooldownDelivery(f, recent, 1)
+  await cooldownDelivery(f, uncertain, 40, { status: 'SENDING' })
+  await cooldownDelivery(f, old, 40)
+  const run = { user_id: f.user.id, config: { ...f.config, repeatCooldownDays: 30 }, discovery_state: {} }
+  const payload = { name: 'telemetry', targetAudienceSlug: 'domestica', json: { cards: [recent, uncertain, old].map(offer => ({
+    productId: offer.productId, title: offer.title, commissionedUrl: offer.affiliateUrl,
+  })) } }
+  const filtered = await f.service.filterPayload(run, payload)
+  assert.deepEqual(filtered.json.cards.map(card => card.productId), [old.productId])
+  assert.equal(filtered.json.cards[0].repeatFallback, true)
+  const summary = run.discovery_state.collectionSummary.audiences.domestica
+  assert.equal(summary.candidatesReturned, 3)
+  assert.equal(summary.rejectedByReason.cooldown, 1)
+  assert.equal(summary.rejectedByReason.novelty, 1)
+})
