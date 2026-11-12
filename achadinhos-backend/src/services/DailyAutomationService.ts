@@ -247,11 +247,17 @@ export class DailyAutomationService {
     })
   }
 
-  private async inventoryWarning(run: DailyRun, payload: DailyPayload, limit = dailyCandidateTarget(run.config)): Promise<void> {
-    const fresh = new Set((payloadOffers(payload))
+  private async inventoryWarning(run: DailyRun, payload: DailyPayload): Promise<void> {
+    // Assess the audience's accumulated pool, not the size of one refill. This
+    // warns about an actual raw-candidate deficit; qualification has its own
+    // plan/readiness alerts. Headroom is a collection target, not a daily need.
+    const pooled = [...(run.payloads ?? []), ...(run.discovery_state?.pending ?? []), payload]
+      .filter(value => value.targetAudienceSlug === payload.targetAudienceSlug)
+      .flatMap(payloadOffers)
+    const fresh = new Set(pooled
       .filter(card => !(card as { repeatFallback?: boolean }).repeatFallback)
       .map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter(Boolean)).size
-    const required = Math.min(limit, dailyRequiredItems(run.config) * 2)
+    const required = dailyRequiredItems(run.config)
     if (fresh >= required) return
     try {
       await this.alerts?.enqueueInventoryLow(run.config, run.local_date, `${run.id}:${payload.targetAudienceSlug}`,
@@ -324,14 +330,14 @@ export class DailyAutomationService {
         const filtered = await this.filterPayload(run, payload, plan)
         state.pending = [...(state.pending ?? []).filter(p => p.targetAudienceSlug !== payload.targetAudienceSlug), filtered]
         await this.discoveryCheckpoint(run)
-        await this.inventoryWarning(run, filtered, requests.find(request => request.slug === payload.targetAudienceSlug)?.options.limit)
+        await this.inventoryWarning(run, filtered)
       })
       const remaining = payloads.filter(p => !state.pending?.some(old => old.targetAudienceSlug === p.targetAudienceSlug))
       state.pending = [...state.pending, ...await Promise.all(remaining.map(payload => this.filterPayload(run, payload, plan)))]
       state.collected = true
       await this.discoveryCheckpoint(run)
       for (const payload of state.pending.filter(p => payloads.some(next => next.targetAudienceSlug === p.targetAudienceSlug)))
-        await this.inventoryWarning(run, payload, requests.find(request => request.slug === payload.targetAudienceSlug)?.options.limit)
+        await this.inventoryWarning(run, payload)
     }
     const pending = state.pending ?? []
     if (pending.some(p => payloadOffers(p).length)) {

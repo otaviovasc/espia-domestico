@@ -106,7 +106,11 @@ for (const slug of ['domestica', 'masculino']) {
     assert.equal(DAILY_DISCOVERY_EXPLORATION_SIZE, 20)
     const base = profiles[slug].keywords
     const inventory = bank(slug, base)
-    const k = Math.ceil((inventory.length - DAILY_DISCOVERY_PRIORITY_SIZE) / DAILY_DISCOVERY_EXPLORATION_SIZE)
+    const { masculinoDiscoveryFamily } = require('../dist/utils/dailyDiscovery')
+    const priority = new Set(dailyDiscoveryKeywords(slug, base, 0, '2026-11-11').slice(0, DAILY_DISCOVERY_PRIORITY_SIZE))
+    const k = slug === 'masculino'
+      ? Math.max(...Array.from({ length: 10 }, (_, family) => Math.ceil(inventory.filter(term => !priority.has(term) && masculinoDiscoveryFamily(term) === family).length / 2)))
+      : Math.ceil((inventory.length - DAILY_DISCOVERY_PRIORITY_SIZE) / DAILY_DISCOVERY_EXPLORATION_SIZE)
     const seen = new Set()
     const categories = slug === 'domestica'
       ? [['panela', 'cafeteira'], ['aspirador', 'organizador'], ['lençol', 'edredom'], ['secador', 'perfume feminino']]
@@ -137,6 +141,20 @@ test('profile aliases narrow generic words and preserve useful BR spelling/plura
   assert.equal(matchesKeyword({ title: 'Perfume Feminino Eau De Parfum' }, 'perfume masculino', 'word'), false)
   assert.equal(matchesKeyword({ title: 'Tênis Infantil Menina' }, 'tênis masculino', 'word'), false)
   assert.equal(matchesKeyword({ title: 'Aparador Buffet Sala Madeira' }, 'aparador de barba', 'word'), false)
+})
+
+test('masculino explores ten families every day rather than contiguous tool or clothing blocks', () => {
+  const { masculinoDiscoveryFamily } = require('../dist/utils/dailyDiscovery')
+  for (let day = 0; day < 366; day++) {
+    const date = new Date(Date.UTC(2026, 10, 12 + day)).toISOString().slice(0, 10)
+    const exploration = dailyDiscoveryKeywords('masculino', profiles.masculino.keywords, 0, date).slice(30)
+    const counts = Array.from({ length: 10 }, (_, family) => exploration.filter(term => masculinoDiscoveryFamily(term) === family).length)
+    assert.deepEqual(counts, Array(10).fill(2), date)
+    const refill = dailyDiscoveryKeywords('masculino', profiles.masculino.keywords, 1, date)
+    assert.ok(new Set(refill.map(masculinoDiscoveryFamily)).size >= 8, 'The next page must retain breadth too')
+  }
+  const inventory = bank('masculino')
+  for (const term of ['patinete elétrico', 'bioimpedância', 'cuecas', 'mala de bordo', 'teclado gamer', 'colônia desodorante masculino']) assert.ok(inventory.includes(term), term)
 })
 
 test('oversized custom bases cannot starve built-in priority or exploration', () => {
@@ -172,6 +190,27 @@ test('offline evaluation separates latest products, unknown quality, rejection, 
   assert.equal(keyword.directlyAttributedCards, 1)
   assert.equal(keyword.observedSaleProducts, 1)
   assert.equal(result.attributedKeywords[0].qualified, 1)
+})
+
+test('offline reporting retains per-day keyword yield and title types without treating unknown as zero fit', () => {
+  const { evaluate, metrics, productType } = require('../scripts/evaluate-daily-keywords.cjs')
+  const product = { productId: 'A', title: 'Barbeador elétrico', extensionEvidence: { visibleSignals: { rating: 4.8, soldCount: 1000 } } }
+  const data = { items: [{ audienceSlug: 'masculino', plan_uuid: 'plan', fitScore: 90, score: 80, product }],
+    runs: [{ id: 1, local_date: '2026-11-12', plan_uuid: 'plan', payloads: [{ targetAudienceSlug: 'masculino',
+      cards: [{ ...product, searchMatch: { matchStyle: 'word', keywords: ['barbeador'] } },
+        { productId: 'B', title: 'Barbeador sem análise', searchMatch: { matchStyle: 'word', keywords: ['barbeador'] } }] }] }] }
+  const discovery = { dailyDiscoveryKeywords: (_, base, round) => round === 0 ? ['barbeador'] : [] }
+  const result = evaluate(data, discovery, '2026-11-12', 1).audiences.masculino
+  const day = result.dailyKeywordReturns[0]
+  assert.equal(day.date, '2026-11-12'); assert.equal(day.keyword, 'barbeador')
+  assert.equal(day.matches, 2); assert.equal(day.qualified, 1); assert.equal(day.qualityUnknown, 1)
+  assert.deepEqual(day.qualifiedProductTypes, { grooming: 1 })
+  assert.equal(day.qualifiedProductTypeCount, 1)
+  assert.equal(day.offAudienceRate, 0)
+  assert.equal(productType({ title: 'Jogo de soquetes com catraca' }), 'hand-tools')
+  assert.equal(productType({ title: 'Produto desconhecido' }), 'other')
+  assert.equal(metrics([]).offAudienceRate, null)
+  assert.equal(evaluate({ items: [] }, discovery, '2026-11-12', 2).audiences.masculino.firstPageAverage.offAudienceRate, null)
 })
 
 test('offline quality gates reject political, temporary and malformed signals', () => {
