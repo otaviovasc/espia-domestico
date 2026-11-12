@@ -281,6 +281,61 @@ export function buildSmartSchedule(
   return slots
 }
 
+// One minute covers a 30-second scheduler tick plus ordinary provider latency.
+// This is planning headroom; the sender still enforces the real delivery gaps.
+const DAILY_CADENCE_HEADROOM_SECONDS = 60
+const DAILY_ACCOUNT_SLOT_SECONDS = 60
+
+/** Fit a daily selection without borrowing tomorrow's window or overlapping this account. */
+export function buildDailySmartSchedule(
+  date: string,
+  count: number,
+  policy: SmartAudiencePolicy,
+  seed: string,
+  earliest?: Date,
+  occupied: Date[] = [],
+  followingAudiences = 0,
+): Date[] {
+  const bufferedPolicy = { ...policy,
+    windowEndBufferSeconds: Math.max(120, policy.windowEndBufferSeconds ?? 0)
+      + followingAudiences * DAILY_ACCOUNT_SLOT_SECONDS,
+  }
+  const start = smartZonedInstant(date, policy.startTime, policy.timezone).getTime()
+  const end = smartZonedInstant(date, policy.endTime, policy.timezone).getTime()
+    - bufferedPolicy.windowEndBufferSeconds * 1000
+  const reservations = occupied.map(slot => slot.getTime()).sort((a, b) => a - b)
+  const freeAt = (desired: number) => {
+    let target = desired
+    for (const reserved of reservations) {
+      if (Math.abs(target - reserved) < DAILY_ACCOUNT_SLOT_SECONDS * 1000) {
+        target = reserved + DAILY_ACCOUNT_SLOT_SECONDS * 1000
+      }
+    }
+    return target
+  }
+  const first = freeAt(Math.ceil(Math.max(start, earliest?.getTime() ?? start) / 60_000) * 60_000)
+  const safeGap = policy.minGapSeconds + DAILY_CADENCE_HEADROOM_SECONDS
+  const capacity = Math.max(0, Math.floor((end - first) / (safeGap * 1000)) + 1)
+  // Exact fixed-gap policies retain their configured maximum. Capacity still
+  // leaves accumulated polling slack before the exclusive end of the window.
+  const scheduledMinGap = Math.min(safeGap, policy.maxGapSeconds) * 1000
+  for (let retained = Math.min(count, capacity); retained > 0; retained--) {
+    const proposed = buildSmartSchedule(date, retained, bufferedPolicy, seed, new Date(first))
+    const slots: Date[] = []
+    for (const slot of proposed) {
+      const previous = slots[slots.length - 1]?.getTime()
+      const lower = previous === undefined ? first : previous + scheduledMinGap
+      const upper = Math.min(end, previous === undefined ? end : previous + policy.maxGapSeconds * 1000)
+      let target = freeAt(Math.max(slot.getTime(), lower))
+      if (target > upper) target = freeAt(lower)
+      if (target > upper) break
+      slots.push(new Date(target))
+    }
+    if (slots.length === retained) return slots
+  }
+  return []
+}
+
 function discount(offer: OfferInput): number {
   if (typeof offer.discountPercent === 'number') return offer.discountPercent
   if (!offer.originalPrice || offer.originalPrice <= offer.discountedPrice) return 0
@@ -1325,6 +1380,7 @@ export class SmartCampaignService {
   ): Promise<SmartPlanItem[]> {
     const items: SmartPlanItem[] = []
     const dailySelectedIdentities = new Set<string>()
+    const dailyAccountSlots: Date[] = []
     const settings = plan.settings as {
       audiences: Record<string, SmartAudiencePolicy>
       audienceProfiles?: NicheIntelligenceOverrides
@@ -1452,8 +1508,15 @@ export class SmartCampaignService {
       for (let dayOffset = 0; dayOffset < plan.days; dayOffset++) {
         const date = addDays(plan.startDate, dayOffset)
         const dayPolicy = { ...policy, startTime: explicitSmartStart(planningTiming, date, policy.startTime) }
+        const schedule = (count: number) => daily
+          ? buildDailySmartSchedule(date, count, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt,
+            dailyAccountSlots, audiences.length - audiences.indexOf(audience) - 1)
+          : buildSmartSchedule(date, count, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt)
+        const configuredDayStart = smartZonedInstant(date, dayPolicy.startTime, policy.timezone)
+        const earliestSendAt = date === planningLocalDate && planningNow > configuredDayStart ? planningNow : undefined
         const capacity = Math.min(
           policy.dailyCap,
+          ...(daily ? [schedule(policy.dailyCap).length] : []),
           Math.floor(
             ((minutes(dayPolicy.endTime) - minutes(dayPolicy.startTime)) * 60) / policy.minGapSeconds,
           ) + 1,
@@ -1461,11 +1524,6 @@ export class SmartCampaignService {
         const maximum = capacity
         const categoryLimit = Math.max(1, Math.ceil(maximum * 0.25))
         const chosen: SmartPlanItem[] = []
-        const configuredDayStart = smartZonedInstant(date, dayPolicy.startTime, policy.timezone)
-        const earliestSendAt =
-          date === planningLocalDate && planningNow > configuredDayStart
-            ? planningNow
-            : undefined
         const dayPool = eligible.filter((item) => !globallySelected.has(item.id))
         const dayCandidates = policy.dailySelection
           ? [...dailyMixedPriceOrder(dayPool.filter(item => !item.repeatFallback), capacity),
@@ -1493,13 +1551,12 @@ export class SmartCampaignService {
           const tentative = [...chosen, item]
           let tentativeSlots: Date[]
           try {
-            tentativeSlots = buildSmartSchedule(
-              date, tentative.length, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt,
-            )
+            tentativeSlots = schedule(tentative.length)
           } catch (error) {
             if (!(error instanceof AppError) || error.statusCode !== 409) throw error
             break
           }
+          if (tentativeSlots.length !== tentative.length) break
           if (tentative.some((candidate, index) =>
             !isEvidenceFresh(candidate.observedAt, tentativeSlots[index], policy.freshnessHours))) continue
           chosen.push(item)
@@ -1520,11 +1577,12 @@ export class SmartCampaignService {
             const tentative = [...chosen, item]
             let candidateSlots: Date[]
             try {
-              candidateSlots = buildSmartSchedule(date, tentative.length, dayPolicy, `${plan.uuid}:${audience.slug}:${date}`, earliestSendAt)
+              candidateSlots = schedule(tentative.length)
             } catch (error) {
               if (!(error instanceof AppError) || error.statusCode !== 409) throw error
               break
             }
+            if (candidateSlots.length !== tentative.length) break
             if (tentative.some((candidate, index) => !isEvidenceFresh(candidate.observedAt, candidateSlots[index], policy.freshnessHours))) continue
             item.warnings = [...new Set([...item.warnings, 'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
             chosen.push(item)
@@ -1532,13 +1590,8 @@ export class SmartCampaignService {
             chosenIds.add(item.id)
           }
         }
-        const slots = buildSmartSchedule(
-          date,
-          chosen.length,
-          dayPolicy,
-          `${plan.uuid}:${audience.slug}:${date}`,
-          earliestSendAt,
-        )
+        const slots = schedule(chosen.length)
+        if (daily) dailyAccountSlots.push(...slots)
         chosen.forEach((item, index) => {
           item.state = 'SELECTED'
           item.date = date
@@ -1760,6 +1813,7 @@ export class SmartCampaignService {
         const immediate = settings.global?.startNow && plan.startDate === getSmartLocalDate(new Date(), plan.timezone)
           ? immediateTiming(plan.startDate, plan.audienceSlugs.map(slug => settings.audiences[slug].timezone))
           : undefined
+        const dailyAccountSlots: Date[] = []
         for (const item of items) if (item.state !== 'SELECTED') item.scheduledAt = undefined
         for (const slug of plan.audienceSlugs) {
           const basePolicy = settings.audiences[slug]
@@ -1781,10 +1835,12 @@ export class SmartCampaignService {
             const earliest = date === getSmartLocalDate(new Date(), policy.timezone)
               ? new Date(Date.now() + (daily || immediate ? 0 : policy.minGapSeconds * 1000))
               : undefined
+            const schedule = (count: number) => daily
+              ? buildDailySmartSchedule(date, count, dayPolicy, `${plan.uuid}:${slug}:${date}:review`, earliest,
+                dailyAccountSlots, plan.audienceSlugs.length - plan.audienceSlugs.indexOf(slug) - 1)
+              : buildSmartSchedule(date, count, dayPolicy, `${plan.uuid}:${slug}:${date}:review`, earliest)
             if (daily) {
-              const first = Math.ceil(Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0) / 60_000) * 60_000
-              const available = smartZonedInstant(date, dayPolicy.endTime, policy.timezone).getTime() - first - Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)
-              const capacity = Math.max(0, Math.floor(available / (policy.minGapSeconds * 1000)) + 1)
+              const capacity = schedule(dayItems.length).length
               if (dayItems.length > capacity) {
                 const ranked = [...dayItems].sort((a, b) => Number(Boolean(a.repeatFallback)) - Number(Boolean(b.repeatFallback)) || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
                 if (ranked.filter(item => item.pinned).length > capacity) throw ConflictError('A seleção fixa excede a janela restante.')
@@ -1798,7 +1854,8 @@ export class SmartCampaignService {
               }
             }
             if (!dayItems.length) continue
-            const slots = buildSmartSchedule(date, dayItems.length, dayPolicy, `${plan.uuid}:${slug}:${date}:review`, earliest)
+            const slots = schedule(dayItems.length)
+            if (daily) dailyAccountSlots.push(...slots)
             dayItems.forEach((item, index) => {
               if (!isEvidenceFresh(new Date(item.observedAt), slots[index], policy.freshnessHours))
                 throw ConflictError(`Atualize a evidência de oferta antes de agendar "${item.product.title}"`)
@@ -1949,6 +2006,7 @@ export class SmartCampaignService {
       const approvalNow = new Date()
       const daily = plan.settings.dailyAutomation as { minimumItems?: number; startTime?: string; endTime?: string; repeatCooldownDays?: number; repeatFallbackReady?: boolean } | undefined
       const dailySelectedIdentities = new Set<string>()
+      const dailyAccountSlots: Date[] = []
       const residualCapacity = async (groupId: string, date: string, policy: SmartAudiencePolicy) => {
         const reserved = await SmartSend.count({ where: { userId, connectionScope, groupId, localDate: date,
           status: { [Op.in]: RESERVED_SEND_STATUSES } }, transaction })
@@ -2000,10 +2058,12 @@ export class SmartCampaignService {
           if (date === getSmartLocalDate(approvalNow, policy.timezone)) {
             earliest = settings.global?.startNow || plan.settings.dailyAutomation ? approvalNow : new Date(approvalNow.getTime() + policy.minGapSeconds * 1000)
           }
+          const schedule = (count: number) => daily
+            ? buildDailySmartSchedule(date, count, dayPolicy, `${plan.uuid}:${slug}:${date}:approved`, earliest,
+              dailyAccountSlots, usedSlugs.length - usedSlugs.indexOf(slug) - 1)
+            : buildSmartSchedule(date, count, dayPolicy, `${plan.uuid}:${slug}:${date}:approved`, earliest)
           if (daily && options.automatic) {
-            const first = Math.ceil(Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0) / 60_000) * 60_000
-            const available = smartZonedInstant(date, dayPolicy.endTime, policy.timezone).getTime() - first - Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)
-            const capacity = Math.max(0, Math.floor(available / (policy.minGapSeconds * 1000)) + 1)
+            const capacity = schedule(dayItems.length).length
             const groupCapacities = await Promise.all(audience.destinations.map(destination => residualCapacity(destination.groupId, date, policy)))
             const retained = await reconcileDailyApproval({
               items: approvalItems.filter(item => item.audienceSlug === slug && item.date === date && ['SELECTED', 'RESERVE'].includes(item.state)),
@@ -2015,7 +2075,7 @@ export class SmartCampaignService {
               conflict: item => dailyOfferAliases(item.product).some(alias => histories!.has(alias)),
               repeatsReady: Boolean(daily.repeatFallbackReady),
               aliases: item => dailySelectionAliases(item.product), occupied: dailySelectedIdentities,
-              schedule: count => buildSmartSchedule(date, count, dayPolicy, `${plan.uuid}:${slug}:${date}:approved`, earliest),
+              schedule,
               fresh: (item, slot) => Boolean(item.observedAt && isEvidenceFresh(new Date(item.observedAt), slot, policy.freshnessHours)),
               maxStandouts: policy.maxStandouts,
             })
@@ -2046,10 +2106,7 @@ export class SmartCampaignService {
             dayItems = dayItems.filter(item => item.state === 'SELECTED')
             if (dayItems.length < minimum) throw new AppError('Não há produtos elegíveis suficientes na seleção diária.', 409,
               conflicts ? 'DAILY_NOVELTY_CONFLICT' : 'DAILY_INVENTORY_SHORTAGE')
-            const first = Math.max(smartZonedInstant(date, dayPolicy.startTime, policy.timezone).getTime(), earliest?.getTime() ?? 0)
-            const roundedFirst = Math.ceil(first / 60_000) * 60_000
-            const seconds = Math.floor((smartZonedInstant(date, dayPolicy.endTime, policy.timezone).getTime() - roundedFirst - Math.max(1, (policy.windowEndBufferSeconds ?? 0) * 1000)) / 1000)
-            const capacity = Math.max(0, Math.floor(seconds / policy.minGapSeconds) + 1)
+            const capacity = schedule(dayItems.length).length
             if (capacity < minimum) throw new AppError('Não há janela suficiente para a seleção diária.', 409, 'LATE_ANALYSIS')
             if (dayItems.length > capacity) {
               const ranked = [...dayItems].sort((a, b) => Number(Boolean(a.repeatFallback)) - Number(Boolean(b.repeatFallback)) || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score)
@@ -2064,13 +2121,8 @@ export class SmartCampaignService {
             }
             for (const item of dayItems) dailySelectionAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
           }
-          const slots = buildSmartSchedule(
-            date,
-            dayItems.length,
-            dayPolicy,
-            `${plan.uuid}:${slug}:${date}:approved`,
-            earliest,
-          )
+          const slots = schedule(dayItems.length)
+          if (daily) dailyAccountSlots.push(...slots)
           dayItems.forEach((item, index) => {
             item.scheduledAt = slots[index].toISOString()
           })

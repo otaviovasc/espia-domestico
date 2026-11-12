@@ -617,8 +617,8 @@ export class SmartCampaignSender {
         return { kind: 'blocked', reason: 'O plano não está agendado.' }
       }
       if (freshPlan.settings.dailyAutomation && await hasDailyProductConflict(send.userId, plan.id, plan.uuid, freshSend.offer, transaction, { ...(freshPlan.settings.dailyAutomation as { repeatCooldownDays?: number }), groupIds: [freshSend.groupId], now })) {
-        await this.finishInTransaction(freshSend, SMART_SEND_STATUS.SKIPPED, 'Produto reservado ou entregue por outro plano após a coleta diária.', transaction)
-        return { kind: 'skipped', reason: 'Conflito com outro plano.' }
+        await this.finishInTransaction(freshSend, SMART_SEND_STATUS.SKIPPED, 'Produto reservado, incerto ou dentro do intervalo de repetição após a coleta diária.', transaction)
+        return { kind: 'skipped', reason: 'Conflito com reserva ou histórico de entregas.' }
       }
 
       const legacyRunning = await sequelize.query<{ exists: boolean }>(

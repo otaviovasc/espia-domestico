@@ -573,11 +573,11 @@ test('real operator retry finishing near the capacity cutoff rejoins without SQL
   t.mock.timers.setTime(new Date(`${date}T12:47:00Z`).getTime())
   await smart.processPendingAnalysis(plan.id)
   await plan.reload()
-  for (const slug of ['domestica', 'masculino']) assert.equal(plan.items.filter(item => item.state === 'SELECTED' && item.audienceSlug === slug).length, 28, 'Qualified reserves must fill category-driven shortages')
+  for (const slug of ['domestica', 'masculino']) assert.equal(plan.items.filter(item => item.state === 'SELECTED' && item.audienceSlug === slug).length, 27, 'Qualified reserves fill shortages within the remaining cadence headroom')
   assert.ok(plan.items.some(item => item.warnings?.some(warning => /Diversidade de categorias flexibilizada/.test(warning))))
   await service.tick(f.config)
   assert.equal((await f.run()).status, 'SCHEDULED')
-  assert.equal(await SmartSend.count({ where: { planId: plan.id } }), 56)
+  assert.equal(await SmartSend.count({ where: { planId: plan.id } }), 54)
   assert.equal(f.calls.collect, 1)
 })
 
@@ -640,7 +640,7 @@ test('operator and automatic approval accept a qualified partial day while early
     const audiences = await SmartAudience.findAll({ where: { userId: f.user.id } })
     const policies = Object.fromEntries(audiences.map(a => [a.slug, { ...a.policy, spreadAcrossWindow: true, windowEndBufferSeconds: 120,
       dailySelection: { minRating: 4.5, minSoldCount: 100, minFitScore: 80, minCommercialScore: 60 } }]))
-    const count = mode === 'reviewLate' ? 27 : mode === 'cadenceLate' ? 29 : 5
+    const count = mode === 'reviewLate' ? 26 : mode === 'cadenceLate' ? 28 : 5
     const items = ['domestica', 'masculino'].flatMap((slug, audience) => Array.from({ length: mode === 'cadenceLate' ? count + 1 : count }, (_, index) => ({
       id: randomUUID(), audienceSlug: slug, date, state: 'SELECTED', fitScore: 95, score: 95, reason: 'Qualified partial selection',
       category: `category-${index}`, warnings: [], standout: false, observedAt: new Date().toISOString(),
@@ -757,7 +757,7 @@ test('operator and automatic approval accept a qualified partial day while early
       }
       assert.ok(ticks < 200, 'Late-cycle polling must converge')
       const delivered = await SmartSend.findAll({ where: { planId: plan.id }, order: [['sentAt', 'ASC']] })
-      assert.equal(delivered.filter(send => send.status === 'SENT').length, 58, 'Thirty-second polling with five-second acceptance latency should deliver the approved late cycle')
+      assert.equal(delivered.filter(send => send.status === 'SENT').length, 56, 'Thirty-second polling with five-second acceptance latency should deliver the fitted late cycle')
       assert.ok(delivered.every(send => send.sentAt < new Date(`${date}T22:00:00Z`)))
       for (const slug of ['domestica', 'masculino']) {
         const audience = delivered.filter(send => send.audienceSlug === slug)
@@ -819,7 +819,7 @@ test('real daily collection-to-approval-to-sender honors late capacity and catch
   await service.tick(f.config)
   assert.equal((await f.run()).status, 'SCHEDULED')
   const rows = await SmartSend.findAll({ where: { planId: pending.id }, order: [['scheduledAt', 'ASC']] })
-  assert.equal(rows.length, 58) // capacity trims 30 to 29 per audience
+  assert.equal(rows.length, 56) // Polling/provider headroom trims 30 to 28 per audience.
   assert.ok(rows.every(row => row.messageIntro === 'PRATICIDADE NA SUA ROTINA'), 'Classification copy reaches queued daily sends without standout calls')
   assert.ok(rows.every(row => row.offer.productId !== conflicting.product.productId))
   await pending.reload()
@@ -837,7 +837,10 @@ test('real daily collection-to-approval-to-sender honors late capacity and catch
   await first.reload()
   assert.equal(first.status, 'SKIPPED', JSON.stringify({ result, status: first.status, lastError: first.lastError }))
   assert.ok(result.skipped >= 1)
-  assert.equal(calls, 1) // only the other audience's first product was sent
+  assert.equal(calls, 0) // The other audience has its own account slot.
+  t.mock.timers.setTime(new Date(rows.find(row => row.audienceSlug === 'masculino').scheduledAt).getTime())
+  await sender.processDue()
+  assert.equal(calls, 1)
   assert.equal(await ProductGroupDelivery.count({ where: { userId: f.user.id, planUuid: pending.uuid, status: 'SENT' } }), 1)
   await pending.reload()
   const duplicatePlan = await SmartPlan.create({ userId: f.user.id, status: 'REVIEW', startDate: pending.startDate, days: 1,
@@ -2194,4 +2197,120 @@ test('daily cooldown catches known models sold under different listing IDs witho
   await cooldownDelivery(f, blender, 40)
   const cooled = await history(cooldownOffer('MLB99886104', 'Liquidificador Turbo Power Mondial 550W - L-99 FB'))
   assert.deepEqual(cooled, { conflict: false, repeat: true })
+})
+
+test('09:26 approval reserves enough cadence headroom and staggers audiences through the last slot', async t => {
+  const f = await approvalFixture(t, '2026-11-09T12:26:17.592Z')
+  const items = ['domestica', 'masculino'].flatMap(audienceSlug =>
+    Array.from({ length: 30 }, () => f.item({ audienceSlug })))
+  const p = await f.plan(items)
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 56, '28 sends fit per audience with polling/provider headroom; extras remain reserves')
+  assert.equal(p.items.filter(i => i.state === 'RESERVE').length, 4)
+  for (let i = 1; i < rows.length; i++) {
+    assert.ok(rows[i].scheduledAt - rows[i - 1].scheduledAt >= 60000, 'Shared account needs distinct polling slots')
+  }
+  for (const slug of ['domestica', 'masculino']) {
+    const audience = rows.filter(row => row.audienceSlug === slug)
+    for (let i = 1; i < audience.length; i++) {
+      assert.ok(audience[i].scheduledAt - audience[i - 1].scheduledAt >= 1260000)
+    }
+  }
+})
+
+test('full daily approval staggers equal last slots before the exclusive window end', async t => {
+  const f = await approvalFixture(t)
+  const p = await f.plan(['domestica', 'masculino'].flatMap(audienceSlug =>
+    Array.from({ length: 30 }, () => f.item({ audienceSlug }))))
+  const rows = await f.approve(p)
+  assert.equal(rows.length, 60)
+  assert.ok(rows.at(-1).scheduledAt <= new Date('2026-11-09T21:58:00Z'))
+  for (let i = 1; i < rows.length; i++) {
+    assert.ok(rows[i].scheduledAt - rows[i - 1].scheduledAt >= 60000)
+  }
+})
+
+test('late daily sender delivers every fitted slot with 30-second polling and provider latency', async t => {
+  const f = await approvalFixture(t, '2026-11-09T12:26:17.592Z')
+  const p = await f.plan(['domestica', 'masculino'].flatMap(audienceSlug =>
+    Array.from({ length: 30 }, () => f.item({ audienceSlug }))))
+  const rows = await f.approve(p)
+  const groups = new Map(rows.map(row => [row.groupId, { id: row.groupId, name: row.audienceSlug, size: 20, announceOnly: false }]))
+  const { SmartCampaignSender } = require('../dist/services/SmartCampaignSender')
+  let providerCalls = 0
+  const provider = { async sendText() {
+    providerCalls++
+    t.mock.timers.setTime(Date.now() + 3000)
+    return { id: randomUUID(), status: 'sent' }
+  } }
+  const sender = new SmartCampaignSender(provider,
+    { async requireConnectedContext() { return { scope: f.scope, creds: {} } } },
+    { async requireCurrentGroups() { return groups } }, { now: () => new Date() })
+  let ticks = 0
+  while (ticks++ < 200) {
+    const next = await SmartSend.findOne({ where: { planId: p.id, status: 'PENDING' }, order: [['scheduledAt', 'ASC']] })
+    if (!next) break
+    // Wake on the worker's fixed polling grid, independent of acceptance latency.
+    t.mock.timers.setTime(Math.ceil(Math.max(Date.now() + 1, next.scheduledAt.getTime()) / 30000) * 30000)
+    await sender.processDue()
+  }
+  assert.ok(ticks < 200)
+  const finished = await SmartSend.findAll({ where: { planId: p.id } })
+  assert.deepEqual(finished.filter(row => row.status !== 'SENT').map(row => row.lastError), [])
+  assert.equal(providerCalls, rows.length)
+  assert.ok(finished.every(row => row.sentAt < new Date('2026-11-09T22:00:00Z')))
+})
+
+test('legacy lifetime variant history explains a conflict without another plan or a self-conflict', async t => {
+  const f = await approvalFixture(t, '2026-11-09T20:16:30Z')
+  const old = f.item()
+  old.product.title = 'Caixa De Som Bluetooth JBL Boombox 4 PRETA'
+  const current = f.item()
+  current.product.title = 'Jbl Boombox 4 Caixa De Som Com Bluetooth Cor Laranja'
+  const p = await f.plan([current])
+  const { dailyProductHistory } = require('../dist/services/dailyNovelty')
+  const { offerIdentity } = require('../dist/utils/offerIdentity')
+  const delivery = (item, planUuid, sentAt) => ProductGroupDelivery.create({
+    userId: f.user.id, connectionScope: f.scope, groupId: 'domestica@g.us', groupName: 'QA',
+    offerIdentity: offerIdentity(item.product), offerSource: 'mercadolivre', offerProductId: item.product.productId,
+    offerUrl: item.product.affiliateUrl, offerTitle: item.product.title, status: 'SENT', sentAt, planUuid,
+  })
+  await delivery(old, null, new Date('2026-09-28T18:09:00Z'))
+  // The exact current product in this plan must be excluded from history.
+  await delivery(current, p.uuid, new Date('2026-11-09T12:48:00Z'))
+  const policy = { groupIds: ['domestica@g.us'], now: new Date() }
+  assert.deepEqual(await dailyProductHistory(f.user.id, p.id, p.uuid, current.product, policy), { conflict: true, repeat: false })
+  assert.deepEqual(await dailyProductHistory(f.user.id, p.id, p.uuid, current.product, { ...policy, repeatCooldownDays: 30 }), { conflict: false, repeat: true })
+  assert.equal(await SmartPlan.count({ where: { userId: f.user.id } }), 1)
+})
+
+test('identical end slots fit the account gap normally but a delayed last minute can skip the second', async t => {
+  const f = await approvalFixture(t, '2026-11-09T21:00:00Z')
+  const { SmartCampaignSender } = require('../dist/services/SmartCampaignSender')
+  for (const minute of ['58:00', '59:45']) {
+    t.mock.timers.setTime(new Date('2026-11-09T21:00:00Z').getTime())
+    const p = await f.plan(['domestica', 'masculino'].map(audienceSlug => f.item({ audienceSlug })))
+    const rows = await f.approve(p)
+    await SmartSend.update({ scheduledAt: new Date('2026-11-09T21:58:00Z') }, { where: { planId: p.id } })
+    const groups = new Map(rows.map(row => [row.groupId, { id: row.groupId, name: row.audienceSlug }]))
+    const provider = { async sendText() { t.mock.timers.setTime(Date.now() + 3000); return { id: randomUUID(), status: 'sent' } } }
+    const sender = new SmartCampaignSender(provider,
+      { async requireConnectedContext() { return { scope: f.scope, creds: {} } } },
+      { async requireCurrentGroups() { return groups } }, { now: () => new Date() })
+    t.mock.timers.setTime(new Date(`2026-11-09T21:${minute}Z`).getTime())
+    await sender.processDue()
+    if (minute === '58:00') {
+      t.mock.timers.setTime(new Date('2026-11-09T21:58:30Z').getTime())
+      await sender.processDue()
+      assert.equal(await SmartSend.count({ where: { planId: p.id, status: 'SENT' } }), 2)
+    } else {
+      assert.equal(await SmartSend.count({ where: { planId: p.id, status: 'SENT' } }), 1)
+      const skipped = await SmartSend.findOne({ where: { planId: p.id, status: 'SKIPPED' } })
+      assert.equal(skipped.lastError, 'O intervalo seguro ultrapassa a janela diária.')
+    }
+    // Independent cases: the prior case must not supply either cadence history.
+    await ProductGroupDelivery.destroy({ where: { userId: f.user.id } })
+    await SmartSend.destroy({ where: { planId: p.id } })
+    await p.destroy()
+  }
 })
