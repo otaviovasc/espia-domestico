@@ -17,6 +17,7 @@ import { SafeSender, type SendResult } from '@/services/SafeSender'
 import { DEFAULT_TEMPLATE } from '@/utils/messageTemplate'
 import { offerIdentityAliases } from '@/utils/offerIdentity'
 import { logger } from '@/utils/logger'
+import { dailySendReason } from '@/utils/dailyObservability'
 import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
 import { evaluateSmartProductEligibility } from '@/utils/smartProductEligibility'
 import { hasDailyProductConflict } from '@/services/dailyNovelty'
@@ -290,11 +291,13 @@ export class SmartCampaignSender {
         } catch (error) {
           result.blocked++
           await this.releaseUnexpectedClaim(claimed.send, error)
-          logger.error(
-            { error, smartSendId: claimed.send.id, smartPlanId: claimed.plan.id },
+          outcome = 'rescheduled'
+          if (!claimed.plan.settings?.dailyAutomation) logger.error(
+            { code: 'INTERNAL_SEND_ERROR', smartSendId: claimed.send.id, smartPlanId: claimed.plan.id },
             'Smart campaign send failed before provider confirmation',
           )
         }
+        await this.logSendOutcome(claimed, outcome ?? 'blocked')
         if (outcome === 'unknown') {
           // Stop this plan before another overdue row can be claimed. UNKNOWN
           // requires an operator decision and must never create a catch-up burst.
@@ -306,6 +309,28 @@ export class SmartCampaignSender {
       return result
     } finally {
       this.processing = false
+    }
+  }
+
+  private async logSendOutcome({ send, plan }: ClaimedSend, attemptOutcome: string): Promise<void> {
+    if (!plan.settings?.dailyAutomation) return
+    try {
+      // Read the committed result: processClaim can lose its lease before settling.
+      // Never log an exception, provider response, offer, destination or lastError.
+      const settled = await SmartSend.findByPk(send.id, { attributes: ['status', 'lastError', 'scheduledAt'] })
+      if (!settled) return
+      const outcome = settled.status === SMART_SEND_STATUS.PENDING
+        ? (attemptOutcome === 'rescheduled' ? 'rescheduled' : 'blocked')
+        : settled.status === SMART_SEND_STATUS.SENDING ? 'unknown' : settled.status.toLowerCase()
+      logger.info({
+        planUuid: plan.uuid, smartSendId: send.id,
+        audience: ['domestica', 'masculino'].includes(send.audienceSlug) ? send.audienceSlug : 'other',
+        slot: send.scheduledAt.toISOString(), outcome,
+        reasonCode: dailySendReason(settled.status, settled.lastError),
+        ...(outcome === 'rescheduled' ? { nextSlot: settled.scheduledAt.toISOString() } : {}),
+      }, 'Daily send outcome')
+    } catch {
+      logger.warn({ planUuid: plan.uuid, smartSendId: send.id, code: 'SEND_OUTCOME_LOG_UNAVAILABLE' }, 'Daily send outcome unavailable')
     }
   }
 
@@ -437,7 +462,7 @@ export class SmartCampaignSender {
 
   private async readyForProvider(send: SmartSend, plan: SmartPlan): Promise<boolean> {
     if (!this.canSendNow(send, plan)) return false
-    if (!plan.settings.dailyAutomation) return true
+    if (!plan.settings?.dailyAutomation) return true
     const ready = await sequelize.transaction(async transaction => {
       const keys = deliveryKeys(send)
       await advisoryLock(transaction, keys.account)
@@ -944,38 +969,42 @@ export class SmartCampaignSender {
   }
 
   private async recoverExpiredSending(now: Date): Promise<void> {
-    await sequelize.transaction(async (transaction) => {
+    const { recovered, exhausted } = await sequelize.transaction(async (transaction) => {
       // Recovery and plan state change share one transaction. Otherwise a
       // second worker could claim the next PENDING row in the small window
       // between marking UNKNOWN and pausing the plan.
-      await sequelize.query(
+      const recovered = await sequelize.query<{ id: number; uuid: string; audience_slug: string; scheduled_at: Date; daily: boolean }>(
         `WITH recovered AS (
            UPDATE smart_sends
               SET status = 'UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
                   last_error = 'O processo perdeu a confirmação após iniciar o envio. Verifique o WhatsApp antes de reenviar.',
                   updated_at = :now
             WHERE status = 'SENDING' AND lease_expires_at < :now
-            RETURNING plan_id
-         )
-         UPDATE smart_plans sp
-            SET status = 'PAUSED', completed_at = NULL, updated_at = :now
-           FROM (SELECT DISTINCT plan_id FROM recovered) affected
-          WHERE sp.id = affected.plan_id AND sp.status = 'SCHEDULED'`,
-        { replacements: { now }, transaction, type: QueryTypes.UPDATE },
+            RETURNING id, plan_id, audience_slug, scheduled_at
+         ), paused AS (
+           UPDATE smart_plans sp
+              SET status = 'PAUSED', completed_at = NULL, updated_at = :now
+             FROM (SELECT DISTINCT plan_id FROM recovered) affected
+            WHERE sp.id = affected.plan_id AND sp.status = 'SCHEDULED' RETURNING sp.id
+         ) SELECT r.id, r.audience_slug, r.scheduled_at, p.uuid, p.settings ? 'dailyAutomation' AS daily
+           FROM recovered r JOIN smart_plans p ON p.id=r.plan_id`,
+        { replacements: { now }, transaction, type: QueryTypes.SELECT },
       )
-      await sequelize.query(
+      const exhausted = await sequelize.query<{ id: number; uuid: string; audience_slug: string; scheduled_at: Date; daily: boolean }>(
         `WITH exhausted AS (
            UPDATE smart_sends
               SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL,
                   last_error = 'Limite de tentativas verificadas pelo operador atingido.', updated_at = :now
             WHERE status = 'PENDING' AND attempts >= max_attempts
-            RETURNING plan_id
-         )
-         UPDATE smart_plans sp
-            SET status = 'PAUSED', completed_at = NULL, updated_at = :now
-           FROM (SELECT DISTINCT plan_id FROM exhausted) affected
-          WHERE sp.id = affected.plan_id AND sp.status IN ('SCHEDULED', 'PAUSED')`,
-        { replacements: { now }, transaction, type: QueryTypes.UPDATE },
+            RETURNING id, plan_id, audience_slug, scheduled_at
+         ), paused AS (
+           UPDATE smart_plans sp
+              SET status = 'PAUSED', completed_at = NULL, updated_at = :now
+             FROM (SELECT DISTINCT plan_id FROM exhausted) affected
+            WHERE sp.id = affected.plan_id AND sp.status IN ('SCHEDULED', 'PAUSED') RETURNING sp.id
+         ) SELECT r.id, r.audience_slug, r.scheduled_at, p.uuid, p.settings ? 'dailyAutomation' AS daily
+           FROM exhausted r JOIN smart_plans p ON p.id=r.plan_id`,
+        { replacements: { now }, transaction, type: QueryTypes.SELECT },
       )
       await sequelize.query(
         `UPDATE smart_plans sp
@@ -987,7 +1016,16 @@ export class SmartCampaignSender {
             )`,
         { replacements: { now }, transaction, type: QueryTypes.UPDATE },
       )
+      return { recovered, exhausted }
     })
+    // Awaiting the transaction guarantees these rows committed before logging.
+    for (const [rows, outcome, reasonCode] of [[recovered, 'unknown', 'LEASE_EXPIRED_AFTER_PROVIDER'], [exhausted, 'failed', 'ATTEMPTS_EXHAUSTED']] as const) {
+      for (const row of rows.filter(row => row.daily)) logger.info({
+        planUuid: row.uuid, smartSendId: row.id,
+        audience: ['domestica', 'masculino'].includes(row.audience_slug) ? row.audience_slug : 'other',
+        slot: new Date(row.scheduled_at).toISOString(), outcome, reasonCode,
+      }, 'Daily send outcome')
+    }
   }
 
   private async abortPreparedDelivery(
@@ -1304,7 +1342,7 @@ export class SmartCampaignSender {
       const active = (progress.pending ?? 0) + (progress.sending ?? 0)
       const unknown = progress.unknown ?? 0
       const failed = progress.failed ?? 0
-      await SmartPlan.update(
+      const [updated] = await SmartPlan.update(
         failed > 0
           ? { status: SMART_PLAN_STATUS.PAUSED, completedAt: null, progress }
           : unknown > 0
@@ -1314,6 +1352,24 @@ export class SmartCampaignSender {
               : { progress },
         { where: { id: planId, status: SMART_PLAN_STATUS.SCHEDULED } },
       )
+      if (updated === 1 && active === 0 && unknown === 0 && failed === 0) {
+        const plan = await SmartPlan.findByPk(planId, { attributes: ['uuid', 'settings', 'startDate'] })
+        if (!plan?.settings.dailyAutomation) continue
+        const rows = await sequelize.query<{ audience_slug: string; sent: number; skipped: number; failed: number }>(
+          `SELECT audience_slug, COUNT(*) FILTER (WHERE status='SENT')::int AS sent,
+            COUNT(*) FILTER (WHERE status='SKIPPED')::int AS skipped,
+            COUNT(*) FILTER (WHERE status='FAILED')::int AS failed
+           FROM smart_sends WHERE plan_id=:planId GROUP BY audience_slug`,
+          { replacements: { planId }, type: QueryTypes.SELECT },
+        )
+        const audiences = Object.fromEntries(['domestica', 'masculino'].map(slug => {
+          const row = rows.find(row => row.audience_slug === slug)
+          return [slug, { sent: row?.sent ?? 0, skipped: row?.skipped ?? 0, failed: row?.failed ?? 0 }]
+        }))
+        // Only the worker winning SCHEDULED -> COMPLETED emits this summary.
+        // Existing DELIVERY_GAPS/SEND_FAILED operator alerts remain unchanged.
+        logger.info({ planUuid: plan.uuid, date: plan.startDate, audiences }, 'Daily delivery summary')
+      }
     }
   }
 

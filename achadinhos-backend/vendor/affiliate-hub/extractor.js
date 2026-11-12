@@ -1018,6 +1018,7 @@
     const search = normalizeSearch(options);
     const excludedProductIds = normalizeExcludedProductIds(options.excludeProductIds);
     const quality = normalizeDailyQuality(options.quality);
+    const rejectedByReason = { offAudience: 0, freshness: 0, price: 0, quality: 0, commission: 0, other: 0 };
     let qualityRejected = 0;
     let excludedPreviouslyUsed = 0;
     const counts = { ...search.keywordMatchedCounts };
@@ -1037,10 +1038,11 @@
           return false;
         }
         const matched = matchedKeywords(card, search);
-        if (search.keywords.length && (search.matchMode === "all" ? matched.length !== search.keywords.length : !matched.length)) return false;
+        if (search.keywords.length && (search.matchMode === "all" ? matched.length !== search.keywords.length : !matched.length)) { rejectedByReason.offAudience += 1; return false; }
         if (quality) {
           const signals = marketplaceSignals(card.visible?.text);
           if (signals?.rating === undefined || signals.rating < quality.minRating || signals.soldCount === undefined || signals.soldCount < quality.minSoldCount || signals.timeLimited) {
+            rejectedByReason[signals?.timeLimited ? "freshness" : "quality"] += 1;
             qualityRejected += 1;
             return false;
           }
@@ -1051,7 +1053,13 @@
         const qualification = eligibilityQualification(card, search);
         eligibilityCounts.examined += 1;
         eligibilityCounts[qualification.matches ? "qualified" : qualification.reason] += 1;
-        if (!qualification.matches) return false;
+        if (!qualification.matches) {
+          const priceRejected = qualification.reason === "missing_price" ||
+            (search.minPrice != null && qualification.evidence.priceBrl < search.minPrice) ||
+            (search.maxPrice != null && qualification.evidence.priceBrl > search.maxPrice);
+          rejectedByReason[priceRejected ? "price" : qualification.reason === "political_content" ? "other" : "commission"] += 1;
+          return false;
+        }
         card.commission = qualification.evidence;
         card.searchMatch = { keywords: matched, matchMode: search.matchMode, matchStyle: search.matchStyle, ...normalizeEligibility(search) };
         for (const keyword of matched) counts[keyword] += 1;
@@ -1075,6 +1083,7 @@
       discoveredCards: discovered.discovery.uniqueSeen,
       exportedCards: cards.length,
       excludedPreviouslyUsed,
+      dailyCollection: { rejectedByReason },
       ...(quality ? { quality, qualityRejected } : {}),
       discovery: discovered.discovery,
       cards

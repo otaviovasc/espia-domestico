@@ -1,9 +1,10 @@
 {
   "repository": "https://github.com/Marlos001/afiliados-extension",
   "revision": "c0123e6ef67be47dea1275bfe02992c6bb55c120",
-  "includesUncommittedChanges": false,
+  "includesUncommittedChanges": true,
+  "localPatch": "Numeric daily collection rejection telemetry only",
   "sha256": {
-    "extractor.js": "30565e8a7840f5795abd62d0f4e7421a1a70920bb9c5ef05206336e752bc9878",
+    "extractor.js": "996ca0e641e9729b36a882e750fef396d1638888343c771cf0f0b248be699d0e",
     "page-fiber.js": "c71bd878d3a596b20ef4fb14f9fee164cbd0b85a108b9afe88a37c9edf66e8b9"
   }
 }

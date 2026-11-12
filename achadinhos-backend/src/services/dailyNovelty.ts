@@ -70,6 +70,8 @@ export async function dailyExcludedProductIds(
 
 export interface DailyProductConflicts extends Set<string> {
   repeats: Set<string>
+  /** Observability only; never used to relax a conflict. */
+  cooldowns?: Set<string>
 }
 
 export async function dailyProductConflicts(
@@ -80,7 +82,7 @@ export async function dailyProductConflicts(
   transaction?: Transaction,
   policy: DailyRepeatPolicy = {},
 ): Promise<DailyProductConflicts> {
-  const conflicts: DailyProductConflicts = Object.assign(new Set<string>(), { repeats: new Set<string>() })
+  const conflicts: DailyProductConflicts = Object.assign(new Set<string>(), { repeats: new Set<string>(), cooldowns: new Set<string>() })
   if (!offers.length) return conflicts
   const candidates = offers.map(offer => ({
     aliases: dailyOfferAliases(offer),
@@ -89,9 +91,11 @@ export async function dailyProductConflicts(
       ? normalizedMercadoLivreProductId(offer.productId) ?? null : null,
     variant_pattern: offer.source?.trim().toLowerCase() === 'mercadolivre' ? dailyVariantPattern(offer) : null,
   }))
-  const rows = await sequelize.query<{ aliases: string[]; conflict: boolean; repeat: boolean }>(
+  const rows = await sequelize.query<{ aliases: string[]; conflict: boolean; repeat: boolean; cooldown: boolean }>(
     `${dailyHistory}
     SELECT c.aliases, BOOL_OR(${blockedHistory}) AS conflict,
+      BOOL_OR(h.status='SENT' AND h.sent_at IS NOT NULL AND :cooldown > 0
+        AND h.group_id IN (:groupIds) AND h.sent_at > :cutoff) AS cooldown,
       BOOL_OR(h.status='SENT' AND h.sent_at IS NOT NULL AND :cooldown > 0
         AND h.group_id IN (:groupIds) AND h.sent_at <= :cutoff) AS repeat
     FROM JSONB_TO_RECORDSET(CAST(:candidates AS JSONB)) AS c(aliases TEXT[], product_id TEXT, affiliate_url TEXT, variant_pattern TEXT)
@@ -106,6 +110,7 @@ export async function dailyProductConflicts(
   )
   for (const row of rows) {
     if (row.conflict) row.aliases.forEach(alias => conflicts.add(alias))
+    if (row.cooldown) row.aliases.forEach(alias => conflicts.cooldowns!.add(alias))
     if (row.repeat) row.aliases.forEach(alias => conflicts.repeats.add(alias))
   }
   for (const alias of conflicts) conflicts.repeats.delete(alias)
