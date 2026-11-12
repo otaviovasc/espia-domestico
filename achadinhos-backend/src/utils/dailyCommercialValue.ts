@@ -29,7 +29,7 @@ export function dailyPriceBand(price: number): 'affordable' | 'middle' | 'premiu
  * resulting bands through the day rather than putting all expensive offers last.
  */
 export function dailyMixedPriceOrder<T extends { score: number; product: { discountedPrice: number; title?: string }; category?: string }>(
-  input: T[], target: number,
+  input: T[], target: number, maxPerType = 2,
 ): T[] {
   const remaining = [...input].sort((a, b) => b.score - a.score)
   const variants = new Set<string>()
@@ -40,19 +40,20 @@ export function dailyMixedPriceOrder<T extends { score: number; product: { disco
     else if (variant) variants.add(variant)
   }
   const picked: T[] = []
-  const take = (item: T) => { picked.push(item); remaining.splice(remaining.indexOf(item), 1) }
-  const quota = target >= 2 ? Math.max(1, Math.floor(target * 0.2)) : 0
-  for (const band of ['affordable', 'premium'] as const) {
-    for (const item of remaining.filter(i => dailyPriceBand(i.product.discountedPrice) === band).slice(0, quota)) take(item)
-  }
   const categories = new Map<string, number>()
-  for (const item of picked) categories.set(dailyCategoryKey(item.category), (categories.get(dailyCategoryKey(item.category)) ?? 0) + 1)
-  const preferredCategoryLimit = Math.max(1, Math.ceil(target * 0.25))
-  while (picked.length < Math.min(target, input.length)) {
-    const best = remaining.find(item => (categories.get(dailyCategoryKey(item.category)) ?? 0) < preferredCategoryLimit) ?? remaining[0]
-    if (!best) break
-    take(best)
-    categories.set(dailyCategoryKey(best.category), (categories.get(dailyCategoryKey(best.category)) ?? 0) + 1)
+  const quota = target >= 2 ? Math.max(1, Math.floor(target * 0.2)) : 0
+  const key = (item: T) => dailyCategoryKey(item.category, item.product.title)
+  let limit = maxPerType
+  while (picked.length < Math.min(target, input.length) && remaining.length) {
+    const available = remaining.filter(item => (categories.get(key(item)) ?? 0) < limit)
+    if (!available.length) { limit++; continue }
+    const needed = (['affordable', 'premium'] as const).find(band =>
+      picked.filter(item => dailyPriceBand(item.product.discountedPrice) === band).length < quota
+      && available.some(item => dailyPriceBand(item.product.discountedPrice) === band))
+    const best = (needed && available.find(item => dailyPriceBand(item.product.discountedPrice) === needed)) || available[0]
+    picked.push(best)
+    remaining.splice(remaining.indexOf(best), 1)
+    categories.set(key(best), (categories.get(key(best)) ?? 0) + 1)
   }
   const bands = ['affordable', 'middle', 'premium'] as const
   const queues = bands.map(band => picked.filter(i => dailyPriceBand(i.product.discountedPrice) === band))

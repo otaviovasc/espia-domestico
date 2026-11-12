@@ -1402,7 +1402,7 @@ test('exhausted discovery still delegates qualified reserve backfill to approval
   assert.equal((await f.run()).status, 'SCHEDULED')
 })
 
-function cooldownOffer(id, title = 'Panela QA', price = 100) {
+function cooldownOffer(id, title = `Panela QA ${id}`, price = 100) {
   return { title, productId: id, source: 'mercadolivre', currency: 'BRL', discountedPrice: price,
     originalPrice: price * 2, commissioned: true, commissionedUrlStatus: 'generated_from_page_state', commissionRate: 15,
     affiliateUrl: `https://meli.la/cooldown-${id}`, extensionEvidence: { extractedAt: new Date().toISOString(),
@@ -2531,4 +2531,78 @@ test('collection telemetry distinguishes recent destination cooldown from uncert
   assert.equal(summary.candidatesReturned, 3)
   assert.equal(summary.rejectedByReason.cooldown, 1)
   assert.equal(summary.rejectedByReason.novelty, 1)
+})
+
+test('canonical title keys and PostgreSQL patterns agree for variants and distinct models', async () => {
+  const { dailyNormalizedTitle, dailyNormalizedTitleSql, dailyVariantPattern } = require('../dist/utils/dailyAssortment')
+  const titles = ['Jogo De Lençol Queen Micropercal 400 Fios 3pç Cor Rosa',
+    'Jogo De Lençol King Micropercal 400 Fios 4 Peças Verde',
+    'Tênis Esportivo Corrida Olympikus Cor Preto Tamanho 42 Br',
+    'Chaleira Elétrica Inox Mondial 127v Vendido por Loja A',
+    'Chaleira Elétrica Inox Mondial 220v',
+    'Coberdrom Casal Queen Size Sherpa Dupla Face R$179,98',
+    'Lixeira Inteligente Sensor 16L Branco', 'Lixeira Inteligente Sensor 20L',
+    'Kit Furadeira Impacto Modelo X10 127v', 'Capa para JBL Boombox 4 Preto',
+    'Lixeira Inteligente Smart 16l Automática Recarregável Preto Sensor Banheiro E Cozinha Moderna',
+    'Lixeira Com Sensor Automático 16 Litros Branco Inteligente Abre Fácil Toque Cesto Quarto Banheiro Cozinha',
+    'Kit 3 Bermuda Sarja Preto Tamanho GG', 'Chaleira Elétrica Inox Mondial 127/220v']
+  const rows = await sequelize.query(`SELECT title, ${dailyNormalizedTitleSql('title')} canonical FROM UNNEST(ARRAY[:titles]::text[]) title`, { replacements: { titles }, type: 'SELECT' })
+  for (const row of rows) {
+    assert.equal(row.canonical, dailyNormalizedTitle(row.title), row.title)
+    const [matched] = await sequelize.query('SELECT :canonical ~ :pattern matched', { replacements: { canonical: row.canonical, pattern: dailyVariantPattern({ title: row.title }) }, type: 'SELECT' })
+    assert.equal(matched.matched, true)
+  }
+})
+
+test('generic title variants share group cooldown, expired repeat and uncertainty rules', async () => {
+  const f = await setup()
+  const { dailyProductHistory } = require('../dist/services/dailyNovelty')
+  const old = cooldownOffer('MLB99886201', 'Jogo De Lençol Queen Micropercal 400 Fios 3pç Rosa')
+  await cooldownDelivery(f, old, 1)
+  const changed = cooldownOffer('MLB99886202', 'Jogo De Lençol King Micropercal 400 Fios 4 Peças Verde', 123)
+  const history = (offer, groupIds = ['domestica@g.us'], days = 30) => dailyProductHistory(f.user.id, -1, randomUUID(), offer, { repeatCooldownDays: days, groupIds })
+  assert.deepEqual(await history(changed), { conflict: true, repeat: false })
+  assert.deepEqual(await history(changed, ['masculino@g.us']), { conflict: false, repeat: false })
+  assert.deepEqual(await history({ ...changed, title: 'Jogo De Lençol King Micropercal 200 Fios Verde' }), { conflict: false, repeat: false })
+  await ProductGroupDelivery.update({ sentAt: new Date(Date.now() - 40 * 86400000) }, { where: { userId: f.user.id } })
+  assert.deepEqual(await history(changed), { conflict: false, repeat: true })
+  assert.deepEqual(await history(changed, ['domestica@g.us'], 0), { conflict: true, repeat: false })
+  await ProductGroupDelivery.update({ status: 'SENDING', sentAt: null }, { where: { userId: f.user.id } })
+  assert.deepEqual(await history(changed, ['masculino@g.us']), { conflict: true, repeat: false })
+})
+
+test('daily worker fills 30 distinct products under title-type caps and spaces final approval', async () => {
+  const f = await setup()
+  const { dailyCategoryKey, dailyVariantKey } = require('../dist/utils/dailyAssortment')
+  const names = ['Parafusadeira Bosch', 'Compressor de Ar', 'Smartwatch Digital', 'Tênis Corrida',
+    'Lixeira Inox', 'Jogo de Lençol', 'Cobertor Sherpa', 'Chaleira Inox', 'Aspirador Compacto',
+    'Cafeteira Elétrica', 'Liquidificador Turbo', 'Escova Secadora', 'Panela Pressão', 'Fritadeira Digital',
+    'Perfume Colônia', 'Fone Bluetooth', 'Webcam Digital', 'Moletom Masculino']
+  const products = names.flatMap((name,n) => [1,2].map(model => cooldownOffer(`MLB${99887000+n*10+model}`, `${name} modelo ${model}`)))
+  // A flood of high-value drill listings must not consume the preferred slots.
+  products.push(...[3,4,5,6].map(n => cooldownOffer(`MLB${99887900+n}`, `Parafusadeira Bosch modelo ${n}`, 600)))
+  const { smart } = cooldownSmart(f,products)
+  const created = await smart.createPlan(f.user.id,{ requestId: randomUUID(),date: dailyWindow(f.config).date,days:1,
+    audienceSlugs:['domestica'],payloads:[{name:'type-caps',json:{}}],campaignStartTime:'08:00',
+    settings:{dailyCap:30,maxStandouts:0,dailySelection:{maxPerType:2,minRating:4.5,minSoldCount:100,minFitScore:75,minCommercialScore:60}},
+  },{runId:randomUUID(),localDate:dailyWindow(f.config).date,minimumItems:30,startTime:'08:00',endTime:'19:00',repeatCooldownDays:30})
+  const plan = await SmartPlan.findOne({where:{uuid:created.id}})
+  // Retained plans predate this optional field; they must get the same default.
+  const legacySettings = structuredClone(plan.settings)
+  delete legacySettings.audiences.domestica.dailySelection.maxPerType
+  await plan.update({ settings: legacySettings })
+  const check = () => {
+    const selected = plan.items.filter(i=>i.state==='SELECTED').sort((a,b)=>a.sendOrder-b.sendOrder)
+    assert.equal(selected.length,30)
+    assert.equal(new Set(selected.map(i=>dailyVariantKey(i.product))).size,30)
+    const types=selected.map(i=>dailyCategoryKey(i.category,i.product.title))
+    for(const type of new Set(types))assert.ok(types.filter(t=>t===type).length<=2,type)
+    for(let i=1;i<types.length;i++)assert.notEqual(types[i-1],types[i])
+  }
+  await smart.processPendingAnalysis(plan.id)
+  await plan.reload();check()
+  await smart.approve(f.user.id,plan.uuid,plan.revision,{automatic:true})
+  await plan.reload();check()
+  assert.equal(plan.status,'SCHEDULED')
+  assert.equal(await SmartSend.count({where:{planId:plan.id}}),30)
 })

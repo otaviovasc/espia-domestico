@@ -48,7 +48,7 @@ import { env } from '@/config/env'
 import { explicitSmartStart, type SmartCampaignTiming } from '@/utils/smartCampaignTiming'
 import { collectedSmartCommissionRate, evaluateSmartProductEligibility, smartCommissionRate as commissionRate } from '@/utils/smartProductEligibility'
 import { dailyDemandScore, dailyEvidenceReasons, dailySelectionReasons } from '@/utils/dailyProductSelection'
-import { dailyCategoryKey } from '@/utils/dailyAssortment'
+import { dailyCategoryKey, dailySpacedOrder } from '@/utils/dailyAssortment'
 import { dailyCommercialValue, dailyMixedPriceOrder } from '@/utils/dailyCommercialValue'
 import { dailyOfferAliases, dailySelectionAliases, dailyProductConflicts, dailyRepeatCooldown } from '@/services/dailyNovelty'
 import { reconcileDailyApproval } from '@/services/dailyApprovalReconciliation'
@@ -1522,72 +1522,53 @@ export class SmartCampaignService {
           ) + 1,
         )
         const maximum = capacity
-        const categoryLimit = Math.max(1, Math.ceil(maximum * 0.25))
+        const categoryLimit = policy.dailySelection ? policy.dailySelection.maxPerType ?? 2 : Math.max(1, Math.ceil(maximum * 0.25))
         const chosen: SmartPlanItem[] = []
         const dayPool = eligible.filter((item) => !globallySelected.has(item.id))
         const dayCandidates = policy.dailySelection
-          ? [...dailyMixedPriceOrder(dayPool.filter(item => !item.repeatFallback), capacity),
-            ...dailyMixedPriceOrder(dayPool.filter(item => item.repeatFallback), capacity)] : dayPool
+          ? [...dailyMixedPriceOrder(dayPool.filter(item => !item.repeatFallback), capacity, categoryLimit),
+            ...dailyMixedPriceOrder(dayPool.filter(item => item.repeatFallback), capacity, categoryLimit)] : dayPool
         // Evenly distribute this audience's best remaining offers across the selected dates.
         const remainingDays = plan.days - dayOffset
         const audienceTarget = Math.ceil(
           Math.min(eligible.length - selected.length, capacity * remainingDays) / remainingDays,
         )
-        for (const item of dayCandidates) {
-          const scheduledToday = selected.filter((entry) => entry.date === date).length
-          if (chosen.length >= Math.min(maximum, audienceTarget - scheduledToday)) break
-          if (chosen.length >= maximum) break
-          if (daily && dailySelectionAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
-          const category = policy.dailySelection ? dailyCategoryKey(item.category) : item.category ?? 'outros'
-          const categoryKey = `${date}:${category}`
-          const count = audienceCategoryCounts.get(categoryKey) ?? 0
-          if (count >= categoryLimit) {
-            if (!policy.dailySelection) continue
-            item.warnings = [...new Set([...item.warnings,
-              'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
-          }
-          // Adding a row can change all gaps when the window is nearly full.
-          // Recheck the exact deterministic schedule for every chosen offer.
-          const tentative = [...chosen, item]
-          let tentativeSlots: Date[]
-          try {
-            tentativeSlots = schedule(tentative.length)
-          } catch (error) {
-            if (!(error instanceof AppError) || error.statusCode !== 409) throw error
-            break
-          }
-          if (tentativeSlots.length !== tentative.length) break
-          if (tentative.some((candidate, index) =>
-            !isEvidenceFresh(candidate.observedAt, tentativeSlots[index], policy.freshnessHours))) continue
-          chosen.push(item)
-          if (daily) dailySelectionAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
-          audienceCategoryCounts.set(categoryKey, count + 1)
-        }
-        // Diversity is a preference for daily plans, never an artificial quality
-        // shortage. Fill only to the required minimum using already-qualified
-        // reserves, rechecking the exact schedule and evidence for every choice.
-        const dailyMinimum = (plan.settings.dailyAutomation as { minimumItems?: number } | undefined)?.minimumItems ?? 0
-        const minimumTarget = Math.min(dailyMinimum, maximum, audienceTarget)
-        if (chosen.length < minimumTarget) {
-          const chosenIds = new Set(chosen.map(item => item.id))
-          for (const item of dayCandidates) {
-            if (chosen.length >= minimumTarget) break
-            if (chosenIds.has(item.id)) continue
-            if (daily && dailySelectionAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
-            const tentative = [...chosen, item]
-            let candidateSlots: Date[]
-            try {
-              candidateSlots = schedule(tentative.length)
-            } catch (error) {
-              if (!(error instanceof AppError) || error.statusCode !== 409) throw error
-              break
+        // First exhaust qualified alternatives under the type cap; relax only
+        // to fill remaining slots, exhausting fresh stock before cooled repeats.
+        // Identity/quality/freshness are never relaxed.
+        const target = Math.min(maximum, audienceTarget)
+        for (const repeat of policy.dailySelection ? [false, true] : [false]) {
+          for (const relax of policy.dailySelection ? [false, true] : [false]) {
+            const pending = dayCandidates.filter(item => !policy.dailySelection || Boolean(item.repeatFallback) === repeat)
+            while (pending.length) {
+              if (relax) pending.sort((a, b) => {
+                const count = (item: SmartPlanItem) => audienceCategoryCounts.get(`${date}:${dailyCategoryKey(item.category, item.product.title)}`) ?? 0
+                return Number(Boolean(a.repeatFallback)) - Number(Boolean(b.repeatFallback)) || count(a) - count(b)
+              })
+              const item = pending.shift()!
+              if (chosen.length >= target) break
+              if (chosen.includes(item)) continue
+              if ((daily || policy.dailySelection) && dailySelectionAliases(item.product).some(identity => dailySelectedIdentities.has(identity))) continue
+              const category = policy.dailySelection ? dailyCategoryKey(item.category, item.product.title) : item.category ?? 'outros'
+              const categoryKey = `${date}:${category}`
+              const count = audienceCategoryCounts.get(categoryKey) ?? 0
+              if (count >= categoryLimit && !relax) continue
+              const tentative = policy.dailySelection ? dailySpacedOrder([...chosen, item]) : [...chosen, item]
+              let tentativeSlots: Date[]
+              try {
+                tentativeSlots = schedule(tentative.length)
+              } catch (error) {
+                if (!(error instanceof AppError) || error.statusCode !== 409) throw error
+                break
+              }
+              if (tentativeSlots.length !== tentative.length) break
+              if (tentative.some((candidate, index) => !isEvidenceFresh(candidate.observedAt, tentativeSlots[index], policy.freshnessHours))) continue
+              if (count >= categoryLimit) item.warnings = [...new Set([...item.warnings,
+                'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
+              chosen.splice(0, chosen.length, ...tentative)
+              if (daily || policy.dailySelection) dailySelectionAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
+              audienceCategoryCounts.set(categoryKey, count + 1)
             }
-            if (candidateSlots.length !== tentative.length) break
-            if (tentative.some((candidate, index) => !isEvidenceFresh(candidate.observedAt, candidateSlots[index], policy.freshnessHours))) continue
-            item.warnings = [...new Set([...item.warnings, 'Diversidade de categorias flexibilizada para completar a janela; critérios de qualidade mantidos.'])]
-            chosen.push(item)
-            if (daily) dailySelectionAliases(item.product).forEach(identity => dailySelectedIdentities.add(identity))
-            chosenIds.add(item.id)
           }
         }
         const slots = schedule(chosen.length)
@@ -2078,6 +2059,7 @@ export class SmartCampaignService {
               schedule,
               fresh: (item, slot) => Boolean(item.observedAt && isEvidenceFresh(new Date(item.observedAt), slot, policy.freshnessHours)),
               maxStandouts: policy.maxStandouts,
+              maxPerType: policy.dailySelection?.maxPerType ?? 2,
             })
             selected.splice(0, selected.length, ...approvalItems.filter(item => item.state === 'SELECTED'))
             dayItems = retained

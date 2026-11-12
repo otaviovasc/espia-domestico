@@ -26,11 +26,10 @@ const { DailyAutomationService } = require('../dist/services/DailyAutomationServ
 const { OfferImportService } = require('../dist/services/OfferImportService')
 const { DailyAutomationConfigSchema, dailyItemTarget } = require('../dist/config/dailyAutomation')
 const { dailyPriceBand } = require('../dist/utils/dailyCommercialValue')
-const { dailyCategoryKey, dailyVariantKey } = require('../dist/utils/dailyAssortment')
-const { dailyProductConflicts, dailyOfferAliases } = require('../dist/services/dailyNovelty')
+const { dailyCategoryKey } = require('../dist/utils/dailyAssortment')
+const { dailyProductConflicts, dailyOfferAliases, dailySelectionAliases } = require('../dist/services/dailyNovelty')
 global.fetch = async () => { throw new Error('Network calls forbidden in replay') }
 for (const name of ['node:http', 'node:https']) for (const method of ['request', 'get']) require(name)[method] = () => { throw new Error('HTTP calls forbidden in replay') }
-const dailySelectionAliases = product => [...dailyOfferAliases(product), ...(dailyVariantKey(product) ? [dailyVariantKey(product)] : [])]
 const snapshot = JSON.parse(fs.readFileSync(option('--snapshot'), 'utf8'))
 const RealDate = Date
 let instant
@@ -45,6 +44,16 @@ const histogram = values => values.reduce((counts, value) => { counts[value] = (
 const average = values => values.length ? Math.round(values.reduce((a,b) => a+b, 0) / values.length * 10) / 10 : null
 function metrics(items, slug) {
   const all = items.filter(i => i.audienceSlug === slug), selected = all.filter(i => i.state === 'SELECTED')
+  selected.sort((a,b) => new Date(a.scheduledAt) - new Date(b.scheduledAt))
+  const types = selected.map(i => dailyCategoryKey(i.category,i.product.title))
+  const typeCounts = histogram(types)
+  const seen = new Set()
+  let duplicates = 0
+  for (const item of selected) {
+    const aliases = dailySelectionAliases(item.product)
+    if (aliases.some(alias => seen.has(alias))) duplicates++
+    aliases.forEach(alias => seen.add(alias))
+  }
   const ages = selected.map(i => (new Date(i.scheduledAt) - new Date(i.observedAt)) / 3600000)
   return { selected: selected.length, reserves: all.filter(i => i.state === 'RESERVE' && !i.repeatFallback).length,
     repeatReserves: all.filter(i => i.state === 'RESERVE' && i.repeatFallback).length,
@@ -54,17 +63,19 @@ function metrics(items, slug) {
     repeatSelected: selected.filter(i => i.repeatFallback).length, freshSelected: selected.filter(i => !i.repeatFallback).length,
     bands: histogram(selected.map(i => dailyPriceBand(i.product.discountedPrice))),
     categories: histogram(selected.map(i => i.category ?? 'outros')), categoryFamilies: histogram(selected.map(i => dailyCategoryKey(i.category))),
-    variantDuplicates: selected.length - new Set(selected.map(i => dailySelectionAliases(i.product).at(-1))).size,
+    productTypes: typeCounts, maxPerType: Math.max(0,...Object.values(typeCounts)),
+    adjacentTypes: types.filter((type,index) => index > 0 && types[index-1] === type).length,
+    variantDuplicates: duplicates,
     affordableTarget: Math.floor(selected.length * 0.2), premiumTarget: Math.floor(selected.length * 0.2), averageScore: average(selected.map(i => i.score)),
     averageFit: average(selected.map(i => i.fitScore ?? 0)), averageAgeHours: average(ages), maxAgeHours: ages.length ? Math.max(...ages) : null,
     staleAtSlot: selected.filter((i,index) => ages[index] < 0 || ages[index] > 24).length,
-    products: selected.map(i => ({ id: i.product.productId, title: i.product.title, price: i.product.discountedPrice, category: i.category, score: i.score, fit: i.fitScore, observedAt: i.observedAt, scheduledAt: i.scheduledAt })) }
+    products: selected.map(i => ({ id: i.product.productId, title: i.product.title, price: i.product.discountedPrice, category: i.category, type: dailyCategoryKey(i.category,i.product.title), repeatFallback: Boolean(i.repeatFallback), score: i.score, fit: i.fitScore, observedAt: i.observedAt, scheduledAt: i.scheduledAt })) }
 }
 function policy(config, current = {}) {
   return { ...current, dailyCap: 30, startTime: config.startTime, endTime: config.endTime, minGapSeconds: config.minIntervalMinutes*60,
     maxGapSeconds: config.maxIntervalMinutes*60, spreadAcrossWindow: true, windowEndBufferSeconds: 120, freshnessHours: 24,
     timezone: config.timezone, excludePolitical: true, maxStandouts: 0,
-    dailySelection: { minRating: config.minRating, minSoldCount: config.minSoldCount, minFitScore: config.minFitScore, minCommercialScore: config.minCommercialScore } }
+    dailySelection: { maxPerType: config.maxPerType ?? 2, minRating: config.minRating, minSoldCount: config.minSoldCount, minFitScore: config.minFitScore, minCommercialScore: config.minCommercialScore } }
 }
 function asOf(row, time, delivery = false) {
   if (new RealDate(row.created_at) > new RealDate(time)) return null
@@ -209,21 +220,30 @@ async function scenario(source, forecast = false, refresh = true, delayed = fals
       await plan.reload()
     }
     const reserveDepth = {}
+    const usableReserveTypes = {}
+    const cappedInventoryCapacity = {}
     for (const audience of audiences) {
       const all = plan.items.filter(i => i.audienceSlug === audience.slug)
       const conflicts = await dailyProductConflicts(user.id, plan.id, plan.uuid, all.map(i => i.product), undefined, { repeatCooldownDays: 30, groupIds: audience.destinations.map(d => d.groupId) })
       const occupied = new Set(plan.items.filter(i => i.state === 'SELECTED').flatMap(i => dailySelectionAliases(i.product)))
       let usable = 0
+      const types = histogram(all.filter(i => i.state === 'SELECTED').map(i => dailyCategoryKey(i.category,i.product.title)))
+      const reserveTypes = {}
       for (const item of all.filter(i => i.state === 'RESERVE' && !i.repeatFallback)) {
         const aliases = dailySelectionAliases(item.product)
         if (aliases.some(alias => occupied.has(alias)) || dailyOfferAliases(item.product).some(alias => conflicts.has(alias))) continue
         const age = (new Date(`${targetDate}T21:58:00Z`) - new Date(item.observedAt))/3600000
         if (age < 0 || age > 24) continue
         usable++; aliases.forEach(alias => occupied.add(alias))
+        const type = dailyCategoryKey(item.category,item.product.title)
+        types[type] = (types[type] ?? 0) + 1
+        reserveTypes[type] = (reserveTypes[type] ?? 0) + 1
       }
       reserveDepth[audience.slug] = usable
+      usableReserveTypes[audience.slug] = reserveTypes
+      cappedInventoryCapacity[audience.slug] = Object.values(types).reduce((sum,n) => sum + Math.min(n,config.maxPerType ?? 2),0)
     }
-    return { source: source.uuid, date: targetDate, usableReserveDepth: reserveDepth, historicalMode: source.settings.dailyAutomation ? 'daily' : 'manual-counterfactual',
+    return { source: source.uuid, date: targetDate, usableReserveDepth: reserveDepth, usableReserveTypes, cappedInventoryCapacity, historicalMode: source.settings.dailyAutomation ? 'daily' : 'manual-counterfactual',
       forecast, refresh, delayed, collectionAt, approvalAt: new Date().toISOString(), history, counters, planning, approved: Object.fromEntries(source.audience_slugs.map(slug => [slug,metrics(plan.items,slug)])),
       status: plan.status, hold, progress: plan.progress, trace,
       actual: { status: source.status, approvedAt: source.approved_at, selected: Object.fromEntries(source.audience_slugs.map(slug => [slug,metrics(source.items,slug)])),
