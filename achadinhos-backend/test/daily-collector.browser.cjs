@@ -1,3 +1,4 @@
+require('reflect-metadata')
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs/promises')
@@ -17,7 +18,7 @@ test('real Chromium runs vendored share/exclusion scripts and closes after both 
   const originalLaunch = chromium.launch.bind(chromium)
   let browser
   let navigations = 0
-  let failSecondAudience = false
+  let failSecondAudience = false, expired = false
   chromium.launch = async options => {
     browser = await originalLaunch(options)
     const originalNewContext = browser.newContext.bind(browser)
@@ -27,11 +28,14 @@ test('real Chromium runs vendored share/exclusion scripts and closes after both 
       const originalNewPage = context.newPage.bind(context)
       context.newPage = async () => {
         const page = await originalNewPage()
+        const wait = page.waitForSelector.bind(page)
+        page.waitForSelector = (selector, options) => wait(selector, expired ? { ...options, timeout: 100 } : options)
         await page.route('**/*', route => {
           assert.equal(new URL(route.request().url()).pathname, '/afiliados/hub')
           assert.match(route.request().headers()['user-agent'], /Chrome\//)
           assert.doesNotMatch(route.request().headers()['user-agent'], /HeadlessChrome/)
           navigations++
+          if (expired) return route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<p>Entre na sua conta</p>' })
           if (failSecondAudience && navigations === 2) return route.abort('failed')
           return route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<html><head><meta charset="utf-8"></head><body><ul>${['MLB12345678', 'MLB87654321', 'MLB87654322'].map((id, i) => `
             <li class="poly-card"><a class="poly-component__title" href="https://www.mercadolivre.com.br/p/${id}">Panela de pressão ${i}</a>
@@ -77,6 +81,24 @@ test('real Chromium runs vendored share/exclusion scripts and closes after both 
     assert.ok(JSON.parse(await fs.readFile(statePath, 'utf8')).cookies.some(cookie => cookie.name === 'qa_rotated_session'))
     assert.equal((await fs.stat(statePath)).mode & 0o777, 0o600)
     assert.equal(browser.isConnected(), false)
+    failSecondAudience = false
+    expired = true
+    let recoveries = 0
+    const recovered = await new DailyProductCollector().collect([{ slug: 'domestica', options: { limit: 1, keywords: ['panela'] } }],
+      new AbortController().signal, undefined, async page => {
+        recoveries++
+        assert.ok(page.url().endsWith('/afiliados/hub'))
+        expired = false
+        return true
+      })
+    assert.equal(recoveries, 1)
+    assert.equal(recovered[0].json.cards.length, 1)
+    const authenticatedState = await fs.readFile(statePath, 'utf8')
+    expired = true
+    const { MlLoginRecoveryError } = require('../dist/services/MlLoginRecovery')
+    await assert.rejects(new DailyProductCollector().collect([{ slug: 'domestica', options: {} }], new AbortController().signal,
+      undefined, async () => { throw new MlLoginRecoveryError('EMAIL_PROOF') }), { code: 'AUTH_REQUIRED', step: 'EMAIL_PROOF' })
+    assert.equal(await fs.readFile(statePath, 'utf8'), authenticatedState)
   } finally {
     chromium.launch = originalLaunch
     await browser?.close().catch(() => {})

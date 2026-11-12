@@ -15,13 +15,17 @@ import { AppError } from '@/middleware/Error/AppError'
 import { SmartAudience } from '@/database/models/SmartAudience'
 import { Campaign, CAMPAIGN_STATUS_ENUM } from '@/database/models/Campaign'
 import { SmartPlan, SMART_PLAN_STATUS } from '@/database/models/SmartPlan'
-import { SmartCampaignService } from '@/services/SmartCampaignService'
+import { SmartCampaignService, smartZonedInstant, isEvidenceFresh } from '@/services/SmartCampaignService'
 import {
   DailyCollectionError,
   DailyProductCollector,
   DAILY_AUDIENCES,
   type DailyPayload,
+  type DailyCollectionRequest,
 } from '@/services/DailyProductCollector'
+import { SavedProduct } from '@/database/models/SavedProduct'
+import { OfferSchema, type OfferInput } from '@/dtos/campaign'
+import { MlLoginRecovery } from '@/services/MlLoginRecovery'
 import { DailyAutomationAlerts } from '@/services/DailyAutomationAlerts'
 import { DAILY_DISCOVERY_ROUND_SIZE, dailyDiscoveryPage } from '@/utils/dailyDiscovery'
 import { dailyPlanCoverage } from '@/utils/dailyPlanCoverage'
@@ -39,7 +43,7 @@ interface DailyRun {
   payloads: DailyPayload[] | null
   plan_uuid: string | null
   attempts: number
-  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>>; repeatSelected?: number }
+  discovery_state?: { round?: number; pending?: DailyPayload[]; exhausted?: boolean; collected?: boolean; initialRounds?: Partial<Record<(typeof DAILY_AUDIENCES)[number], number>>; repeatSelected?: number; offline?: boolean }
   approval_attempts: number
   approval_revision: number | null
   last_error: string | null
@@ -52,12 +56,16 @@ export function dailyRequestId(userId: number, date: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`
 }
 
+function payloadOffers(payload: DailyPayload): unknown[] {
+  return Array.isArray(payload.json.cards) ? payload.json.cards : Array.isArray(payload.json.offers) ? payload.json.offers : []
+}
+
 const APPROVAL_RECOVERABLE_CODES = [
   'SMART_PLAN_REVISION_CONFLICT', 'SMART_CONNECTION_CHANGED', 'SMART_BINDINGS_CHANGED',
   'DAILY_NOVELTY_CONFLICT', 'DAILY_INVENTORY_SHORTAGE', 'CONFLICT', 'LATE_ANALYSIS',
   'INSUFFICIENT_QUALIFIED_PRODUCTS', 'PREPARATION_DEADLINE_MISSED',
 ]
-const CLAIMABLE_RUN = `((status IN ('COLLECTING','ANALYZING','ANALYSIS_HOLD','RETRY','REPLENISHING')
+const CLAIMABLE_RUN = `((status IN ('COLLECTING','ANALYZING','ANALYSIS_HOLD','RETRY','REPLENISHING','AUTH_REQUIRED')
   OR (config->>'autoApprove'='true' AND approval_attempts<256 AND
     ((status='REVIEW' AND (last_error IS NULL OR last_error IN (:approvalCodes)))
       OR (status='OPERATOR_ATTENTION' AND last_error IN (:approvalCodes)))))
@@ -74,6 +82,7 @@ export class DailyAutomationService {
     @inject(SmartCampaignService) private readonly smart: SmartCampaignService,
     @inject(DailyProductCollector) private readonly collector: DailyProductCollector,
     @inject(DailyAutomationAlerts, { isOptional: true }) private readonly alerts?: DailyAutomationAlerts,
+    @inject(MlLoginRecovery, { isOptional: true }) private readonly login?: MlLoginRecovery,
   ) {}
 
   stop(): void {
@@ -106,6 +115,88 @@ export class DailyAutomationService {
         logger.warn({ dailyRunId: run.id, code: 'ALERT_PERSIST_FAILED' }, 'Daily checkpoint saved; alert persistence failed')
       }
     }
+  }
+
+  /** Leave thirty minutes for analysis/approval before the first target slot. */
+  private collectionDeadline(run: DailyRun): number {
+    return smartZonedInstant(run.local_date, run.config.startTime, run.config.timezone).getTime() - 30 * 60_000
+  }
+
+  private async collect(run: DailyRun, requests: DailyCollectionRequest[], checkpoint?: (payload: DailyPayload) => Promise<void>): Promise<DailyPayload[]> {
+    const remaining = this.collectionDeadline(run) - Date.now()
+    if (remaining <= 0 && (run.attempts > 0 || run.last_error === 'AUTH_REQUIRED')) throw new DailyCollectionError('COLLECTION_TIMEOUT')
+    // A final live attempt is permitted for a late/startup run; once it fails,
+    // collectionBackoff switches durably to inventory, without further browsing.
+    const signal = remaining > 0 ? AbortSignal.any([this.abort.signal, AbortSignal.timeout(remaining)]) : this.abort.signal
+    try {
+      return await this.collector.collect(requests, signal, checkpoint, this.login ? page => this.login!.recover(page, run.config) : undefined)
+    } catch (error) {
+      if (!this.abort.signal.aborted && signal.aborted) throw new DailyCollectionError('COLLECTION_TIMEOUT')
+      throw error
+    }
+  }
+
+  private async collectionBackoff(run: DailyRun, code: string): Promise<void> {
+    const remaining = this.collectionDeadline(run) - Date.now()
+    const offline = remaining <= 0
+    if (offline) {
+      run.discovery_state = { ...run.discovery_state, offline: true, exhausted: true }
+      await this.discoveryCheckpoint(run)
+    }
+    const seconds = offline ? 0 : Math.min(900, 60 * 2 ** Math.min(4, run.attempts), Math.max(1, Math.ceil(remaining / 1000)))
+    await this.requireLease(run)
+    const rows = await sequelize.query<{ id: string }>(`UPDATE daily_automation_runs SET status='RETRY',last_error=:code,
+      attempts=attempts+1,lease_token=NULL,lease_until=NULL,next_attempt_at=NOW() + :seconds * INTERVAL '1 second',updated_at=NOW()
+      WHERE id=:id AND lease_token=:token RETURNING id`, {
+      replacements: { id: run.id, token: run.lease_token, code, seconds }, type: QueryTypes.SELECT,
+    })
+    if (rows.length) await this.alerts?.enqueue(run.config, run.local_date, offline ? `${run.id}:offline` : `${run.id}:${code}`, offline ? 'DAILY_SESSION_FALLBACK' : code).catch(() => {
+      logger.warn({ dailyRunId: run.id, code: 'ALERT_PERSIST_FAILED' }, 'Daily collection retry saved; alert persistence failed')
+    })
+  }
+
+  /** Stored observations only: never renew timestamps or generate affiliate links. */
+  private async offlineInventory(run: DailyRun, audiences: SmartAudience[]): Promise<void> {
+    await this.requireLease(run)
+    const [saved, plans] = await Promise.all([
+      SavedProduct.findAll({ where: { userId: run.user_id }, attributes: ['offer'], order: [['updatedAt', 'DESC']], limit: 1000 }),
+      SmartPlan.findAll({ where: { userId: run.user_id }, attributes: ['input', 'items'], order: [['createdAt', 'DESC']], limit: 20 }),
+    ])
+    const stored = [...saved.map(row => row.offer), ...plans.flatMap(plan => [
+      ...((plan.input as { offers?: OfferInput[] }).offers ?? []),
+      ...plan.items.filter(item => (item.state === 'SELECTED' || item.state === 'RESERVE')).map(item => item.product),
+    ])]
+    const firstSlot = new Date(Math.max(Date.now(), smartZonedInstant(run.local_date, run.config.startTime, run.config.timezone).getTime()))
+    const payloads = [...(run.payloads ?? [])]
+    for (const audience of audiences) {
+      const existing = payloads.filter(p => p.targetAudienceSlug === audience.slug).flatMap(payloadOffers)
+      const identities = new Set(existing.flatMap(card => dailyOfferAliases(card as OfferIdentityInput)))
+      const offers: OfferInput[] = []
+      for (const value of stored) {
+        const parsed = OfferSchema.safeParse(value)
+        if (!parsed.success) continue
+        const offer = parsed.data
+        if (offer.source?.trim().toLowerCase() !== 'mercadolivre' || offer.commissioned !== true || !offer.commissionedUrlStatus
+          || !isEvidenceFresh(offer.extensionEvidence?.extractedAt, firstSlot, Math.min(24, audience.policy.freshnessHours))) continue
+        const aliases = dailyOfferAliases(offer)
+        if (aliases.some(alias => identities.has(alias))) continue
+        aliases.forEach(alias => identities.add(alias))
+        offers.push(offer)
+      }
+      const filtered = await this.filterPayload(run, { name: `offline-${audience.slug}.json`, targetAudienceSlug: audience.slug as DailyPayload['targetAudienceSlug'], json: { offers } })
+      const cards = payloadOffers(filtered).sort((a, b) => Number(Boolean((a as { repeatFallback?: boolean }).repeatFallback)) - Number(Boolean((b as { repeatFallback?: boolean }).repeatFallback)))
+        .slice(0, Math.max(0, run.config.candidateLimit - existing.length))
+      if (cards.length) payloads.push({ ...filtered, json: { offers: cards } })
+    }
+    await this.requireLease(run)
+    run.payloads = payloads
+    await sequelize.query(`UPDATE daily_automation_runs SET payloads=CAST(:payloads AS JSONB),updated_at=NOW() WHERE id=:id AND lease_token=:token`, {
+      replacements: { id: run.id, token: run.lease_token, payloads: JSON.stringify(payloads) },
+    })
+    await this.alerts?.enqueue(run.config, run.local_date, `${run.id}:offline`, 'DAILY_SESSION_FALLBACK').catch(() => {
+      logger.warn({ dailyRunId: run.id, code: 'ALERT_PERSIST_FAILED' }, 'Daily offline inventory saved; alert persistence failed')
+    })
+    if (!payloads.some(payload => payloadOffers(payload).length)) throw new AppError('No eligible offline inventory', 409, 'DAILY_OFFLINE_INVENTORY_EMPTY')
   }
 
   private async approveCheckpoint(run: DailyRun, plan: SmartPlan): Promise<void> {
@@ -157,7 +248,7 @@ export class DailyAutomationService {
   }
 
   private async inventoryWarning(run: DailyRun, payload: DailyPayload, limit = dailyCandidateTarget(run.config)): Promise<void> {
-    const fresh = new Set((Array.isArray(payload.json.cards) ? payload.json.cards : [])
+    const fresh = new Set((payloadOffers(payload))
       .filter(card => !(card as { repeatFallback?: boolean }).repeatFallback)
       .map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter(Boolean)).size
     const required = Math.min(limit, dailyRequiredItems(run.config) * 2)
@@ -201,13 +292,18 @@ export class DailyAutomationService {
     // the same request ID and therefore cannot purchase the same analysis twice.
     const state = run.discovery_state ??= { round: 1 }
     const round = state.round ?? 1
-    if (state.exhausted || this.windowExpired(run.config, run.local_date)) return false
-    const pooled = (run.payloads ?? []).flatMap(p => Array.isArray(p.json.cards) ? p.json.cards : [])
+    const retainedPending = state.offline && state.pending?.some(payload => payloadOffers(payload).length)
+    if ((state.exhausted && !retainedPending) || this.windowExpired(run.config, run.local_date)) return false
+    if (state.offline) {
+      if (!retainedPending) return false
+      state.collected = true // Append the durable partial round without another browser.
+    }
+    const pooled = (run.payloads ?? []).flatMap(p => payloadOffers(p))
     const ids = pooled.map(card => normalizedMercadoLivreProductId((card as { productId?: string }).productId)).filter((id): id is string => Boolean(id))
     const histories = new Map(await Promise.all(audiences.map(async audience => [audience.slug, await this.exclusions(run.user_id, run.config, audience.destinations.map(d => d.groupId), plan)] as const)))
     const requests = DAILY_AUDIENCES.flatMap(slug => {
       if (!coverage.audiences.some(a => a.slug === slug && (a.missing > 0 || !a.completeSchedule || (dailyRepeatCooldown(run.config) && a.selected < dailyItemTarget(run.config))))) return []
-      const existing = (run.payloads ?? []).filter(p => p.targetAudienceSlug === slug).reduce((n, p) => n + (Array.isArray(p.json.cards) ? p.json.cards.length : 0), 0)
+      const existing = (run.payloads ?? []).filter(p => p.targetAudienceSlug === slug).reduce((n, p) => n + (payloadOffers(p).length), 0)
       const audience = audiences.find(a => a.slug === slug)!
       const keywords = dailyDiscoveryPage(slug, audience.profile.keywords, round + (state.initialRounds?.[slug] ?? 0), run.local_date)
       const limit = Math.min(DAILY_DISCOVERY_ROUND_SIZE, run.config.candidateLimit - existing)
@@ -224,7 +320,7 @@ export class DailyAutomationService {
     if (!state.collected) {
       state.pending ??= []
       await this.discoveryCheckpoint(run)
-      const payloads = await this.collector.collect(requests.filter(r => !state.pending?.some(p => p.targetAudienceSlug === r.slug)), this.abort.signal, async payload => {
+      const payloads = await this.collect(run, requests.filter(r => !state.pending?.some(p => p.targetAudienceSlug === r.slug)), async payload => {
         const filtered = await this.filterPayload(run, payload, plan)
         state.pending = [...(state.pending ?? []).filter(p => p.targetAudienceSlug !== payload.targetAudienceSlug), filtered]
         await this.discoveryCheckpoint(run)
@@ -238,7 +334,7 @@ export class DailyAutomationService {
         await this.inventoryWarning(run, payload, requests.find(request => request.slug === payload.targetAudienceSlug)?.options.limit)
     }
     const pending = state.pending ?? []
-    if (pending.some(p => Array.isArray(p.json.cards) && p.json.cards.length)) {
+    if (pending.some(p => payloadOffers(p).length)) {
       await this.requireLease(run)
       await this.smart.appendDailyProducts(run.user_id, plan.uuid, plan.revision, pending, dailyRequestId(run.user_id, `${run.request_id}:round:${round}`))
       // Keep the original extraction timestamps and audience provenance unchanged.
@@ -259,7 +355,7 @@ export class DailyAutomationService {
 
   private async checkpointPayload(run: DailyRun, payload: DailyPayload): Promise<void> {
     payload = await this.filterPayload(run, payload)
-    if (!Array.isArray(payload.json.cards) || !payload.json.cards.length) {
+    if (!payloadOffers(payload).length) {
       await this.requireLease(run)
       await this.inventoryWarning(run, payload)
       return
@@ -322,10 +418,10 @@ export class DailyAutomationService {
   }
 
   private async filterPayload(run: DailyRun, payload: DailyPayload, plan?: SmartPlan): Promise<DailyPayload> {
-    if (!Array.isArray(payload.json.cards)) return payload
-    const offers = payload.json.cards.map(card => {
-      const value = card as { productId?: string; title?: string; commissionedUrl?: string; productUrl?: string } | null
-      const url = value?.commissionedUrl || value?.productUrl
+    if (!payloadOffers(payload).length) return payload
+    const offers = payloadOffers(payload).map(card => {
+      const value = card as { productId?: string; title?: string; affiliateUrl?: string; commissionedUrl?: string; productUrl?: string } | null
+      const url = value?.affiliateUrl || value?.commissionedUrl || value?.productUrl
       return { source: 'mercadolivre', productId: typeof value?.productId === 'string' ? value.productId : undefined,
         title: typeof value?.title === 'string' ? value.title : undefined,
         affiliateUrl: typeof url === 'string' ? url : '' }
@@ -333,12 +429,12 @@ export class DailyAutomationService {
     const audience = await SmartAudience.findOne({ where: { userId: run.user_id, slug: payload.targetAudienceSlug } })
     const conflicts = await dailyProductConflicts(run.user_id, plan?.id ?? null, plan?.uuid ?? null, offers,
       undefined, { ...run.config, groupIds: audience?.destinations.map(d => d.groupId) })
-    const cards = payload.json.cards.flatMap((card, index) => {
+    const cards = payloadOffers(payload).flatMap((card, index) => {
       const aliases = dailyOfferAliases(offers[index])
       if (aliases.some(identity => conflicts.has(identity))) return []
       return [{ ...(card as Record<string, unknown>), repeatFallback: aliases.some(identity => conflicts.repeats.has(identity)) }]
     })
-    return { ...payload, json: { ...payload.json, cards } }
+    return { ...payload, json: { ...payload.json, [Array.isArray(payload.json.cards) ? 'cards' : 'offers']: cards } }
   }
 
   async tick(config: DailyAutomationConfig, now = new Date()): Promise<void> {
@@ -501,24 +597,22 @@ export class DailyAutomationService {
         await this.save(run, 'OPERATOR_ATTENTION', 'SMART_MANUAL_CAMPAIGN_CONFLICT')
         return
       }
-      const missing = ownedPlan ? [] : DAILY_AUDIENCES.filter(
+      if (run.discovery_state?.offline && !ownedPlan) await this.offlineInventory(run, audiences)
+      const missing = ownedPlan || run.discovery_state?.offline ? [] : DAILY_AUDIENCES.filter(
         (slug) =>
           !run.payloads?.some(
             (payload) =>
               payload.targetAudienceSlug === slug &&
-              Array.isArray(payload.json.cards) &&
-              payload.json.cards.length,
+              payloadOffers(payload).length,
           ),
       )
       if (missing.length) {
         const completedIds = (run.payloads ?? []).flatMap((payload) =>
-          Array.isArray(payload.json.cards)
-            ? payload.json.cards
+          payloadOffers(payload)
                 .map((card) =>
                   normalizedMercadoLivreProductId((card as { productId?: string }).productId),
                 )
-                .filter((id): id is string => Boolean(id))
-            : [],
+                .filter((id): id is string => Boolean(id)),
         )
         const histories = new Map(await Promise.all(audiences.map(async audience => [audience.slug,
           [...new Set([...(await this.exclusions(run.user_id, run.config, audience.destinations.map(d => d.groupId))), ...completedIds])]] as const)))
@@ -534,7 +628,7 @@ export class DailyAutomationService {
           await this.save(run, 'REVIEW', 'DISCOVERY_KEYWORDS_EXHAUSTED')
           return
         }
-        const payloads = await this.collector.collect(
+        const payloads = await this.collect(run,
           discoverable.map((slug) => {
             const audience = audiences.find((value) => value.slug === slug)!
             const policy = audience.policy
@@ -557,7 +651,6 @@ export class DailyAutomationService {
               },
             }
           }),
-          this.abort.signal,
           (payload) => this.checkpointPayload(run, payload),
         )
         await this.requireLease(run)
@@ -568,14 +661,13 @@ export class DailyAutomationService {
             run.payloads?.some(
               (payload) =>
                 payload.targetAudienceSlug === slug &&
-                Array.isArray(payload.json.cards) &&
-                payload.json.cards.length,
+                payloadOffers(payload).length,
             ),
           )
         ) {
           if (run.config.planningDaysAhead === 1) {
             for (const slug of discoverable) {
-              if (!run.payloads?.some(p => p.targetAudienceSlug === slug && Array.isArray(p.json.cards) && p.json.cards.length))
+              if (!run.payloads?.some(p => p.targetAudienceSlug === slug && payloadOffers(p).length))
                 state.initialRounds[slug] = (state.initialRounds[slug] ?? 0) + 1
             }
             await this.discoveryCheckpoint(run)
@@ -730,7 +822,7 @@ export class DailyAutomationService {
         !run.plan_uuid &&
         error.payloads?.length === 2 &&
         error.payloads.every(
-          (payload) => Array.isArray(payload.json.cards) && payload.json.cards.length,
+          (payload) => payloadOffers(payload).length,
         )
       ) {
         await sequelize.query(
@@ -744,16 +836,17 @@ export class DailyAutomationService {
           },
         )
       }
+      if (error instanceof DailyCollectionError && ['AUTH_REQUIRED', 'COLLECTION_FAILED', 'COLLECTION_INCOMPLETE', 'COLLECTION_TIMEOUT'].includes(code)) {
+        await this.collectionBackoff(run, code)
+        logger.warn({ dailyRunId: run.id, code, step: error.step }, 'Daily collection deferred with backoff')
+        return
+      }
       const status =
-        code === 'AUTH_REQUIRED'
-          ? 'AUTH_REQUIRED'
-          : ['SESSION_PERSIST_FAILED', 'HISTORY_LIMIT'].includes(code)
-            ? 'CONFIG_REQUIRED'
-            : appError && appError.statusCode >= 400 && appError.statusCode < 500
-              ? 'OPERATOR_ATTENTION'
-              : run.attempts >= 2
-                ? 'FAILED'
-                : 'RETRY'
+        ['SESSION_PERSIST_FAILED', 'HISTORY_LIMIT'].includes(code)
+          ? 'CONFIG_REQUIRED'
+          : appError && appError.statusCode >= 400 && appError.statusCode < 500
+            ? 'OPERATOR_ATTENTION'
+            : run.attempts >= 2 ? 'FAILED' : 'RETRY'
       await this.save(run, status, code)
       logger.warn(
         { dailyRunId: run.id, code },

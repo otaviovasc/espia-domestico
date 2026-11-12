@@ -9,7 +9,7 @@ import { logger } from '@/utils/logger'
 import { env } from '@/config/env'
 import { AffiliateSalesObserver, affiliateSalesErrorCode } from '@/services/AffiliateSalesObserver'
 import { DailySessionRefresher } from '@/services/DailySessionRefresher'
-import { MlLoginRecovery } from '@/services/MlLoginRecovery'
+import { MlLoginRecovery, MlLoginRecoveryError } from '@/services/MlLoginRecovery'
 import { AffiliateSalesNotifications } from '@/services/AffiliateSalesNotifications'
 import { MlAuthChallengeService } from '@/services/MlAuthChallengeService'
 
@@ -99,7 +99,7 @@ export function startScheduler(): void {
         .then(async () => {
           if (!sessions || !isCurrent()) return
           try { await challenges?.expire(); await sessions.tick() }
-          catch (error) { const code = error instanceof Error && /^ML_SESSION_[A-Z_]+$/.test(error.message) ? error.message : 'ML_SESSION_REFRESH_FAILED'; logger.warn({ code }, 'Mercado Livre session refresh failed'); if (isCurrent()) void problem(code) }
+          catch (error) { const code = error instanceof Error && /^ML_SESSION_[A-Z_]+$/.test(error.message) ? error.message : 'ML_SESSION_REFRESH_FAILED'; logger.warn({ code, ...(error instanceof MlLoginRecoveryError ? { step: error.step } : {}) }, 'Mercado Livre session refresh failed'); if (isCurrent()) void problem(code) }
         })
         .finally(() => {
           if (collectingGeneration === currentGeneration) collectingGeneration = null

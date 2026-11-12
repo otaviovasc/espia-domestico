@@ -1,6 +1,7 @@
 import { readFile, mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { chromium, type Browser, type Page } from 'playwright'
+import { MlLoginRecoveryError } from './MlLoginRecovery'
 import { browserSessionHash, checkpointBrowserSession } from './PrivateBrowserSession'
 
 const INTERVAL_MS = 4 * 60 * 60_000
@@ -41,7 +42,7 @@ export class DailySessionRefresher {
         if (/login|auth|captcha|challenge|security|account-verification/i.test(new URL(page.url()).pathname) || /entre na sua conta|inicie sess[aã]o|verifique que voc[eê]|confirme que voc[eê]/i.test(body)) code = 'ML_SESSION_AUTH_REQUIRED'
         if (code !== 'ML_SESSION_AUTH_REQUIRED' || !this.recover) throw new Error(code)
         clearTimeout(timeout)
-        timeout = setTimeout(() => { void this.browser?.close().catch(() => undefined) }, 6 * 60_000)
+        timeout = setTimeout(() => { void this.browser?.close().catch(() => undefined) }, 9 * 60_000)
         if (!await this.recover(page)) throw new Error(code)
       }
       if (this.stopped) return
@@ -50,8 +51,8 @@ export class DailySessionRefresher {
     } catch (error) {
       if (error instanceof Error && /^ML_SESSION_[A-Z_]+$/.test(error.message)) code = error.message
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') code = 'ML_SESSION_AUTH_REQUIRED'
-      await writeFile(marker, JSON.stringify({ ...receipt, status: 'failed', code, finishedAt: new Date().toISOString() }), { mode: 0o600 }).catch(() => undefined)
-      if (!this.stopped) throw new Error(code)
+      await writeFile(marker, JSON.stringify({ ...receipt, status: 'failed', code, ...(error instanceof MlLoginRecoveryError ? { step: error.step } : {}), finishedAt: new Date().toISOString() }), { mode: 0o600 }).catch(() => undefined)
+      if (!this.stopped) throw error instanceof MlLoginRecoveryError ? error : new Error(code)
     } finally { clearTimeout(timeout); await this.browser?.close().catch(() => undefined); this.browser = undefined }
   }
 }

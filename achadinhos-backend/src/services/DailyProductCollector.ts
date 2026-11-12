@@ -1,7 +1,8 @@
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { chromium, type Browser, type BrowserContext } from 'playwright'
+import { chromium, type Browser, type BrowserContext, type Page } from 'playwright'
 import { normalizedMercadoLivreProductId } from '@/utils/offerIdentity'
+import { MlLoginRecoveryError, type MlRecoveryStep } from './MlLoginRecovery'
 import { browserSessionHash, checkpointBrowserSession } from './PrivateBrowserSession'
 
 export const DAILY_AUDIENCES = ['domestica', 'masculino'] as const
@@ -27,6 +28,7 @@ export class DailyCollectionError extends Error {
       | 'HISTORY_LIMIT'
       | 'STOPPED',
     public readonly payloads?: DailyPayload[],
+    public readonly step?: MlRecoveryStep,
   ) {
     super(code)
   }
@@ -38,6 +40,7 @@ export class DailyProductCollector {
     requests: DailyCollectionRequest[],
     signal: AbortSignal,
     checkpoint?: (payload: DailyPayload) => Promise<void>,
+    recover?: (page: Page) => Promise<boolean>,
   ): Promise<DailyPayload[]> {
     const statePath = process.env.DAILY_BROWSER_STATE_PATH
     if (!statePath) throw new DailyCollectionError('AUTH_REQUIRED')
@@ -136,9 +139,10 @@ export class DailyProductCollector {
               text,
             )
           ) {
-            throw new DailyCollectionError('AUTH_REQUIRED')
-          }
-          throw new DailyCollectionError('COLLECTION_FAILED')
+            if (!recover || !await recover(page)) throw new DailyCollectionError('AUTH_REQUIRED')
+            await page.goto('https://www.mercadolivre.com.br/afiliados/hub', { waitUntil: 'domcontentloaded', timeout: 45_000 })
+            await page.waitForSelector('.poly-card', { timeout: 30_000 })
+          } else throw new DailyCollectionError('COLLECTION_FAILED')
         }
         await page.addScriptTag({ content: extractor })
         const json = await page.evaluate(
@@ -188,6 +192,7 @@ export class DailyProductCollector {
     } catch (error) {
       if (signal.aborted) throw new DailyCollectionError('STOPPED')
       if (timedOut) throw new DailyCollectionError('COLLECTION_TIMEOUT')
+      if (error instanceof MlLoginRecoveryError) throw new DailyCollectionError('AUTH_REQUIRED', undefined, error.step)
       if (error instanceof DailyCollectionError) throw error
       throw new DailyCollectionError('COLLECTION_FAILED')
     } finally {
