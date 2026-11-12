@@ -1,6 +1,7 @@
 import type { OfferInput } from '@/dtos/campaign'
 
 export interface DailySelectionPolicy {
+  maxPerType?: number
   minRating: number
   minSoldCount: number
   minFitScore: number

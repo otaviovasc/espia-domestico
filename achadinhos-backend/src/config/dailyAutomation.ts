@@ -45,6 +45,7 @@ export const DailyAutomationConfigSchema = z
     maxIntervalMinutes: z.number().int().min(20).max(25).default(25),
     candidateLimit: z.number().int().min(1).max(250).default(250),
     repeatCooldownDays: z.number().int().min(0).max(3650).refine(days => days === 0 || days >= 7).default(30),
+    maxPerType: z.number().int().min(1).max(50).default(2),
     minRating: z.number().min(0).max(5).default(4.5),
     minSoldCount: z.number().int().min(1).max(1_000_000).default(100),
     minFitScore: z.number().min(70).max(100).default(75),

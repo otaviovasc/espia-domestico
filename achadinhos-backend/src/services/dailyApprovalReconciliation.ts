@@ -1,4 +1,5 @@
 import type { SmartPlanItem } from '@/dtos/smartCampaign'
+import { dailyCategoryKey, dailySpacedOrder } from '@/utils/dailyAssortment'
 import { dailyMixedPriceOrder, dailyPriceBand } from '@/utils/dailyCommercialValue'
 
 export async function reconcileDailyApproval(input: {
@@ -11,6 +12,7 @@ export async function reconcileDailyApproval(input: {
   occupied: Set<string>
   schedule: (count: number) => Date[]
   fresh: (item: SmartPlanItem, slot: Date) => boolean
+  maxPerType?: number
   maxStandouts: number
 }): Promise<SmartPlanItem[]> {
   const { items, occupied } = input
@@ -22,7 +24,7 @@ export async function reconcileDailyApproval(input: {
     item.state = 'RESERVE'
     item.scheduledAt = undefined
     item.warnings = [...new Set([...(item.warnings ?? []), code])]
-    if (!['DAILY_ITEM_CAPACITY', 'DAILY_ITEM_DUPLICATE'].includes(code)) { rejected.add(item.id); removed.push(item) }
+    if (!['DAILY_ITEM_CAPACITY', 'DAILY_ITEM_DUPLICATE', 'DAILY_ITEM_DIVERSITY'].includes(code)) { rejected.add(item.id); removed.push(item) }
   }
   const repeatOrder = (a: SmartPlanItem, b: SmartPlanItem) => Number(Boolean(a.repeatFallback)) - Number(Boolean(b.repeatFallback))
   const ranked = (a: SmartPlanItem, b: SmartPlanItem) => repeatOrder(a, b) || Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || b.score - a.score || a.id.localeCompare(b.id)
@@ -31,6 +33,9 @@ export async function reconcileDailyApproval(input: {
     || (a.sendOrder ?? Number.MAX_SAFE_INTEGER) - (b.sendOrder ?? Number.MAX_SAFE_INTEGER) || (mixedOrder.get(a.id) ?? 0) - (mixedOrder.get(b.id) ?? 0) || b.score - a.score || a.id.localeCompare(b.id)
   let selected: SmartPlanItem[] = []
   const local = new Set<string>()
+  const type = (item: SmartPlanItem) => dailyCategoryKey(item.category, item.product.title)
+  const count = (item: SmartPlanItem) => selected.filter(other => type(other) === type(item)).length
+  const maxPerType = input.maxPerType ?? 2
   for (const item of [...original].sort(ranked)) {
     if (item.repeatFallback) { drop(item, input.repeatsReady ? 'DAILY_ITEM_CAPACITY' : 'DAILY_ITEM_REPEAT_NOT_READY'); continue }
     if (input.invalid(item)) { drop(item, 'DAILY_ITEM_ELIGIBILITY'); continue }
@@ -38,6 +43,7 @@ export async function reconcileDailyApproval(input: {
       drop(item, 'DAILY_ITEM_NOVELTY'); continue
     }
     if (input.aliases(item).some(alias => local.has(alias))) { drop(item, 'DAILY_ITEM_DUPLICATE'); continue }
+    if (count(item) >= maxPerType) { drop(item, 'DAILY_ITEM_DIVERSITY'); continue }
     if (selected.length >= wanted) { drop(item, 'DAILY_ITEM_CAPACITY'); continue }
     selected.push(item)
     input.aliases(item).forEach(alias => local.add(alias))
@@ -45,8 +51,9 @@ export async function reconcileDailyApproval(input: {
   for (let iteration = 0; iteration <= items.length * 2 + 1; iteration++) {
     while (selected.length < wanted) {
       const band = removed.shift()
-      const mixed = dailyMixedPriceOrder(items.filter(item => item.state === 'RESERVE' && !rejected.has(item.id)), wanted - selected.length)
-      const reserves = [...mixed].sort((a, b) => repeatOrder(a, b) || Number(Boolean(band && dailyPriceBand(b.product.discountedPrice) === dailyPriceBand(band.product.discountedPrice)))
+      const mixed = dailyMixedPriceOrder(items.filter(item => item.state === 'RESERVE' && !rejected.has(item.id)), wanted - selected.length, maxPerType)
+      const reserves = [...mixed].sort((a, b) => repeatOrder(a, b) || Number(count(a) >= maxPerType) - Number(count(b) >= maxPerType)
+        || (count(a) >= maxPerType && count(b) >= maxPerType ? count(a) - count(b) : 0) || Number(Boolean(band && dailyPriceBand(b.product.discountedPrice) === dailyPriceBand(band.product.discountedPrice)))
         - Number(Boolean(band && dailyPriceBand(a.product.discountedPrice) === dailyPriceBand(band.product.discountedPrice))))
       let promoted = false
       for (const item of reserves) {
@@ -66,7 +73,7 @@ export async function reconcileDailyApproval(input: {
       if (!promoted) break
     }
     mixedOrder = new Map(dailyMixedPriceOrder(selected, selected.length).map((item, index) => [item.id, index]))
-    selected.sort(ordered)
+    selected = dailySpacedOrder(selected.sort(ordered))
     const slots = input.schedule(selected.length)
     let standouts = 0
     const failed = selected.filter((item, index) => {

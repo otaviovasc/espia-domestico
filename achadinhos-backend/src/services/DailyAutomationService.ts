@@ -615,6 +615,7 @@ export class DailyAutomationService {
               excludePolitical: true,
               maxStandouts: run.config.maxStandouts,
               dailySelection: {
+                maxPerType: run.config.maxPerType ?? 2,
                 minRating: run.config.minRating,
                 minSoldCount: run.config.minSoldCount,
                 minFitScore: run.config.minFitScore,

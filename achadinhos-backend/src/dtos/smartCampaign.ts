@@ -56,6 +56,7 @@ export const SmartAudiencePolicySchema = z
     spreadAcrossWindow: z.boolean().optional(),
     windowEndBufferSeconds: z.number().int().min(0).max(3600).optional(),
     dailySelection: z.object({
+      maxPerType: z.number().int().min(1).max(50).default(2),
       minRating: z.number().min(0).max(5),
       minSoldCount: z.number().int().min(1).max(1_000_000),
       minFitScore: z.number().min(70).max(100),
