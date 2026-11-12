@@ -6,7 +6,7 @@ require('reflect-metadata')
 process.env.DATABASE_URL ??= 'postgresql://dailyqa:dailyqa-local-only@127.0.0.1:55439/dailyqa'
 process.env.JWT_SECRET ??= 'daily-integration-secret-at-least-thirty-two-characters'
 const url = new URL(process.env.DATABASE_URL)
-assert.ok(['127.0.0.1','localhost'].includes(url.hostname) && url.port === '55439' && url.pathname === '/dailyqa', 'Dedicated local dailyqa database required')
+assert.ok(['127.0.0.1','localhost'].includes(url.hostname) && url.port === (process.env.DAILY_QA_PORT ?? '55439') && url.pathname === '/dailyqa', 'Dedicated local dailyqa database required')
 const { sequelize } = require('../dist/database')
 const { User } = require('../dist/database/models/User')
 const { DailyAutomationAlerts } = require('../dist/services/DailyAutomationAlerts')
@@ -93,5 +93,18 @@ test('inventory warnings retain bounded typed counts and deduplicate without pro
   assert.match(rows[0].body, /DAILY_INVENTORY_LOW/)
   assert.match(rows[0].body, /domestica fresh=18 required=60/)
   assert.equal(rows[0].status, 'PENDING')
+  assert.equal(f.calls.length, 0)
+})
+
+test('session recovery and fallback alerts explain retry, inventory and empty-selection outcomes', async () => {
+  const f = await setup()
+  for (const code of ['AUTH_REQUIRED', 'DAILY_SESSION_FALLBACK', 'DAILY_OFFLINE_INVENTORY_EMPTY']) {
+    await f.service.enqueue(f.config, '2026-11-12', code, code, 'cookie=SECRET https://private.invalid')
+  }
+  const rows = await f.rows()
+  assert.match(rows.find(r => r.body.includes('AUTH_REQUIRED')).body, /tentará novamente/)
+  assert.match(rows.find(r => r.body.includes('DAILY_SESSION_FALLBACK')).body, /links afiliados existentes/)
+  assert.match(rows.find(r => r.body.includes('DAILY_OFFLINE_INVENTORY_EMPTY')).body, /Nenhum envio foi aprovado/)
+  assert.ok(rows.every(r => !/SECRET|private.invalid/.test(r.body)))
   assert.equal(f.calls.length, 0)
 })

@@ -43,7 +43,11 @@ export class DailyAutomationAlerts {
     if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(code) || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return
     // Extract only a bounded vocabulary of operational facts, never arbitrary text.
     const facts = detail.match(/(?:domestica|masculino)|(?:selected|fresh|required|missing|unknown|failed|skipped)=\d{1,6}\b|deadline=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|-03:00)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi)?.slice(0, 30).join(' ') ?? ''
-    const body = `${code === 'DAILY_PARTIAL_DAY' ? 'ℹ️' : '⚠️'} Espia — operação de ${date}\nCódigo: ${code}\n${facts}\nJanela: ${config.startTime}–${config.endTime} (São Paulo).\nVerifique o painel Smart e os logs do worker. A automação não contorna filtros ou repete envios incertos.`
+    const guidance = code === 'DAILY_SESSION_FALLBACK'
+      ? '\nColeta indisponível: preparando o restante qualificado com estoque retido e links afiliados existentes, sem renovar evidências. Restaure a sessão ML para as próximas coletas.'
+      : code === 'AUTH_REQUIRED' ? '\nSessão ML inválida. A coleta tentará novamente com espera progressiva até 30 minutos antes da janela; depois usará apenas estoque elegível.'
+        : code === 'DAILY_OFFLINE_INVENTORY_EMPTY' ? '\nNão há estoque retido elegível. Nenhum envio foi aprovado. Restaure a sessão ML e verifique o painel.' : ''
+    const body = `${code === 'DAILY_PARTIAL_DAY' ? 'ℹ️' : '⚠️'} Espia — operação de ${date}\nCódigo: ${code}${guidance}\n${facts}\nJanela: ${config.startTime}–${config.endTime} (São Paulo).\nVerifique o painel Smart e os logs do worker. A automação não contorna filtros ou repete envios incertos.`
     await sequelize.query(`INSERT INTO daily_automation_alerts(id,user_id,event_key,group_id,body)
       VALUES(:id,:userId,:key,:groupId,:body) ON CONFLICT(user_id,event_key) DO NOTHING`, {
       replacements: { id: randomUUID(), userId: config.userId, key: `${date}:${code}:${createHash('sha256').update(key).digest('hex')}`, groupId: config.alertGroupId, body },

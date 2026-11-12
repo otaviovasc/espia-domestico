@@ -166,6 +166,7 @@ export function normalizeRawOffer(raw: Record<string, unknown>): Record<string, 
     coupon: pick('coupon', 'cupom', 'couponCode', 'codigo'),
     commissionPercent:
       String(pick('commissionPercent', 'commission_percent', 'comissao') ?? '') || undefined,
+    commissionRate: toNumber(pick('commissionRate', 'commission_rate')),
     discountPercent: toNumber(pick('discountPercent', 'discount_percent', 'descontoPercentual')),
     commissioned: pick('commissioned', 'comissionado'),
     commissionedUrlStatus: pick('commissionedUrlStatus', 'commissioned_url_status'),

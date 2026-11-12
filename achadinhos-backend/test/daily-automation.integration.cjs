@@ -108,14 +108,21 @@ test('daily collection, checkpoint recovery, approval, and retries converge to o
   assert.equal(f.calls.approve, 1)
 })
 
-test('expired auth is held without paid analysis or repeated browser allocation', async () => {
+test('expired auth backs off without paid analysis and resumes automatically after restoration', async () => {
   const f = await setup()
   f.collector.collect = async () => { f.calls.collect++; throw new DailyCollectionError('AUTH_REQUIRED') }
   await f.service.tick(f.config)
   await f.service.tick(f.config)
-  assert.equal((await f.run()).status, 'AUTH_REQUIRED')
+  assert.equal((await f.run()).status, 'RETRY')
+  assert.equal((await f.run()).last_error, 'AUTH_REQUIRED')
   assert.equal(f.calls.collect, 1)
   assert.equal(f.calls.create, 0)
+  f.collector.collect = async () => { f.calls.collect++; return f.payloads }
+  await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE user_id=:id', { replacements: { id: f.user.id } })
+  await f.service.tick(f.config)
+  assert.equal((await f.run()).status, 'ANALYZING')
+  assert.equal(f.calls.collect, 2)
+  assert.equal(f.calls.create, 1)
 })
 
 test('restart resumes the current frozen run before applying tomorrow collection and weekday settings', async (t) => {
@@ -146,7 +153,7 @@ test('restart resumes the current frozen run before applying tomorrow collection
   }
 })
 
-test('partial empty collection retries within the three-attempt budget before any paid analysis', async () => {
+test('partial empty collection continues retrying before the collection deadline without paid analysis', async () => {
   const f = await setup()
   f.collector.collect = async () => { f.calls.collect++; return [{ ...f.payloads[0], json: { cards: [] } }] }
   for (let index = 0; index < 3; index++) {
@@ -155,8 +162,8 @@ test('partial empty collection retries within the three-attempt budget before an
     await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE user_id=:id', { replacements: { id: f.user.id } })
   }
   await f.service.tick(f.config)
-  assert.equal((await f.run()).status, 'FAILED')
-  assert.equal(f.calls.collect, 3)
+  assert.equal((await f.run()).status, 'RETRY')
+  assert.equal(f.calls.collect, 4)
   assert.equal(f.calls.create, 0)
 })
 
@@ -420,7 +427,7 @@ test('controlled shutdown releases its fenced lease without a 30-minute wait', a
   assert.equal((await f.run()).status, 'ANALYZING')
 })
 
-test('repeated transient collection failures stop after three total attempts', async () => {
+test('transient collection failures continue past three attempts while time remains', async () => {
   const f = await setup()
   let attempts = 0
   f.collector.collect = async () => { attempts++; throw new DailyCollectionError('COLLECTION_TIMEOUT') }
@@ -428,10 +435,12 @@ test('repeated transient collection failures stop after three total attempts', a
     await f.service.tick(f.config)
     await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE user_id=:id', { replacements: { id: f.user.id } })
   }
-  assert.equal((await f.run()).status, 'FAILED')
+  assert.equal((await f.run()).status, 'RETRY')
   assert.equal((await f.run()).attempts, 3)
   await f.service.tick(f.config)
-  assert.equal(attempts, 3)
+  assert.equal(attempts, 4)
+  await f.service.tick(f.config)
+  assert.equal(attempts, 4, 'Repeated polls respect the next backoff')
   assert.equal(f.calls.create, 0)
 })
 
@@ -2194,4 +2203,142 @@ test('daily cooldown catches known models sold under different listing IDs witho
   await cooldownDelivery(f, blender, 40)
   const cooled = await history(cooldownOffer('MLB99886104', 'Liquidificador Turbo Power Mondial 550W - L-99 FB'))
   assert.deepEqual(cooled, { conflict: false, repeat: true })
+})
+
+test('session outage retries until morning then auto-approves fresh retained inventory and eligible repeats without browsing', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = { ...f.config, planningDaysAhead: 1, collectTime: '19:00', repeatCooldownDays: 30 }
+  const offers = [cooldownOffer('MLB98765901'), cooldownOffer('MLB98765902', 'Barbeador QA'),
+    cooldownOffer('MLB98765903', 'Panela antiga'), cooldownOffer('MLB98765904', 'Panela repetida ontem'), cooldownOffer('MLB98765905', 'Panela sem atribuição')]
+  offers[2].extensionEvidence.extractedAt = '2026-11-08T10:00:00Z'
+  offers[4].commissioned = false
+  await cooldownDelivery(f, offers[1], 40, { groupId: 'masculino@g.us' })
+  await cooldownDelivery(f, offers[3], 1)
+  await SmartPlan.create({ userId: f.user.id, status: 'COMPLETED', startDate: '2026-11-09', days: 1,
+    timezone: f.config.timezone, audienceSlugs: ['domestica', 'masculino'], input: { offers }, items: [], settings: {} })
+  const { smart } = cooldownSmart(f, [])
+  smart.imports = new (require('../dist/services/OfferImportService').OfferImportService)()
+  const alerts = []
+  let collections = 0
+  const collector = { async collect() { collections++; throw new DailyCollectionError('AUTH_REQUIRED') } }
+  const notices = { enqueue: async (...args) => alerts.push(args[3]), enqueueInventoryLow: async () => {} }
+  const service = new DailyAutomationService(smart, collector, notices)
+  await service.tick(f.config)
+  let run = await f.run()
+  assert.equal(run.status, 'RETRY')
+  assert.equal(new Date(run.next_attempt_at).getTime() - new Date(run.updated_at).getTime(), 60_000)
+  await service.tick(f.config)
+  assert.equal(collections, 1, 'Scheduler polls must honor durable backoff')
+  await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  await service.tick(f.config)
+  run = await f.run()
+  assert.equal(new Date(run.next_attempt_at).getTime() - new Date(run.updated_at).getTime(), 120_000)
+  t.mock.timers.setTime(new Date('2026-11-10T10:30:00Z').getTime())
+  await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  const resumed = new DailyAutomationService(smart, collector, notices)
+  for (let tick = 0; tick < 5; tick++) {
+    await resumed.tick(f.config)
+    run = await f.run()
+    if (run.plan_uuid) {
+      const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+      if (plan.status === 'ANALYZING') await smart.processPendingAnalysis(plan.id)
+    }
+    await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: run.id } })
+  }
+  run = await f.run()
+  assert.equal(run.status, 'SCHEDULED', JSON.stringify({ status: run.status, error: run.last_error, items: (await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })).items.map(i => ({ id: i.product?.productId, state: i.state, reason: i.reason })) }))
+  assert.equal(run.local_date, '2026-11-10')
+  assert.equal(collections, 2, 'No further live collection/replenishment after the cutoff')
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  const selected = plan.items.filter(item => item.state === 'SELECTED')
+  assert.deepEqual(selected.map(item => item.product.productId).sort(), offers.slice(0, 2).map(offer => offer.productId).sort())
+  assert.equal(selected.find(item => item.product.productId === offers[1].productId).repeatFallback, true)
+  assert.ok(selected.every(item => item.observedAt === offers[0].extensionEvidence.extractedAt))
+  assert.ok(alerts.includes('AUTH_REQUIRED'))
+  assert.ok(alerts.includes('DAILY_SESSION_FALLBACK'))
+  assert.equal(await SmartSend.count({ where: { planId: plan.id } }), 2)
+})
+
+test('offline fallback preserves a completed audience and adds saved inventory without renewing observation times', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = { ...f.config, planningDaysAhead: 1, collectTime: '19:00' }
+  const retained = cooldownOffer('MLB98765911')
+  const saved = cooldownOffer('MLB98765912', 'Barbeador QA')
+  const { SavedProduct } = require('../dist/database/models/SavedProduct')
+  await SavedProduct.create({ userId: f.user.id, offer: saved, affiliateUrl: saved.affiliateUrl, affiliateUrlHash: 'a'.repeat(64) })
+  const { smart } = cooldownSmart(f, [])
+  smart.imports = new (require('../dist/services/OfferImportService').OfferImportService)()
+  const collector = { async collect(_requests, _signal, checkpoint) {
+    await checkpoint({ name: 'retained.json', targetAudienceSlug: 'domestica', json: { offers: [retained] } })
+    throw new DailyCollectionError('AUTH_REQUIRED')
+  } }
+  const service = new DailyAutomationService(smart, collector)
+  await service.tick(f.config)
+  const initial = await f.run()
+  assert.equal(initial.payloads[0].json.offers[0].extensionEvidence.extractedAt, retained.extensionEvidence.extractedAt)
+  t.mock.timers.setTime(new Date('2026-11-10T10:30:00Z').getTime())
+  for (let step = 0; step < 4; step++) {
+    await sequelize.query('UPDATE daily_automation_runs SET next_attempt_at=NOW() WHERE id=:id', { replacements: { id: initial.id } })
+    await service.tick(f.config)
+    const run = await f.run()
+    if (run.plan_uuid) {
+      const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+      if (plan.status === 'ANALYZING') await smart.processPendingAnalysis(plan.id)
+    }
+  }
+  const run = await f.run()
+  assert.equal(run.status, 'SCHEDULED')
+  const sends = await SmartSend.findAll({ where: { userId: f.user.id } })
+  assert.deepEqual(sends.map(s => s.offer.productId).sort(), [retained.productId, saved.productId].sort())
+  assert.ok(sends.every(s => s.evidenceObservedAt.toISOString() === saved.extensionEvidence.extractedAt))
+})
+
+test('offline inventory with no qualifying observation or disabled repeats alerts without fabricating a plan', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-10T10:30:00Z').getTime() })
+  const f = await setup()
+  const offer = cooldownOffer('MLB98765921')
+  await cooldownDelivery(f, offer, 40)
+  await SmartPlan.create({ userId: f.user.id, status: 'COMPLETED', startDate: '2026-11-09', days: 1,
+    timezone: f.config.timezone, audienceSlugs: ['domestica'], input: { offers: [offer] }, items: [], settings: {} })
+  const alerts = []
+  const service = new DailyAutomationService(f.smart, { async collect() { throw new DailyCollectionError('AUTH_REQUIRED') } },
+    { enqueue: async (...args) => alerts.push(args[3]) })
+  await service.tick(f.config)
+  await service.tick(f.config)
+  const run = await f.run()
+  assert.equal(run.status, 'OPERATOR_ATTENTION')
+  assert.equal(run.last_error, 'DAILY_OFFLINE_INVENTORY_EMPTY')
+  assert.equal(run.plan_uuid, null)
+  assert.equal(f.calls.create, 0)
+  assert.ok(alerts.includes('DAILY_OFFLINE_INVENTORY_EMPTY'))
+})
+
+test('offline approval appends a durable partial discovery round before using the qualified remainder', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
+  const f = await setup()
+  f.config = { ...f.config, planningDaysAhead: 1, collectTime: '19:00' }
+  await f.service.tick(f.config)
+  const run = await f.run()
+  const plan = await SmartPlan.findOne({ where: { uuid: run.plan_uuid } })
+  await plan.update({ status: 'REVIEW' })
+  const pending = [{ name: 'partial-round.json', targetAudienceSlug: 'domestica', json: { offers: [cooldownOffer('MLB98765931')] } }]
+  await sequelize.query('UPDATE daily_automation_runs SET discovery_state=CAST(:state AS JSONB),next_attempt_at=NOW() WHERE id=:id', {
+    replacements: { id: run.id, state: JSON.stringify({ offline: true, exhausted: true, round: 1, pending }) },
+  })
+  let appended = 0
+  f.smart.appendDailyProducts = async (_user, uuid, _revision, payloads) => {
+    appended++
+    assert.equal(uuid, plan.uuid)
+    assert.deepEqual(payloads, pending)
+    await plan.update({ status: 'ANALYZING' })
+  }
+  await f.service.tick(f.config)
+  const resumed = await f.run()
+  assert.equal(appended, 1)
+  assert.equal(f.calls.collect, 1, 'Only the original initial collection allocated a browser')
+  assert.equal(resumed.status, 'ANALYZING')
+  assert.equal(resumed.discovery_state.pending, undefined)
+  assert.ok(resumed.payloads.some(payload => payload.name === pending[0].name))
 })
