@@ -15,7 +15,7 @@ export async function reconcileDailyApproval(input: {
 }): Promise<SmartPlanItem[]> {
   const { items, occupied } = input
   const original = items.filter(item => item.state === 'SELECTED')
-  const wanted = Math.min(original.length, input.capacity)
+  let wanted = Math.min(original.length, input.capacity)
   const rejected = new Set<string>()
   const removed: SmartPlanItem[] = []
   const drop = (item: SmartPlanItem, code: string) => {
@@ -68,6 +68,12 @@ export async function reconcileDailyApproval(input: {
     mixedOrder = new Map(dailyMixedPriceOrder(selected, selected.length).map((item, index) => [item.id, index]))
     selected.sort(ordered)
     const slots = input.schedule(selected.length)
+    if (slots.length < selected.length) {
+      selected.slice(slots.length).forEach(item => drop(item, 'DAILY_ITEM_CAPACITY'))
+      selected = selected.slice(0, slots.length)
+      wanted = selected.length
+      continue
+    }
     let standouts = 0
     const failed = selected.filter((item, index) => {
       if (!input.fresh(item, slots[index])) { drop(item, 'DAILY_ITEM_FRESHNESS'); return true }
