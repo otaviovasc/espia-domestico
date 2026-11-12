@@ -12,6 +12,35 @@ const { DailyProductCollector } = require('../dist/services/DailyProductCollecto
 const { buildSmartSchedule } = require('../dist/services/SmartCampaignService')
 const { SmartCampaignSender, resolveSmartSendPolicy } = require('../dist/services/SmartCampaignSender')
 
+test('inventory warnings measure the accumulated audience deficit against the day, not double headroom', async () => {
+  const { DailyAutomationService } = require('../dist/services/DailyAutomationService')
+  const config = DailyAutomationConfigSchema.parse({ userId: 1 })
+  const warnings = []
+  const service = new DailyAutomationService({}, {}, { async enqueueInventoryLow(...args) { warnings.push(args) } })
+  const payload = (count, start = 0, slug = 'masculino') => ({ targetAudienceSlug: slug, json: {
+    cards: Array.from({ length: count }, (_, n) => ({ productId: `MLB${10000000 + start + n}` })) } })
+  const run = { id: 'inventory', local_date: '2026-11-12', config, payloads: [] }
+  await service.inventoryWarning(run, payload(46))
+  await service.inventoryWarning(run, payload(30))
+  assert.equal(warnings.length, 0, 'The measured 46/60 production case has no raw daily deficit')
+  await service.inventoryWarning(run, payload(29))
+  assert.deepEqual(warnings.at(-1).slice(3), ['masculino', 29, 30])
+  run.payloads = [payload(29), payload(50, 100, 'domestica')]
+  await service.inventoryWarning(run, payload(1))
+  assert.equal(warnings.length, 2, 'Duplicate products and the other audience cannot hide the deficit')
+  run.discovery_state = { pending: [payload(1, 29)] }
+  await service.inventoryWarning(run, payload(1, 29))
+  assert.equal(warnings.length, 2, 'A small refill reaching 30 does not warn')
+  run.discovery_state.pending[0].json.cards[0].repeatFallback = true
+  await service.inventoryWarning(run, payload(0))
+  assert.equal(warnings.at(-1)[4], 29, 'Repeats do not count as fresh supply')
+  run.config = { ...config, candidateLimit: 2 }
+  run.payloads = []
+  run.discovery_state = {}
+  await service.inventoryWarning(run, payload(2))
+  assert.equal(warnings.at(-1)[5], 30, 'An intentionally small candidate cap does not redefine the daily need')
+})
+
 test('daily cadence fills 08:00–19:00 with 30 items per audience and 20–25 minute gaps', () => {
   const config = DailyAutomationConfigSchema.parse({ userId: 1, planningDaysAhead: 0, collectTime: '06:00' })
   assert.equal(dailyItemTarget(config), 30)

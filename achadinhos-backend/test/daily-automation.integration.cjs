@@ -1275,13 +1275,15 @@ test('low fresh inventory creates one typed durable warning per audience without
   await f.service.tick(f.config)
   const rows = await sequelize.query('SELECT * FROM daily_automation_alerts WHERE user_id=:id', { replacements: { id: f.user.id }, type: 'SELECT' })
   assert.equal(rows.length, 2, 'Checkpoint and returned payload warnings deduplicate')
-  assert.ok(rows.every(row => row.status === 'PENDING' && row.body.includes('DAILY_INVENTORY_LOW') && row.body.includes('fresh=1 required=60')))
+  assert.ok(rows.every(row => row.status === 'PENDING' && row.body.includes('DAILY_INVENTORY_LOW') && row.body.includes('fresh=1 required=30')))
   assert.equal((await f.run()).status, 'ANALYZING')
   assert.equal(f.calls.create, 1)
 })
 
-test('low-inventory alert persistence failure does not stop initial collection and analysis', async () => {
+test('low-inventory alert persistence failure does not stop initial collection and analysis', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-09T22:00:00Z').getTime() })
   const f = await setup()
+  f.config = DailyAutomationConfigSchema.parse({ userId: f.user.id })
   let alerts = 0
   f.service = new DailyAutomationService(f.smart, f.collector, { async enqueueInventoryLow() { alerts++; throw Error('private') } })
   await f.service.tick(f.config)
